@@ -1,0 +1,8 @@
+# Core dependencies
+openai>=1.0.0
+
+# Optional dependencies for additional LLM backends
+# litellm>=1.0.0
+
+# Development dependencies (optional)
+# pytest>=7.0.0
