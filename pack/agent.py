@@ -171,11 +171,20 @@ class Agent:
                 tc.to_execution_format() for tc in normalized_calls
             ]
             
-            # Extract content for display
+            # Extract content for display (handle both OpenAI and Anthropic formats)
+            content = ""
             if hasattr(response, 'choices'):
+                # OpenAI format
                 message = response.choices[0].message
                 content = message.content or ""
-                last_turn_content = content
+            elif hasattr(response, 'content'):
+                # Anthropic format - extract text content
+                if response.content:
+                    # Get text from content blocks
+                    text_blocks = [block.text for block in response.content if hasattr(block, 'text')]
+                    content = " ".join(text_blocks) if text_blocks else ""
+            
+            last_turn_content = content
 
             if verbose_info:
                 print(f"[Agent] Provider: {self.provider}")
@@ -183,8 +192,14 @@ class Agent:
                 if tool_calls:
                     for tc in tool_calls:
                         print(f"  - {tc['tool']}: {tc['arguments']}")
-                
-            # 如果有工具调用，则执行工具并继续下一轮
+            
+            # ---- 情况 A：无工具调用，说明 LLM 已给出最终回复 ----
+            if not tool_calls:
+                if verbose_info:
+                    print("[Agent] 无工具调用，LLM 已给出最终回复，结束本轮")
+                break
+            
+            # ---- 情况 B：有工具调用，执行工具并继续下一轮 ----
             messages.append(self._format_assistant_message(content))
 
             has_round_end: bool = False
@@ -253,14 +268,27 @@ class Agent:
                 print(chunk, end="", flush=True)
             final_content = "".join(chunks).strip()
         else:
-            fallback_resp: ChatCompletion = await self.llm_handler.fetch(
+            fallback_resp = await self.llm_handler.fetch(
                 msg="",
                 system_prompt=None,
                 prev_messages=fallback_messages,
                 tools=None,
                 fallback_order=self.fallback_order,
             )
-            final_content = fallback_resp.choices[0].message.content or last_turn_content
+            # Handle both OpenAI and Anthropic response formats
+            if hasattr(fallback_resp, 'choices'):
+                # OpenAI format
+                final_content = fallback_resp.choices[0].message.content or last_turn_content
+            elif hasattr(fallback_resp, 'content'):
+                # Anthropic format
+                if fallback_resp.content:
+                    text_blocks = [block.text for block in fallback_resp.content if hasattr(block, 'text')]
+                    final_content = " ".join(text_blocks).strip() if text_blocks else last_turn_content
+                else:
+                    final_content = last_turn_content
+            else:
+                final_content = last_turn_content
+            
             if verbose_info and not final_content.strip():
                 print("[Agent] fallback response 为空，保留上一轮内容。")
 
