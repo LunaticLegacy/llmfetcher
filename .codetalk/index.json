@@ -1,0 +1,238 @@
+{
+  "files": {
+    "main.py": {
+      "exports": [],
+      "imports": [],
+      "size": 9728,
+      "language": "Python"
+    },
+    "pack/agent.py": {
+      "exports": [],
+      "imports": [],
+      "size": 13203,
+      "language": "Python"
+    },
+    "pack/agent_io.py": {
+      "exports": [
+        "AgentWorkspacePolicy",
+        "AgentFileLocations",
+        "AgentFileSnapshot",
+        "AgentFileIOManager",
+        "__init__",
+        "discover_packages",
+        "list_agent_ids",
+        "read_agent_snapshot",
+        "read_agent_state",
+        "read_agent_context",
+        "read_agent_prompt",
+        "read_agent_log_tail",
+        "get_agent_record",
+        "_load_manifest",
+        "_iter_agent_specs",
+        "_iter_loaded_agent_records",
+        "_load_agent_specs",
+        "_extract_agent_specs_from_source",
+        "_extract_agent_specs_from_module",
+        "_coerce_agent_payload",
+        "_normalize_agent_spec",
+        "_load_agent_module",
+        "_resolve_locations",
+        "_resolve_workspace",
+        "_resolve_runtime_root",
+        "_resolve_skill_files",
+        "_resolve_prompt_file",
+        "_resolve_prompt_text",
+        "_read_json_if_exists",
+        "_read_jsonl_if_exists",
+        "_read_json_or_text_if_exists",
+        "_read_log_tail_if_exists"
+      ],
+      "imports": [
+        "__future__",
+        "ast",
+        "importlib.util",
+        "json",
+        "dataclasses",
+        "pathlib",
+        "types",
+        "typing",
+        "tomllib",
+        "tomli"
+      ],
+      "size": 21135,
+      "language": "Python"
+    },
+    "pack/llm_context.py": {
+      "exports": [],
+      "imports": [],
+      "size": 5846,
+      "language": "Python"
+    },
+    "pack/llm_fetcher.py": {
+      "exports": [],
+      "imports": [],
+      "size": 20257,
+      "language": "Python"
+    },
+    "pack/swarm/execution_graph.py": {
+      "exports": [],
+      "imports": [],
+      "size": 33627,
+      "language": "Python"
+    },
+    "pack/swarm/runtime_slot.py": {
+      "exports": [],
+      "imports": [],
+      "size": 13413,
+      "language": "Python"
+    },
+    "pack/swarm/swarm.py": {
+      "exports": [],
+      "imports": [],
+      "size": 26513,
+      "language": "Python"
+    },
+    "pack/swarm/__init__.py": {
+      "exports": [],
+      "imports": [
+        "execution_graph",
+        "runtime_slot",
+        "swarm"
+      ],
+      "size": 302,
+      "language": "Python"
+    },
+    "pack/tests/test_agent_concurrency.py": {
+      "exports": [
+        "TimestampTool",
+        "MockLLMFetcher",
+        "test_round_call_parallel_tool_execution",
+        "test_round_call_fallback_working_backend",
+        "test_round_call_fallback_all_broken",
+        "test_compress_context_fallback_working",
+        "test_compress_context_fallback_all_broken",
+        "test_round_call_parallel_partial_failure",
+        "test_default_parameters_backward_compatible",
+        "__init__",
+        "_run",
+        "__init__",
+        "fetch",
+        "fake_llm_response",
+        "broken_backend",
+        "working_backend",
+        "always_broken",
+        "broken_backend",
+        "working_backend",
+        "always_broken",
+        "fake_llm_response"
+      ],
+      "imports": [
+        "asyncio",
+        "time",
+        "unittest.mock",
+        "pytest",
+        "pack.agent",
+        "pack.llm_context",
+        "pack.llm_handler",
+        "pack.tool",
+        "pack.state",
+        "pack.state",
+        "pack.state",
+        "pack.state",
+        "pack.agent",
+        "pack.llm_context"
+      ],
+      "size": 10868,
+      "language": "Python"
+    },
+    "pack/tests/test_agent_io.py": {
+      "exports": [
+        "_write_agent_package",
+        "test_read_agent_snapshot",
+        "test_list_agent_ids"
+      ],
+      "imports": [
+        "__future__",
+        "json",
+        "pathlib",
+        "modules.llm_fetcher.agent_io"
+      ],
+      "size": 3509,
+      "language": "Python"
+    },
+    "pack/tests/test_llmdemo.py": {
+      "exports": [],
+      "imports": [],
+      "size": 4241,
+      "language": "Python"
+    },
+    "pack/thinking_graph.py": {
+      "exports": [],
+      "imports": [],
+      "size": 47572,
+      "language": "Python"
+    },
+    "pack/tool.py": {
+      "exports": [],
+      "imports": [],
+      "size": 3315,
+      "language": "Python"
+    },
+    "pack/tools/builtin_tools.py": {
+      "exports": [],
+      "imports": [],
+      "size": 813,
+      "language": "Python"
+    },
+    "pack/tools/execution_graph_tools.py": {
+      "exports": [],
+      "imports": [],
+      "size": 10468,
+      "language": "Python"
+    },
+    "pack/tools/obscura_tools.py": {
+      "exports": [],
+      "imports": [],
+      "size": 8138,
+      "language": "Python"
+    },
+    "pack/tools/runtime_slot_tools.py": {
+      "exports": [],
+      "imports": [],
+      "size": 5879,
+      "language": "Python"
+    },
+    "pack/tools/shell_tools.py": {
+      "exports": [
+        "create_shell_tools",
+        "_shell"
+      ],
+      "imports": [
+        "asyncio",
+        "shlex",
+        "typing",
+        "tool"
+      ],
+      "size": 2987,
+      "language": "Python"
+    },
+    "pack/tools/thinking_graph_tools.py": {
+      "exports": [],
+      "imports": [],
+      "size": 11034,
+      "language": "Python"
+    },
+    "pack/tools/__init__.py": {
+      "exports": [],
+      "imports": [],
+      "size": 268,
+      "language": "Python"
+    },
+    "pack/__init__.py": {
+      "exports": [],
+      "imports": [],
+      "size": 2530,
+      "language": "Python"
+    }
+  }
+}
