@@ -154,10 +154,18 @@ class LLMFetcher:
                 import anthropic
             except ImportError as exc:  # pragma: no cover - depends on optional package
                 raise ValueError("anthropic provider requires the 'anthropic' package to be installed.") from exc
-            self.anthropic_clients[backend.name] = anthropic.Anthropic(
-                api_key=backend.api_key,
-                timeout=backend.timeout,
-            )
+            
+            # Create Anthropic client with optional base_url (for DeepSeek compatibility)
+            client_kwargs = {
+                "api_key": backend.api_key,
+                "timeout": backend.timeout,
+            }
+            
+            # If api_url is specified, use it as base_url (for DeepSeek, etc.)
+            if backend.api_url:
+                client_kwargs["base_url"] = backend.api_url
+            
+            self.anthropic_clients[backend.name] = anthropic.Anthropic(**client_kwargs)
 
     def _resolve_backends(
         self,
@@ -223,7 +231,7 @@ class LLMFetcher:
     def _convert_to_anthropic_messages(
         self,
         messages: List[Dict[str, str]]
-    ) -> List[Dict[str, Any]]:
+    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Convert OpenAI-style messages to Anthropic format.
         
         Anthropic has some key differences:
@@ -235,7 +243,7 @@ class LLMFetcher:
             messages: OpenAI-format message list
             
         Returns:
-            Anthropic-format message list
+            Tuple of (Anthropic-format message list, system prompt string)
         """
         anthropic_messages = []
         system_message = None
@@ -271,15 +279,7 @@ class LLMFetcher:
                     "content": content
                 })
         
-        # Store system message in a way that can be retrieved
-        # Note: This is a simplification. For proper system prompt support,
-        # you may need to modify the fetch() method signature
-        if system_message:
-            # Prepend system message as first user message with special marker
-            # Or better: modify the calling code to handle this
-            pass
-        
-        return anthropic_messages
+        return anthropic_messages, system_message
 
     def _convert_to_anthropic_tools(
         self,
@@ -374,7 +374,7 @@ class LLMFetcher:
             
             # Anthropic 使用不同的消息格式和参数
             # 需要将 OpenAI 格式的消息转换为 Anthropic 格式
-            anthropic_messages = self._convert_to_anthropic_messages(messages)
+            anthropic_messages, system_prompt = self._convert_to_anthropic_messages(messages)
             
             kwargs: Dict[str, Any] = {
                 "model": backend.model,
@@ -384,6 +384,10 @@ class LLMFetcher:
                 "stream": stream,
             }
             
+            # Anthropic 支持 system prompt 作为单独参数
+            if system_prompt:
+                kwargs["system"] = system_prompt
+            
             # Anthropic 的工具格式不同
             if tools:
                 # 转换工具 schema 为 Anthropic 格式
@@ -391,6 +395,7 @@ class LLMFetcher:
                 kwargs["tools"] = anthropic_tools
             
             kwargs.update(backend.extra)
+            
             return client.messages.create(**kwargs)
 
         if backend.provider == "litellm":
