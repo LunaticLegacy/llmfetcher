@@ -20,7 +20,7 @@ def create_builtin_tools() -> List[Tool]:
                 "工具调用和论点记录后，调用此工具来明确结束本轮对话。"
             ),
             parameters={
-                "type": "Any",
+                "type": "object",
                 "properties": {},
                 "required": [],
             },

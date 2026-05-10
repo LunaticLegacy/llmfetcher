@@ -65,11 +65,11 @@ def format_news_digest(articles: List[Dict[str, str]]) -> str:
 
 def get_backend() -> LLMBackendConfig:
     """Read LLM backend config from environment."""
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
     if api_key:
         return LLMBackendConfig(
-            name="openai",
-            provider="openai",
+            name="deepseek",
+            provider="deepseek",
             model="gpt-4o-mini",      # fast & cheap; change to gpt-4o for heavier reasoning
             api_key=api_key,
             timeout=120.0,
@@ -119,51 +119,105 @@ def build_news_monitor_swarm(fetcher: LLMFetcher) -> AgentSwarm:
     swarm.add_agent(
         "fetcher",
         system_prompt=(
-            "你是新闻采集专家。你的任务是根据用户提供的主题，使用 shell 工具获取相关新闻。\n\n"
-            "操作步骤：\n"
-            "1. 使用 shell 工具执行 curl 命令获取新闻源。例如：\n"
-            '   curl -s "https://newsapi.org/v2/everything?q=AI&apiKey=YOUR_KEY" 2>/dev/null | head -500\n'
-            "   或使用简易的 lnews 命令行工具（如果可用）。\n"
-            "2. 如果无法直接获取，可以请求用户提供具体文章链接。\n"
-            "3. 将提取到的原始内容整理成结构化的文章列表（标题、来源、摘要片段）。\n\n"
-            "请始终在思考图谱中记录你找到的关键文章节点。"
+            "你是新闻采集专家。你的任务是获取关于用户查询主题的最新新闻。\n\n"
+            "**重要：你必须严格按照以下步骤执行，不得跳过：**\n\n"
+            "步骤 1（必须首先执行）：使用 obscura 工具搜索并获取新闻内容\n"
+            "   - 调用 obscura_fetch 或 obscura_search 工具\n"
+            "   - 搜索关键词应基于用户的查询主题\n"
+            "   - 例如：用户问'百度文心一言最新模型'，你应该搜索相关新闻\n\n"
+            "步骤 2：将获取到的新闻内容整理成结构化格式\n"
+            "   - 提取：标题、来源URL、摘要/关键内容\n"
+            "   - 至少获取 3-5 条相关新闻\n\n"
+            "步骤 3：使用 thinking_graph_add_node 记录每条新闻\n"
+            "   - node_type: 'EVIDENCE' 或 'ARTIFACT'\n"
+            "   - info: 包含标题和摘要\n"
+            "   - payload: 包含完整URL和详细内容\n\n"
+            "步骤 4：调用 round_end 工具结束本轮\n"
+            "   - 只有完成以上所有步骤后才能调用 round_end\n\n"
+            "**禁止行为：**\n"
+            "   - ❌ 不要在未获取任何新闻前就调用 round_end\n"
+            "   - ❌ 不要只查询 thinking_graph 而不获取新数据\n"
+            "   - ❌ 不要请求用户提供链接（你应该主动搜索）\n\n"
+            "**成功标准：**\n"
+            "   - ✅ ThinkingGraph 中至少有 3 个 EVIDENCE/ARTIFACT 节点\n"
+            "   - ✅ 每个节点都包含实际的新闻内容\n"
+            "   - ✅ 最后调用 round_end 结束"
         ),
         share_thinking_tools=True,      # can record findings in ThinkingGraph
         share_graph_tools=False,
-        max_concurrent_tools=2,
+        max_concurrent_tools=3,         # 允许并行获取多条新闻
     )
 
     # Agent 2: News Analyzer – evaluates relevance, extracts entities
     swarm.add_agent(
         "analyzer",
         system_prompt=(
-            "你是新闻分析专家。你的任务：\n"
-            "1. 分析采集到的新闻内容与用户查询主题的相关性（高/中/低）。\n"
-            "2. 提取关键实体（人名、组织、技术术语）。\n"
-            "3. 识别每篇文章的核心观点和情感倾向。\n"
-            "4. 标记可能存在的偏见或信息冲突。\n\n"
-            "输出格式：为每篇文章生成一个结构化分析记录，包含：\n"
-            "- 标题\n- 相关性评分\n- 关键实体列表\n- 核心观点\n- 情感倾向\n- 冲突/偏见标记\n\n"
-            "使用思考图谱记录你的分析节点，以便总结阶段参考。"
+            "你是新闻分析专家。你的任务是从 ThinkingGraph 中读取 Fetcher 采集的新闻并进行深度分析。\n\n"
+            "**执行步骤：**\n\n"
+            "步骤 1：使用 thinking_graph_get_full_graph 获取所有新闻节点\n"
+            "   - 查找 node_type 为 'EVIDENCE' 或 'ARTIFACT' 的节点\n"
+            "   - 如果 graph 为空或没有新闻节点，说明 Fetcher 未完成工作\n\n"
+            "步骤 2：对每条新闻进行分析\n"
+            "   1. 相关性评分（高/中/低）- 与用户查询主题的匹配度\n"
+            "   2. 提取关键实体（人名、组织、技术术语、产品名）\n"
+            "   3. 识别核心观点和主要信息\n"
+            "   4. 判断情感倾向（正面/负面/中性）\n"
+            "   5. 标记可能的偏见、冲突或不一致之处\n\n"
+            "步骤 3：将分析结果写入 ThinkingGraph\n"
+            "   - 为每条新闻创建 'CLAIM' 或 'SUMMARY' 节点\n"
+            "   - 使用 SUPPORTS/DERIVES_FROM 边连接到原始 EVIDENCE 节点\n"
+            "   - payload 中包含完整的分析结果\n\n"
+            "步骤 4：调用 round_end 结束\n\n"
+            "**注意：**\n"
+            "   - 如果 ThinkingGraph 中没有新闻数据，不要进行分析，直接报告问题\n"
+            "   - 保持客观，标注信息来源的不确定性"
         ),
         share_thinking_tools=True,
         share_graph_tools=False,
-        max_concurrent_tools=1,
+        max_concurrent_tools=2,
     )
 
     # Agent 3: Summarizer – produces final digest
     swarm.add_agent(
         "summarizer",
         system_prompt=(
-            "你是新闻摘要专家。你的任务：\n"
-            "1. 综合采集和分析阶段的所有输出。\n"
-            "2. 从思考图谱中提取关键洞察。\n"
-            "3. 生成一份最终新闻摘要，包含：\n"
-            "   - 主题总览（1-2句话）\n"
-            "   - 主要文章摘要（每篇 2-3 句话）\n"
-            "   - 关键趋势和洞察\n"
-            "   - 信息来源标注\n\n"
-            "输出使用 Markdown 格式，清晰易读。"
+            "你是新闻摘要专家。你的任务是综合 Fetcher 和 Analyzer 的工作成果，生成最终报告。\n\n"
+            "**执行步骤：**\n\n"
+            "步骤 1：使用 thinking_graph_get_full_graph 获取完整思考图谱\n"
+            "   - 查看所有节点类型：EVIDENCE（原始新闻）、CLAIM/SUMMARY（分析结果）\n"
+            "   - 理解节点之间的关系（通过 edges）\n\n"
+            "步骤 2：从图谱中提取关键信息\n"
+            "   - 最重要的发现和趋势\n"
+            "   - 各方观点和立场\n"
+            "   - 存在的争议或不确定性\n\n"
+            "步骤 3：生成结构化的最终摘要（Markdown 格式）\n"
+            "   ```\n"
+            "   # [主题] 新闻摘要\n"
+            "   \n"
+            "   ## 📌 总览\n"
+            "   [1-2句话概括核心内容]\n"
+            "   \n"
+            "   ## 📰 主要新闻\n"
+            "   ### 1. [标题]\n"
+            "   - **来源**: [来源名称/URL]\n"
+            "   - **要点**: [2-3句话摘要]\n"
+            "   - **分析**: [相关性、关键观点等]\n"
+            "   \n"
+            "   ## 🔍 关键洞察\n"
+            "   - [洞察点1]\n"
+            "   - [洞察点2]\n"
+            "   \n"
+            "   ## ⚠️ 注意事项\n"
+            "   - [偏见/冲突/不确定性说明]\n"
+            "   \n"
+            "   ## 📚 信息来源\n"
+            "   - [列出所有参考的新闻来源]\n"
+            "   ```\n\n"
+            "步骤 4：输出最终摘要并调用 round_end\n\n"
+            "**质量要求：**\n"
+            "   - 内容准确，基于 ThinkingGraph 中的实际数据\n"
+            "   - 结构清晰，易于阅读\n"
+            "   - 标注信息来源，保持透明度"
         ),
         share_thinking_tools=True,      # reads ThinkingGraph nodes from previous agents
         share_graph_tools=False,
@@ -197,6 +251,12 @@ async def run_once(swarm: AgentSwarm, query: str) -> GraphContext:
     print(f"🔍  News Monitor: {query}")
     print(f"{'='*60}\n")
 
+    # Show available tools for debugging
+    print("📋 Available Tools:")
+    for tool_name in swarm.tool_schemas():
+        print(f"   - {tool_name}")
+    print()
+
     ctx = await swarm.run(initial_input=query, entry_node_id="input")
 
     print(f"\n{'='*60}")
@@ -205,19 +265,39 @@ async def run_once(swarm: AgentSwarm, query: str) -> GraphContext:
     print(ctx.get_output("output"))
     print()
 
-    # Optionally show ThinkingGraph state
+    # Show ThinkingGraph state for debugging
     tg = await swarm.thinking_graph.get_full_graph()
     nodes = tg.get("nodes", [])
     edges = tg.get("edges", [])
     if nodes:
-        print(f"[ThinkingGraph: {len(nodes)} nodes, {len(edges)} edges]")
+        print(f"\n[ThinkingGraph Summary]")
+        print(f"   Total Nodes: {len(nodes)}")
+        print(f"   Total Edges: {len(edges)}")
+        
+        # Show node types distribution
+        from collections import Counter
+        node_types = Counter(node.get("node_type", "unknown") for node in nodes)
+        print(f"   Node Types: {dict(node_types)}")
+        
+        # Show first few nodes as sample
+        print(f"\n   Sample Nodes (first 3):")
+        for i, node in enumerate(nodes[:3]):
+            print(f"     [{i+1}] Type: {node.get('node_type')}")
+            print(f"         Info: {node.get('info', '')[:100]}...")
+    else:
+        print("\n⚠️  Warning: ThinkingGraph is empty! This indicates the fetcher didn't collect any data.")
+    
     return ctx
 
 
 async def main(query: str | None = None) -> None:
     # ── Bootstrap ──────────────────────────────────────────────────────
-    backend = get_backend()
-    fetcher = LLMFetcher(backends=[backend])
+    fetcher = LLMFetcher(
+            api_url="https://api.deepseek.com",
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            model="deepseek-v4-flash",
+            timeout=120.0
+        )
 
     swarm = build_news_monitor_swarm(fetcher)
 

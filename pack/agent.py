@@ -35,8 +35,19 @@ class Agent:
         tools: OptionalToolList = None,
         max_concurrent_tools: int = 1,
         fallback_order: Optional[List[str]] = None,
+        provider: str = "custom_json",  # ← 新增：默认使用自定义 JSON
     ):
-        """初始化Agent，绑定LLM处理器、系统提示词和可选工具列表。"""
+        """初始化Agent，绑定LLM处理器、系统提示词和可选工具列表。
+        
+        Args:
+            llm_handler: LLM fetcher instance
+            system_prompt: Base system prompt
+            tools: Initial tools to register
+            max_concurrent_tools: Max parallel tool executions
+            fallback_order: Backend fallback order
+            provider: LLM provider for tool calling. 
+                     Options: "openai", "anthropic", "custom_json"
+        """
         self._base_system_prompt: str = system_prompt
         self.memory_list: List[str] = []
         self.llm_handler = llm_handler
@@ -45,6 +56,7 @@ class Agent:
         self.tool_registry = ToolRegistry()
         self.max_concurrent_tools = max_concurrent_tools
         self.fallback_order = fallback_order
+        self.provider = provider  # ← 保存 provider 设置
 
         # 注册内嵌工具（round_end 等），供 LLM 控制轮次生命周期
         self._register_builtin_tools()
@@ -63,9 +75,9 @@ class Agent:
     def system_prompt(self) -> str:
         """Dynamic system prompt enriched with tool descriptions."""
         prompt: str = self._base_system_prompt
-        hint: Optional[str] = self.tool_registry.get_prompt_hint()
+        hint: Optional[str] = self.tool_registry.get_prompt_hint()  # 获取所有工具提示。
         if hint:
-            prompt = f"{prompt}\n{hint}"
+            prompt = f"{prompt}\n{hint}"    # 拼接提示，随后返回数据。
         return prompt
 
     def update_system_prompt(self, new_prompt: str) -> None:
@@ -96,6 +108,7 @@ class Agent:
         - 保留每轮 content：assistant 的原始回复与工具 JSON 都会保留。
         - round_end：LLM 可通过 JSON tool call 主动结束本轮。
         - 并行执行：当 max_concurrent_tools > 1 时，同一轮内的多个工具调用会并发执行。
+        - 支持多种 LLM provider（OpenAI, Anthropic, custom JSON）
 
         Args:
             msg: 本 agent 的本次输入。
@@ -110,34 +123,68 @@ class Agent:
         messages: Messages = await self._build_round_messages(msg)
         final_content: str = ""
         last_turn_content: str = ""
+        
+        # 🔑 获取 provider-specific tool schemas
+        tool_schemas = self.tool_registry.get_schemas_for_provider(self.provider)
 
         turn: int
         for turn in range(1, max_turns + 1):
             if verbose_info:
                 print(f"\n[Agent] ====== 执行第 {turn} 轮 ======")
+                print(f"[Agent] Provider: {self.provider}")
+                print(f"[Agent] Tool schemas count: {len(tool_schemas)}")
 
             # ---- 调用 LLM ----
             response: ChatCompletion = await self.llm_handler.fetch(
                 msg="",
                 system_prompt=None,
                 prev_messages=messages,
-                tools=None,
+                tools=tool_schemas if tool_schemas else None,  # 🔑 传递 schemas
                 fallback_order=self.fallback_order,
             )
-            # 解析消息内容
-            message: ChatCompletionMessage = response.choices[0].message
-            content: str = message.content or ""
-            last_turn_content = content
-            tool_calls: List[Dict[str, Any]] = self._parse_json_tool_calls(content)
+            
+            # 🔑 解析工具调用（根据 provider 使用不同的解析方式）
+            from .tool_call_adapter import normalize_tool_calls, ToolCallSource
+            
+            if self.provider == "openai":
+                normalized_calls = normalize_tool_calls(
+                    response, 
+                    source=ToolCallSource.OPENAI_NATIVE
+                )
+            elif self.provider == "anthropic":
+                normalized_calls = normalize_tool_calls(
+                    response,
+                    source=ToolCallSource.ANTHROPIC
+                )
+            else:
+                # Fallback to custom JSON parsing
+                message: ChatCompletionMessage = response.choices[0].message
+                content: str = message.content or ""
+                normalized_calls = normalize_tool_calls(
+                    response,
+                    source=ToolCallSource.CUSTOM_JSON,
+                    fallback_parser=self._parse_json_tool_calls
+                )
+            
+            # Convert to legacy format for backward compatibility
+            tool_calls: List[Dict[str, Any]] = [
+                tc.to_execution_format() for tc in normalized_calls
+            ]
+            
+            # Extract content for display
+            if hasattr(response, 'choices'):
+                message = response.choices[0].message
+                content = message.content or ""
+                last_turn_content = content
 
             if verbose_info:
-                print(f"[Agent] content={content[:120]!r}... | json_tool_calls={'有' if tool_calls else '无'}")
-
-            # ---- 情况 A：无工具调用，说明 LLM 已给出最终回复 ----
-            if not tool_calls:
-                break
-
-            # ---- 情况 B：有 JSON 工具调用，执行工具并继续下一轮 ----
+                print(f"[Agent] Provider: {self.provider}")
+                print(f"[Agent] Tool calls count: {len(tool_calls)}")
+                if tool_calls:
+                    for tc in tool_calls:
+                        print(f"  - {tc['tool']}: {tc['arguments']}")
+                
+            # 如果有工具调用，则执行工具并继续下一轮
             messages.append(self._format_assistant_message(content))
 
             has_round_end: bool = False
@@ -289,12 +336,12 @@ class Agent:
 
     async def _build_round_messages(self, msg: str) -> Messages:
         """构建本轮的初始消息列表（system + 历史 + user msg）。"""
-        prev: Messages = await self.llm_context_hanlder.get_now_context()
+        prev: Messages = await self.llm_context_hanlder.get_now_context()   # 获取当前上下文
         messages: Messages = []
-        if self.system_prompt:
+        if self.system_prompt:  # 加入系统提示
             messages.append({"role": "system", "content": self.system_prompt})
-        messages.extend(prev)
-        messages.append({"role": "user", "content": msg})
+        messages.extend(prev)   # 加入上一轮信息
+        messages.append({"role": "user", "content": msg})   # 加入东西
         return messages
 
     def _format_assistant_message(self, content: str) -> AssistantMessageDict:
@@ -314,7 +361,10 @@ class Agent:
         return json.dumps(payload, ensure_ascii=False)
 
     async def _execute_single_tool(self, tool_call: Dict[str, Any], verbose: bool) -> str:
-        """Execute a single JSON tool-call object and return the result string."""
+        """        
+        工具执行结果需要直接返回。
+
+        """
         tool_name: str = str(tool_call["tool"])
         args: ToolArgs = dict(tool_call.get("arguments") or {})
 

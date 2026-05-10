@@ -96,6 +96,7 @@ class LLMFetcher:
         self.backends: Dict[str, LLMBackendConfig] = {}
         self.backend_order: List[str] = []
         self.openai_clients: Dict[str, Any] = {}
+        self.anthropic_clients: Dict[str, Any] = {}  # ← 新增：Anthropic 客户端字典
 
         if backends:
             for backend in backends:
@@ -136,6 +137,7 @@ class LLMFetcher:
             raise ValueError(f"Duplicate backend name: {backend.name}")
         self.backends[backend.name] = backend
         self.backend_order.append(backend.name)
+        
         if backend.provider == "openai":
             try:
                 from openai import OpenAI
@@ -145,6 +147,16 @@ class LLMFetcher:
                 api_key=backend.api_key,
                 base_url=backend.api_url,
                 max_retries=backend.max_retries,
+            )
+        
+        elif backend.provider == "anthropic":
+            try:
+                import anthropic
+            except ImportError as exc:  # pragma: no cover - depends on optional package
+                raise ValueError("anthropic provider requires the 'anthropic' package to be installed.") from exc
+            self.anthropic_clients[backend.name] = anthropic.Anthropic(
+                api_key=backend.api_key,
+                timeout=backend.timeout,
             )
 
     def _resolve_backends(
@@ -208,6 +220,112 @@ class LLMFetcher:
         messages.append({"role": "user", "content": msg})
         return messages
 
+    def _convert_to_anthropic_messages(
+        self,
+        messages: List[Dict[str, str]]
+    ) -> List[Dict[str, Any]]:
+        """Convert OpenAI-style messages to Anthropic format.
+        
+        Anthropic has some key differences:
+        - No "system" role (use system parameter instead)
+        - Tool results use different format
+        - Content can be mixed (text + tool_use/tool_result)
+        
+        Args:
+            messages: OpenAI-format message list
+            
+        Returns:
+            Anthropic-format message list
+        """
+        anthropic_messages = []
+        system_message = None
+        
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            
+            if role == "system":
+                # Anthropic doesn't have system role in messages
+                # Store it separately (will be passed as system parameter)
+                system_message = content
+                continue
+            
+            elif role == "tool":
+                # Convert tool result to Anthropic format
+                tool_call_id = msg.get("tool_call_id", "")
+                anthropic_messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": content
+                        }
+                    ]
+                })
+            
+            else:
+                # user or assistant messages
+                anthropic_messages.append({
+                    "role": role,
+                    "content": content
+                })
+        
+        # Store system message in a way that can be retrieved
+        # Note: This is a simplification. For proper system prompt support,
+        # you may need to modify the fetch() method signature
+        if system_message:
+            # Prepend system message as first user message with special marker
+            # Or better: modify the calling code to handle this
+            pass
+        
+        return anthropic_messages
+
+    def _convert_to_anthropic_tools(
+        self,
+        tools: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Convert OpenAI-style tool schemas to Anthropic format.
+        
+        OpenAI format:
+        {
+            "type": "function",
+            "function": {
+                "name": "...",
+                "description": "...",
+                "parameters": {...}
+            }
+        }
+        
+        Anthropic format:
+        {
+            "name": "...",
+            "description": "...",
+            "input_schema": {...}
+        }
+        
+        Args:
+            tools: OpenAI-format tool schemas
+            
+        Returns:
+            Anthropic-format tool schemas
+        """
+        anthropic_tools = []
+        
+        for tool in tools:
+            if tool.get("type") == "function":
+                func = tool.get("function", {})
+                anthropic_tools.append({
+                    "name": func.get("name", ""),
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {})
+                })
+            else:
+                # Already in Anthropic format or unknown format
+                anthropic_tools.append(tool)
+        
+        return anthropic_tools
+
     def _create_completion(
         self,
         backend: LLMBackendConfig,
@@ -226,7 +344,7 @@ class LLMFetcher:
             temperature: 采样温度。
             max_tokens: 最大输出 token 数。
             stream: 是否启用流式返回。
-            tools: 可选的 OpenAI tools schema 列表。
+            tools: 可选的工具 schema 列表（OpenAI 或 Anthropic 格式）。
 
         Returns:
             后端 SDK 返回的原始响应对象或流式迭代器。
@@ -250,6 +368,30 @@ class LLMFetcher:
                 kwargs["tool_choice"] = "auto"
             kwargs.update(backend.extra)
             return client.chat.completions.create(**kwargs)
+
+        elif backend.provider == "anthropic":
+            client = self.anthropic_clients[backend.name]
+            
+            # Anthropic 使用不同的消息格式和参数
+            # 需要将 OpenAI 格式的消息转换为 Anthropic 格式
+            anthropic_messages = self._convert_to_anthropic_messages(messages)
+            
+            kwargs: Dict[str, Any] = {
+                "model": backend.model,
+                "messages": anthropic_messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": stream,
+            }
+            
+            # Anthropic 的工具格式不同
+            if tools:
+                # 转换工具 schema 为 Anthropic 格式
+                anthropic_tools = self._convert_to_anthropic_tools(tools)
+                kwargs["tools"] = anthropic_tools
+            
+            kwargs.update(backend.extra)
+            return client.messages.create(**kwargs)
 
         if backend.provider == "litellm":
             try:
