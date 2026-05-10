@@ -1,15 +1,18 @@
 """Obscura Tool —— 将 headless browser CLI 封装为 Agent 可调用的 Tool.
 
 提供两种使用模式：
-1. CLI 模式：直接调用 /home/luna/Documents/codes/rust/obscura/target/release/obscura fetch
+1. CLI 模式：调用 obscura fetch 命令（需要 obscura 在 PATH 中）
 2. CDP 模式：连接已启动的 obscura serve 服务（需先启动 serve）
 
 当前实现以 CLI 模式为主，CDP 模式预留接口。
+
+注意：使用前请确保 obscura 可执行文件已在系统 PATH 中，或通过 OBSCURA_BIN 环境变量指定路径。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +22,11 @@ from ..tool import Tool
 # ---------------------------------------------------------------------------
 # CLI 模式
 # ---------------------------------------------------------------------------
+
+def _get_obscura_bin() -> str:
+    """Get obscura binary path from environment or default to 'obscura' in PATH."""
+    return os.environ.get("OBSCURA_BIN", "obscura")
+
 
 async def _obscura_fetch_cli(**kwargs: Any) -> Dict[str, Any]:
     """Execute obscura fetch via CLI.
@@ -40,8 +48,9 @@ async def _obscura_fetch_cli(**kwargs: Any) -> Dict[str, Any]:
     stealth = kwargs.get("stealth", False)
     eval_js = kwargs.get("eval_js", "")
 
+    obscura_bin = _get_obscura_bin()
     cmd_parts = [
-        "obscura",
+        obscura_bin,
         "fetch",
         f"'{url}'",
         "--dump", str(mode),
@@ -63,7 +72,6 @@ async def _obscura_fetch_cli(**kwargs: Any) -> Dict[str, Any]:
         shell=True,
         capture_output=True,
         text=True,
-        cwd="/home/luna/Documents/codes/rust/obscura/target/release",
         timeout=wait + 15,  # hard ceiling
     )
 
@@ -88,8 +96,9 @@ async def _obscura_scrape_cli(**kwargs: Any) -> Dict[str, Any]:
     timeout = kwargs.get("timeout", 30)
     eval_js = kwargs.get("eval_js", "")
 
+    obscura_bin = _get_obscura_bin()
     cmd_parts = [
-        "obscura",
+        obscura_bin,
         "scrape",
         "--concurrency", str(concurrency),
         "--timeout", str(timeout),
@@ -107,7 +116,6 @@ async def _obscura_scrape_cli(**kwargs: Any) -> Dict[str, Any]:
         shell=True,
         capture_output=True,
         text=True,
-        cwd="/home/luna/Documents/codes/rust/obscura/target/release",
         timeout=timeout + 15,
     )
 

@@ -3,7 +3,7 @@ News Monitoring Agent Swarm
 ===========================
 
 A multi-agent pipeline that:
-  1. Fetches news articles/topics via shell (curl) or direct input
+  1. Fetches news articles/topics via web scraping tools
   2. Analyzes content for relevance and key information
   3. Produces a final structured summary
 
@@ -11,7 +11,7 @@ Usage:
   python main.py "artificial intelligence breakthroughs 2025"
   python main.py   (prompts interactively)
 
-Requires: OPENAI_API_KEY environment variable.
+Requires: DEEPSEEK_API_KEY environment variable.
 """
 
 import asyncio
@@ -69,9 +69,10 @@ def get_backend() -> LLMBackendConfig:
     if api_key:
         return LLMBackendConfig(
             name="deepseek",
-            provider="deepseek",
-            model="gpt-4o-mini",      # fast & cheap; change to gpt-4o for heavier reasoning
+            provider="anthropic",  # DeepSeek uses Anthropic-compatible format
+            model="deepseek-chat",
             api_key=api_key,
+            api_url="https://api.deepseek.com/anthropic",
             timeout=120.0,
         )
 
@@ -83,7 +84,7 @@ def get_backend() -> LLMBackendConfig:
         return LLMBackendConfig(**cfg)
 
     raise RuntimeError(
-        "No LLM backend configured. Set OPENAI_API_KEY or LLM_BACKEND_CONFIG."
+        "No LLM backend configured. Set DEEPSEEK_API_KEY or LLM_BACKEND_CONFIG."
     )
 
 
@@ -108,23 +109,28 @@ def build_news_monitor_swarm(fetcher: LLMFetcher) -> AgentSwarm:
     )
 
     # ── Register global tools ──────────────────────────────────────────
-    # All agents get the shell tool for web fetching
-    shell_tools = create_shell_tools()
+    # All agents get the shell tool for web fetching (with security restrictions)
+    shell_tools = create_shell_tools(
+        allowed_commands=["ls", "cat", "grep", "find", "pwd", "curl", "wget"],
+        max_timeout=60.0,
+        sandbox_cwd=os.getcwd(),  # Restrict to current directory
+    )
     swarm.add_tools(shell_tools)  # "shell" tool added globally
 
     # ── Build DAG nodes ────────────────────────────────────────────────
     swarm.add_input("input")
 
-    # Agent 1: News Fetcher – uses shell + thinking graph to retrieve articles
+    # Agent 1: News Fetcher – uses web scraping tools to retrieve articles
     swarm.add_agent(
         "fetcher",
         system_prompt=(
             "你是新闻采集专家。你的任务是获取关于用户查询主题的最新新闻。\n\n"
             "**重要：你必须严格按照以下步骤执行，不得跳过：**\n\n"
-            "步骤 1（必须首先执行）：使用 obscura 工具搜索并获取新闻内容\n"
-            "   - 调用 obscura_fetch 或 obscura_search 工具\n"
+            "步骤 1（必须首先执行）：使用 web_fetch 或 web_scrape 工具搜索并获取新闻内容\n"
+            "   - 调用 web_fetch 工具获取单个网页\n"
+            "   - 或调用 web_scrape 工具批量获取多个URL\n"
             "   - 搜索关键词应基于用户的查询主题\n"
-            "   - 例如：用户问'百度文心一言最新模型'，你应该搜索相关新闻\n\n"
+            "   - 例如：用户问'百度文心一言最新模型'，你应该搜索相关新闻网站\n\n"
             "步骤 2：将获取到的新闻内容整理成结构化格式\n"
             "   - 提取：标题、来源URL、摘要/关键内容\n"
             "   - 至少获取 3-5 条相关新闻\n\n"

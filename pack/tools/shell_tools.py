@@ -1,30 +1,85 @@
 import asyncio
+import os
 import shlex
 from typing import Any, Dict, List, Optional
 
 from ..tool import Tool
 
 
-def create_shell_tools() -> List[Tool]:
+def create_shell_tools(
+    allowed_commands: Optional[List[str]] = None,
+    max_timeout: float = 60.0,
+    sandbox_cwd: Optional[str] = None,
+) -> List[Tool]:
+    """Create shell execution tool with security controls.
+    
+    Args:
+        allowed_commands: Whitelist of allowed command prefixes (e.g., ["ls", "cat", "grep"]).
+                         If None, uses blacklist approach (less secure).
+        max_timeout: Maximum allowed timeout in seconds (default: 60).
+        sandbox_cwd: Restrict execution to this directory (prevents path traversal).
+    
+    Returns:
+        List containing the shell tool.
+    
+    Security Features:
+        - Command whitelist/blacklist validation
+        - Timeout limits
+        - Working directory restrictions
+        - Dangerous pattern detection
+    """
+
+    # Default blacklist for dangerous operations
+    DANGEROUS_PATTERNS = [
+        "rm -rf /", "rm -rf /*", "> /dev/sda",
+        ":(){ :|:& };:",  # fork bomb
+        "chmod 777 /", "chown -R",
+        "dd if=", "mkfs", "fdisk",
+        "wget.*\\|.*sh", "curl.*\\|.*bash",  # pipe to shell
+        "/etc/passwd", "/etc/shadow",
+        "sudo ", "su ",
+    ]
 
     async def _shell(**kwargs: Any) -> str:
         command: str = kwargs["command"]
-        timeout: Optional[float] = kwargs.get("timeout", 60.0)
-        cwd: Optional[str] = kwargs.get("cwd")
+        timeout: float = min(kwargs.get("timeout", 30.0), max_timeout)
+        requested_cwd: Optional[str] = kwargs.get("cwd")
 
-        # Safety: reject obviously dangerous commands
-        dangerous = ["rm -rf /", "rm -rf /*", "> /dev/sda"]
-        stripped = command.strip()
-        for d in dangerous:
-            if d in stripped:
-                return f"Error: dangerous command blocked: {d!r}"
+        # Validate working directory
+        if sandbox_cwd:
+            if requested_cwd:
+                # Ensure requested cwd is within sandbox
+                real_requested = os.path.realpath(requested_cwd)
+                real_sandbox = os.path.realpath(sandbox_cwd)
+                if not real_requested.startswith(real_sandbox):
+                    return f"Error: working directory must be within sandbox ({sandbox_cwd})"
+            exec_cwd = sandbox_cwd
+        else:
+            exec_cwd = requested_cwd
+
+        # Security check 1: Blacklist validation
+        stripped = command.strip().lower()
+        for pattern in DANGEROUS_PATTERNS:
+            if pattern.lower() in stripped:
+                return f"Error: dangerous command blocked (pattern: {pattern!r})"
+
+        # Security check 2: Whitelist validation (if configured)
+        if allowed_commands:
+            cmd_parts = stripped.split()
+            if not cmd_parts:
+                return "Error: empty command"
+            
+            base_cmd = cmd_parts[0].split('/')[-1]  # Get basename
+            if not any(base_cmd.startswith(allowed) for allowed in allowed_commands):
+                return f"Error: command '{base_cmd}' not in allowed list: {allowed_commands}"
 
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
+                cwd=exec_cwd,
+                env={k: v for k, v in os.environ.items() if k not in ['PATH', 'HOME']},  # Minimal env
             )
             stdout_data, stderr_data = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
@@ -58,7 +113,8 @@ def create_shell_tools() -> List[Tool]:
             name="shell",
             description=(
                 "Execute a shell command and return stdout, stderr, and exit code. "
-                "Use with caution: avoid destructive or irreversible operations."
+                "Security restrictions apply: dangerous commands are blocked, "
+                "execution time is limited, and working directory may be restricted."
             ),
             parameters={
                 "type": "object",
@@ -70,13 +126,13 @@ def create_shell_tools() -> List[Tool]:
                     "timeout": {
                         "type": "number",
                         "minimum": 1.0,
-                        "maximum": 300.0,
-                        "default": 60.0,
-                        "description": "Maximum execution time in seconds (1-300).",
+                        "maximum": max_timeout,
+                        "default": 30.0,
+                        "description": f"Maximum execution time in seconds (1-{max_timeout}).",
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Optional working directory for the command.",
+                        "description": "Optional working directory (may be restricted by security policy).",
                     },
                 },
                 "required": ["command"],

@@ -1,6 +1,6 @@
 # LLM Fetcher - Multi-Agent Orchestration Framework
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A powerful Python framework for building, orchestrating, and executing LLM-powered multi-agent systems with structured reasoning capabilities.
@@ -10,9 +10,9 @@ A powerful Python framework for building, orchestrating, and executing LLM-power
 - **🤖 Single & Multi-Agent Support**: Build individual agents or coordinate swarms of specialized agents
 - **🧠 Structured Reasoning**: Thinking Graph system enables step-by-step cognitive processes with 15+ node types
 - **🔗 DAG-Based Execution**: Execution graphs for complex workflow orchestration and dependency management
-- **🛠️ Extensible Tool System**: Modular architecture supporting shell commands, graph operations, and custom tools
+- **🛠️ Extensible Tool System**: Modular architecture supporting shell commands, web scraping, and custom tools
 - **⚡ Async-Native**: Full asyncio support with configurable concurrency controls
-- **🔄 Multiple LLM Backends**: Flexible backend configuration supporting OpenAI and other providers
+- **🔄 Multiple LLM Backends**: Flexible backend configuration supporting OpenAI, Anthropic, DeepSeek, and other providers
 - **💾 State Persistence**: Checkpoint/resume functionality for long-running tasks
 - **📊 Rich Observability**: Track agent decisions through ThinkingGraph transaction records
 
@@ -32,21 +32,22 @@ A powerful Python framework for building, orchestrating, and executing LLM-power
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.10 or higher
 - pip package manager
 
 ### Install from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/llmfetcher.git
+git clone https://github.com/lunablade/llmfetcher.git
 cd llmfetcher
 
-# Install dependencies
-pip install openai>=1.0.0
+# Create virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Optional: Install development dependencies
-pip install pytest pytest-asyncio
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 ### Environment Setup
@@ -292,7 +293,7 @@ Modular functions agents can invoke. Built-in tools include:
 Create custom tools:
 
 ```python
-from pack import Tool, ToolParam
+from pack import Tool
 
 async def my_custom_tool(param1: str, param2: int = 10) -> str:
     """Custom tool description."""
@@ -301,11 +302,15 @@ async def my_custom_tool(param1: str, param2: int = 10) -> str:
 tool = Tool(
     name="custom_tool",
     description="My custom functionality",
-    parameters=[
-        ToolParam(name="param1", type="string", required=True),
-        ToolParam(name="param2", type="integer", required=False)
-    ],
-    function=my_custom_tool
+    parameters={
+        "type": "object",
+        "properties": {
+            "param1": {"type": "string"},
+            "param2": {"type": "integer"}
+        },
+        "required": ["param1"]
+    },
+    handler=my_custom_tool
 )
 
 agent.add_tool(tool)
@@ -471,9 +476,9 @@ asyncio.run(parallel_pipeline())
 
 ### Example 3: Custom Tool Integration
 
-```python
+``python
 import asyncio
-from pack import Agent, LLMFetcher, LLMBackendConfig, Tool, ToolParam
+from pack import Agent, LLMFetcher, LLMBackendConfig, Tool
 
 # Define custom tool
 async def web_search(query: str, max_results: int = 5) -> str:
@@ -510,20 +515,28 @@ async def main():
     search_tool = Tool(
         name="web_search",
         description="Search the web for current information",
-        parameters=[
-            ToolParam(name="query", type="string", required=True, description="Search query"),
-            ToolParam(name="max_results", type="integer", required=False, description="Max results to return")
-        ],
-        function=web_search
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {"type": "integer", "description": "Max results to return"}
+            },
+            "required": ["query"]
+        },
+        handler=web_search
     )
     
     calc_tool = Tool(
         name="calculate",
         description="Perform mathematical calculations",
-        parameters=[
-            ToolParam(name="expression", type="string", required=True, description="Math expression")
-        ],
-        function=calculate
+        parameters={
+            "type": "object",
+            "properties": {
+                "expression": {"type": "string", "description": "Math expression"}
+            },
+            "required": ["expression"]
+        },
+        handler=calculate
     )
     
     agent.add_tool(search_tool)
@@ -743,8 +756,14 @@ async def my_tool(param: str) -> str:
 tool = Tool(
     name="my_tool",
     description="Clear description",
-    parameters=[ToolParam(...)],
-    function=my_tool
+    parameters={
+        "type": "object",
+        "properties": {
+            "param": {"type": "string"}
+        },
+        "required": ["param"]
+    },
+    handler=my_tool
 )
 ```
 
