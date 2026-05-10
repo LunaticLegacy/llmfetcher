@@ -52,6 +52,8 @@ include = ["pack*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["pack/tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
 
 [tool.black]
 line-length = 100

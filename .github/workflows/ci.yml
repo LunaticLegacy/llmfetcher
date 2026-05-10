@@ -34,6 +34,7 @@ jobs:
       env:
         # Provide dummy API key for tests that don't actually call APIs
         DEEPSEEK_API_KEY: "sk-test-dummy-key"
+        PYTHONPATH: ${{ github.workspace }}
 
   lint:
     runs-on: ubuntu-latest

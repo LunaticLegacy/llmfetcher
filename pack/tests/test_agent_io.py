@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from modules.llm_fetcher.agent_io import AgentFileIOManager
+from pack.agent_io import AgentFileIOManager
 
 
 def _write_agent_package(root: Path) -> Path:
