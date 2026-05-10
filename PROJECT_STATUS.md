@@ -176,8 +176,8 @@ This project welcomes contributions! Here's how you can help:
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/lunablade/llmfetcher/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/lunablade/llmfetcher/discussions)
+- **Issues**: [GitHub Issues](https://github.com/LunaticLegacy/llmfetcher/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/LunaticLegacy/llmfetcher/discussions)
 - **Email**: luna@example.com
 
 ---

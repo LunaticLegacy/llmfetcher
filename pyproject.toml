@@ -41,9 +41,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/lunablade/llmfetcher"
-Repository = "https://github.com/lunablade/llmfetcher"
-"Bug Tracker" = "https://github.com/lunablade/llmfetcher/issues"
+Homepage = "https://github.com/LunaticLegacy/llmfetcher"
+Repository = "https://github.com/LunaticLegacy/llmfetcher"
+"Bug Tracker" = "https://github.com/LunaticLegacy/llmfetcher/issues"
 
 [tool.setuptools.packages.find]
 include = ["pack*"]

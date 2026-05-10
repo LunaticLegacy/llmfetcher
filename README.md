@@ -39,14 +39,14 @@ pip install llmfetcher
 ### Method 2: Install from GitHub
 
 ```bash
-pip install git+https://github.com/lunablade/llmfetcher.git
+pip install git+https://github.com/LunaticLegacy/llmfetcher.git
 ```
 
 ### Method 3: Install from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/lunablade/llmfetcher.git
+git clone https://github.com/LunaticLegacy/llmfetcher.git
 cd llmfetcher
 
 # Create virtual environment (recommended)
@@ -821,9 +821,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 For issues, questions, or contributions:
 
-- 📧 Email: [your-email@example.com]
-- 🐛 Issues: [GitHub Issues](https://github.com/yourusername/llmfetcher/issues)
-- 💬 Discussions: [GitHub Discussions](https://github.com/yourusername/llmfetcher/discussions)
+- 📧 Email: [lunaticlegagcy@163.com]
+- 🐛 Issues: [GitHub Issues](https://github.com/LunaticLegacy/llmfetcher/issues)
+- 💬 Discussions: [GitHub Discussions](https://github.com/LunaticLegacy/llmfetcher/discussions)
 
 ---
 

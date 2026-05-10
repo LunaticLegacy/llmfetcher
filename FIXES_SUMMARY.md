@@ -8,7 +8,7 @@ This document summarizes all critical issues identified and fixed based on thoro
 
 ### 1. ✅ README Placeholder Content
 **Problem**: README contained placeholder URLs (`yourusername`, `your-email@example.com`)  
-**Fix**: Updated to actual repository URL (`lunablade/llmfetcher`) and correct installation instructions  
+**Fix**: Updated to actual repository URL (`LunaticLegacy/llmfetcher`) and correct installation instructions  
 **Files Modified**: `README.md`
 
 ### 2. ✅ Incorrect API Examples in Documentation

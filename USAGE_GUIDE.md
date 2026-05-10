@@ -10,7 +10,7 @@ pip install llmfetcher
 ### Option 2: Install from source
 ```bash
 # Clone the repository
-git clone https://github.com/lunablade/llmfetcher.git
+git clone https://github.com/LunaticLegacy/llmfetcher.git
 cd llmfetcher
 
 # Install in development mode
@@ -206,51 +206,39 @@ full_graph = await graph.get_full_graph()
 
 ## API Reference
 
-### Core Classes
+### Complete Export List
 
-#### `LLMFetcher`
-Main interface for calling LLM APIs.
+The `pack` package exports **44 public symbols** organized by category:
 
-```python
-fetcher = LLMFetcher(
-    backends=[LLMBackendConfig(...)],
-    default_backend="deepseek"
-)
-```
+#### Core Classes (9)
+- `LLMFetcher`, `LLMBackendConfig`, `LLMError`, `LLMTimeoutError`, `LLMBackendError`
+- `Agent`, `Tool`, `ToolRegistry`
 
-#### `Agent`
-Single agent with tool calling capability.
+#### Thinking Graph (6)
+- `ThinkingGraph`, `ThinkingNodeType`, `ThinkingEdgeType`
+- `ThinkingGraphNode`, `ThinkingGraphEdge`, `ThinkingGraphTransactionRecord`
 
-```python
-agent = Agent(
-    llm_handler=fetcher,
-    system_prompt="...",
-    provider="anthropic",
-    tools=[...],
-    max_turns=10
-)
-```
+#### Context Management (4)
+- `LLMContextHandler`, `LLMContext`, `LLMContextPair`, `LLMContextCompressed`
 
-#### `Tool`
-Custom tool definition.
+#### Swarm Orchestration (15)
+- `AgentSwarm`, `SwarmSpec`, `GraphContext`, `ExecutionGraph`
+- `Edge`, `ExecutionStopState`
+- Execution Nodes: `ExecutionNode`, `AgentNode`, `ToolNode`, `RouterNode`, `InputNode`, `OutputNode`, `JoinNode`
 
-```python
-tool = Tool(
-    name="tool_name",
-    description="What this tool does",
-    parameters={...},  # JSON Schema
-    handler=async_function
-)
-```
+#### Runtime Slots (3)
+- `RuntimeSlot`, `RuntimeSlotManager`, `SlotStatus`
 
-#### `AgentSwarm`
-Multi-agent orchestration.
+#### Tool Factories (2)
+- `create_shell_tools`, `create_builtin_tools`
 
-```python
-swarm = AgentSwarm(llm_fetcher=fetcher, name="swarm-name")
-swarm.add_agent(...)
-swarm.connect(...)
-```
+#### Agent I/O (4)
+- `AgentFileIOManager`, `AgentWorkspacePolicy`, `AgentFileLocations`, `AgentFileSnapshot`
+
+#### Submodules (2)
+- `tool_modules`, `swarm_modules`
+
+For detailed documentation on each symbol, see [PUBLIC_API.md](PUBLIC_API.md).
 
 ---
 
