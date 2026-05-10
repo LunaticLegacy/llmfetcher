@@ -30,12 +30,19 @@ A powerful Python framework for building, orchestrating, and executing LLM-power
 
 ## 🚀 Installation
 
-### Prerequisites
+### Method 1: Install from PyPI (Recommended - when published)
 
-- Python 3.10 or higher
-- pip package manager
+```bash
+pip install llmfetcher
+```
 
-### Install from Source
+### Method 2: Install from GitHub
+
+```bash
+pip install git+https://github.com/lunablade/llmfetcher.git
+```
+
+### Method 3: Install from Source
 
 ```bash
 # Clone the repository
@@ -46,9 +53,26 @@ cd llmfetcher
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install in development mode
+pip install -e .
+
+# Or install normally
+pip install .
 ```
+
+### Verify Installation
+
+```python
+from pack import Agent, LLMFetcher, Tool
+print("✅ Installation successful!")
+```
+
+For detailed installation instructions, see [INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md).
+
+### Prerequisites
+
+- Python 3.10 or higher
+- pip package manager
 
 ### Environment Setup
 
