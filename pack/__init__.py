@@ -73,6 +73,7 @@ from .swarm.runtime_slot import (
 # ============================================================================
 from .tools.shell_tools import create_shell_tools
 from .tools.builtin_tools import create_builtin_tools
+from .tools.ctf_tools import create_ctf_tools
 
 # ============================================================================
 # Agent I/O (Optional - for advanced file operations)
@@ -145,6 +146,7 @@ __all__ = [
     # Tool factories
     "create_shell_tools",
     "create_builtin_tools",
+    "create_ctf_tools",
     
     # Agent I/O
     "AgentFileIOManager",

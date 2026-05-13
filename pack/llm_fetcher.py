@@ -225,7 +225,12 @@ class LLMFetcher:
                 if not role:
                     continue
                 messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": msg})
+        
+        # Only append user message if msg is non-empty OR there are no previous messages
+        # This prevents adding empty user messages which can confuse the LLM
+        if msg or not prev_messages:
+            messages.append({"role": "user", "content": msg})
+        
         return messages
 
     def _convert_to_anthropic_messages(

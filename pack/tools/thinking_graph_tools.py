@@ -178,6 +178,11 @@ def create_thinking_graph_tools(graph: ThinkingGraph) -> List[Tool]:
                         "default": 1.0,
                     },
                     "description": {"type": "string", "default": ""},
+                    "payload": {
+                        "type": "object",
+                        "description": "Optional structured metadata for this node.",
+                        "default": {},
+                    },
                 },
                 "required": ["node_type", "info"],
             },

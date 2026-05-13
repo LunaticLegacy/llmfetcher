@@ -75,9 +75,10 @@ class ExecutionNode(ABC):
 
 class AgentNode(ExecutionNode):
 
-    def __init__(self, node_id: str, agent: Agent):
+    def __init__(self, node_id: str, agent: Agent, max_turns: int = 3):
         super().__init__(node_id, "agent")
         self.agent = agent
+        self.max_turns = max(1, int(max_turns))
 
     async def run(self, ctx: GraphContext, inputs: List[Any]) -> str:
         if not inputs:
@@ -87,7 +88,7 @@ class AgentNode(ExecutionNode):
         else:
             parts = [f"[输入 {i + 1}]\n{str(inp)}" for i, inp in enumerate(inputs)]
             msg = "\n\n".join(parts)
-        return await self.agent.round_call(msg, stream=False, max_turns=3)
+        return await self.agent.round_call(msg, stream=False, max_turns=self.max_turns)
 
 
 class ToolNode(ExecutionNode):
@@ -331,6 +332,7 @@ class ExecutionGraph:
         self,
         agent: Agent,
         node_id: Optional[str] = None,
+        max_turns: int = 3,
     ) -> str:
         """
         加入一个智能体节点。
@@ -340,8 +342,8 @@ class ExecutionGraph:
 
         """
         nid = node_id or self._alloc_id("agent")
-        self._nodes[nid] = AgentNode(nid, agent)
-        self._bump_version("add_agent_node", node_id=nid)
+        self._nodes[nid] = AgentNode(nid, agent, max_turns=max_turns)
+        self._bump_version("add_agent_node", node_id=nid, max_turns=max_turns)
         return nid
 
     def add_tool_node(
@@ -791,6 +793,7 @@ class ExecutionGraph:
                 cfg["tool_name"] = n.tool.name
             elif isinstance(n, AgentNode):
                 cfg["agent_id"] = nid
+                cfg["max_turns"] = n.max_turns
             elif isinstance(n, OutputNode):
                 has_custom = not (
                     hasattr(n.collector, "__name__")
@@ -842,7 +845,11 @@ class ExecutionGraph:
             if ntype == "agent":
                 agent = agent_map.get(nid)
                 if agent:
-                    graph._nodes[nid] = AgentNode(nid, agent)
+                    graph._nodes[nid] = AgentNode(
+                        nid,
+                        agent,
+                        max_turns=cfg.get("max_turns", 3),
+                    )
             elif ntype == "tool":
                 tool = tool_pool.get(cfg.get("tool_name", ""))
                 if tool:
@@ -941,7 +948,11 @@ class ExecutionGraph:
         """Lightweight introspection dict (not round-trippable)."""
         return {
             "nodes": {
-                nid: {"type": n.node_type, "id": nid}
+                nid: {
+                    "type": n.node_type,
+                    "id": nid,
+                    **({"max_turns": n.max_turns} if isinstance(n, AgentNode) else {}),
+                }
                 for nid, n in self._nodes.items()
             },
             "edges": [

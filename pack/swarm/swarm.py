@@ -272,6 +272,7 @@ class AgentSwarm:
         share_graph_tools: bool = False,
         extra_tools: Optional[List[Tool]] = None,
         max_concurrent_tools: int = 1,
+        max_turns: int = 3,
         fallback_order: Optional[List[str]] = None,
     ) -> "AgentSwarm":
         """Create an Agent, register it, and add it to the execution graph.
@@ -285,6 +286,8 @@ class AgentSwarm:
             extra_tools: Alias for ``tools`` (convenience).
             max_concurrent_tools: Maximum number of tool calls to execute
                 concurrently during a single agent round (default 1).
+            max_turns: Maximum number of LLM/tool turns allowed when this
+                agent node is executed by the graph.
             fallback_order: Ordered list of backend names to try if the
                 primary LLM backend fails (e.g. ``["gpt-4o", "claude-3"]``).
         """
@@ -326,7 +329,7 @@ class AgentSwarm:
             fallback_order=fallback_order,
         )
         self._agents[node_id] = agent
-        self.execution_graph.add_agent_node(agent, node_id=node_id)
+        self.execution_graph.add_agent_node(agent, node_id=node_id, max_turns=max_turns)
         return self
 
     def remove_agent(self, node_id: str) -> None:
@@ -486,6 +489,11 @@ class AgentSwarm:
                 "system_prompt": agent._base_system_prompt,
                 "tool_names": [n for n in tool_names if n not in builtin],
                 "max_concurrent_tools": agent.max_concurrent_tools,
+                "max_turns": getattr(
+                    self.execution_graph.nodes.get(nid),
+                    "max_turns",
+                    3,
+                ),
                 "fallback_order": getattr(agent, "fallback_order", None),
             }
 
@@ -634,6 +642,11 @@ class AgentSwarm:
                 "system_prompt": agent._base_system_prompt,
                 "tool_names": [n for n in tool_names if n not in builtin],
                 "max_concurrent_tools": agent.max_concurrent_tools,
+                "max_turns": getattr(
+                    self.execution_graph.nodes.get(nid),
+                    "max_turns",
+                    3,
+                ),
                 "fallback_order": getattr(agent, "fallback_order", None),
             }
 

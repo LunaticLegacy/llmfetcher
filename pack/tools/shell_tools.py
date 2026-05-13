@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import shlex
 from typing import Any, Dict, List, Optional
 
@@ -47,13 +48,15 @@ def create_shell_tools(
 
         # Validate working directory
         if sandbox_cwd:
+            real_sandbox = os.path.realpath(sandbox_cwd)
             if requested_cwd:
                 # Ensure requested cwd is within sandbox
                 real_requested = os.path.realpath(requested_cwd)
-                real_sandbox = os.path.realpath(sandbox_cwd)
-                if not real_requested.startswith(real_sandbox):
+                if os.path.commonpath([real_sandbox, real_requested]) != real_sandbox:
                     return f"Error: working directory must be within sandbox ({sandbox_cwd})"
-            exec_cwd = sandbox_cwd
+                exec_cwd = real_requested
+            else:
+                exec_cwd = real_sandbox
         else:
             exec_cwd = requested_cwd
 
@@ -65,13 +68,26 @@ def create_shell_tools(
 
         # Security check 2: Whitelist validation (if configured)
         if allowed_commands:
-            cmd_parts = stripped.split()
-            if not cmd_parts:
+            command_segments = [
+                segment.strip()
+                for segment in re.split(r"\s*(?:&&|\|\||[|;\n])\s*", command)
+                if segment.strip()
+            ]
+            if not command_segments:
                 return "Error: empty command"
-            
-            base_cmd = cmd_parts[0].split('/')[-1]  # Get basename
-            if not any(base_cmd.startswith(allowed) for allowed in allowed_commands):
-                return f"Error: command '{base_cmd}' not in allowed list: {allowed_commands}"
+
+            for segment in command_segments:
+                try:
+                    cmd_parts = shlex.split(segment)
+                except ValueError as exc:
+                    return f"Error: invalid shell syntax: {exc}"
+                while cmd_parts and "=" in cmd_parts[0] and not cmd_parts[0].startswith("="):
+                    cmd_parts.pop(0)
+                if not cmd_parts:
+                    continue
+                base_cmd = os.path.basename(cmd_parts[0])
+                if not any(base_cmd == allowed for allowed in allowed_commands):
+                    return f"Error: command '{base_cmd}' not in allowed list: {allowed_commands}"
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -79,7 +95,11 @@ def create_shell_tools(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=exec_cwd,
-                env={k: v for k, v in os.environ.items() if k not in ['PATH', 'HOME']},  # Minimal env
+                env={
+                    key: value
+                    for key, value in os.environ.items()
+                    if key not in ["SSH_AUTH_SOCK", "GPG_AGENT_INFO"]
+                },
             )
             stdout_data, stderr_data = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout

@@ -24,6 +24,7 @@ def create_execution_graph_tools(graph: ExecutionGraph) -> List[Tool]:
         system_prompt = kwargs["system_prompt"]
         node_id = kwargs.get("node_id")
         tool_names = kwargs.get("tool_names", [])
+        max_turns = kwargs.get("max_turns", 3)
 
         if graph._llm_fetcher is None:
             return "Error: ExecutionGraph has no llm_fetcher, cannot create agent."
@@ -36,7 +37,7 @@ def create_execution_graph_tools(graph: ExecutionGraph) -> List[Tool]:
             if name in graph.tool_pool:
                 agent.add_tool(graph.tool_pool[name])
 
-        nid = graph.add_agent_node(agent, node_id=node_id)
+        nid = graph.add_agent_node(agent, node_id=node_id, max_turns=max_turns)
         return f"Agent node created: {nid}"
 
     async def _remove_node(**kwargs: Any) -> str:
@@ -135,6 +136,12 @@ def create_execution_graph_tools(graph: ExecutionGraph) -> List[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "预装工具名称列表（来自全局工具池）",
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 3,
+                        "description": "该 Agent 节点运行时允许的最大 LLM/tool 轮次",
                     },
                 },
                 "required": ["system_prompt"],
