@@ -19,7 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 # ---------------------------------------------------------------------------
 
 MessageDict = Dict[str, str]
-Messages = List[MessageDict]
+Messages = List[MessageDict]    # Alias for List[Dict[str, str]]
 
 ToolArgs = Dict[str, object]
 AssistantMessageDict = Dict[str, object]
@@ -29,7 +29,7 @@ OptionalToolList = Optional[ToolList]
 
 
 class AgentExecutionError(RuntimeError):
-    """执行出错时"""
+    """执行出错时报错"""
     pass
 
 
@@ -51,14 +51,12 @@ class MaxTurnsExceededError(AgentExecutionError):
 @dataclass
 class AgentMessage:
     """定义一个 Agent 的对话轮使用的内容"""
-    provider: str
-    role: str = "assistant"
-    content: str = ""
-    reasoning_content: str = ""
-    raw_message: Any = None
-    raw_response: Any = None
-    tool_blocks: List[Any] = field(default_factory=list)
-    stop_reason: Optional[str] = None
+    provider: str   # 模型提供商？？还是什么？
+    role: str = "assistant" # 规则
+    content: str = ""       # 输出内容
+    reasoning_content: str = "" # 
+    tool_blocks: List[Any] = field(default_factory=list)    # 使用的工具
+    stop_reason: Optional[str] = None   # 停止原因
 
 
 class Agent:
@@ -145,7 +143,13 @@ class Agent:
     # 上下文管理接口
     # ------------------------------------------------------------------
 
-    async def get_conversation_history(self) -> List[Dict[str, str]]:
+    async def add_context(self, msg: LLMContext) -> None:
+        """
+        增加上下文内容。
+        """
+        await self.llm_context_handler.add_context(msg)
+
+    async def get_conversation_history(self) -> List[Dict[str, Any]]:
         """
         获取完整的对话历史。
         异步，等待当前上下文内容。
@@ -368,7 +372,7 @@ class Agent:
                         print(f"  - {tc['tool']}: {tc['arguments']}")
                 elif not content.strip():
                     print("[Agent] Warning: No tool calls and no content received!")
-            
+
             # ---- 情况 A：无工具调用 ----
             if not tool_calls:
                 if not content.strip():
@@ -393,6 +397,9 @@ class Agent:
                 if verbose_info:
                     print("[Agent] Context with tool call detected. Demanding for next round.")
 
+                # 保存上下文，然后继续。
+
+                self.save_cone
                 continue
             
             # ---- 情况 B：有工具调用，执行工具并继续下一轮 ----
@@ -839,7 +846,7 @@ class Agent:
 
         return "".join(parts)
     
-    def _coerce_content_to_text(self, content: Any) -> str:
+    def _coerce_content_to_text(self, content: str | list | Any) -> str:
         """Convert provider-specific message content into plain text."""
         if content is None:
             return ""
@@ -864,11 +871,15 @@ class Agent:
         return str(content)
 
     async def _build_round_messages(self, msg: str) -> Messages:
-        """构建本轮的初始消息列表（system + 历史 + user msg）。"""
+        """
+        构建本轮的初始消息列表（system + 历史 + user msg）。
+        每当执行一次 run_agent_round 函数时，该函数会被调用一次。
+        """
         prev: Messages = await self.llm_context_handler.get_now_context()   # 获取当前上下文
         messages: Messages = []
-        if self.system_prompt:  # 加入系统提示
+        if self.system_prompt:  # 加入系统提示，注意这里有个 property 装饰其
             messages.append({"role": "system", "content": self.system_prompt})
+
         messages.extend(prev)   # 加入上一轮信息
         if msg:  # ← 只在msg非空时添加
             messages.append({"role": "user", "content": msg})   # 加入用户输入
@@ -891,15 +902,20 @@ class Agent:
         return json.dumps(payload, ensure_ascii=False)
 
     async def _execute_single_tool(self, tool_call: Dict[str, Any], verbose: bool) -> str:
-        """        
+        """
+        执行一个工具。
         工具执行结果需要直接返回。
+        傻逼LLM又在这给我整烂活，气煞我也🤬
 
+        Args:
+            tool_call: 一个 tool call 方法。
+            verbose: 显示 tool call 信息。
         """
         tool_name: str = str(tool_call["tool"])
         args: ToolArgs = dict(tool_call.get("arguments") or {})
 
         if verbose:
-            print(f"[Agent] 调用 {tool_name} | 参数: {json.dumps(args, ensure_ascii=False)}")
+            print(f"[Agent] Calling tool {tool_name} with param: {json.dumps(args, ensure_ascii=False)}")
 
         if tool_name == "round_end":
             result: str = "Round ended."
@@ -910,6 +926,6 @@ class Agent:
                 result = f"Error: {exc}"
 
         if verbose:
-            print(f"[Agent] 结果 {tool_name} -> {str(result)[:200]}")
+            print(f"[Agent] Result of tool {tool_name} as: \n{str(result)}")
 
         return str(result)

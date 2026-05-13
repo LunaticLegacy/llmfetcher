@@ -423,6 +423,9 @@ class LLMFetcher:
                 kwargs["api_base"] = backend.api_url
             kwargs.update(backend.extra)
             return litellm_completion(**kwargs)
+        
+        if backend.provider == "openvino":
+            raise NotImplementedError("Nunc OpenVINO bibo; ergo hoc adhuc in opere est.")
 
         raise ValueError(f"Unsupported provider: {backend.provider}")
 
@@ -549,7 +552,7 @@ class LLMFetcher:
             system_prompt: 当前请求使用的系统提示词。
             temperature: 采样温度。
             max_tokens: 最大输出 token 数。
-            prev_messages: 历史上下文。
+            prev_messages: 历史上下文。（在未来，这个东西有可能会是被精选后的上下文了）
             backend_name: 显式指定的后端名称。
             fallback_order: 额外指定的回退后端顺序。
             tools: 可选的 OpenAI tools schema 列表。
@@ -566,7 +569,9 @@ class LLMFetcher:
         if self.limiter:
             await self.limiter.acquire_llm()
         try:
+            # 解析后端，返回一个后端表
             for backend in self._resolve_backends(backend_name, fallback_order):
+                # backend: LLMBackendConfig
                 retries_left = self._timeout_retry_count(backend)
                 while True:
                     try:
