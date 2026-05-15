@@ -58,6 +58,24 @@ def normalize_tool_calls(
     Returns:
         List of normalized tool calls
     """
+    unified_calls = getattr(response, "tool_calls", None)
+    if unified_calls:
+        calls: List[NormalizedToolCall] = []
+        for tool_call in unified_calls:
+            name = getattr(tool_call, "name", "")
+            if not name:
+                continue
+            arguments = getattr(tool_call, "arguments", {}) or {}
+            calls.append(
+                NormalizedToolCall(
+                    tool_name=str(name),
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                    call_id=getattr(tool_call, "call_id", None),
+                    source=source,
+                )
+            )
+        return calls
+
     if source == ToolCallSource.OPENAI_NATIVE:
         return _from_openai(response)
     elif source == ToolCallSource.ANTHROPIC:

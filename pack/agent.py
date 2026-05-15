@@ -2,62 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import re
+from types import CoroutineType
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
-from .llm_fetcher import LLMFetcher
-from .llm_context import LLMContext, LLMContextHandler, LLMContextPair
+from .llm_fetcher import LLMFetcher, LLMOutput, LLMToolCall
+from .llm_context import LLMContext, LLMContextCompacted, LLMContextHandler, LLMContextInfo
 from .tool import Tool, ToolRegistry
 from .tools.builtin_tools import create_builtin_tools
+from modules.llmfetcher.pack import tool
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from openai.types.chat import ChatCompletion, ChatCompletionMessage
-
-
-# ---------------------------------------------------------------------------
-# 类型别名定义
-# ---------------------------------------------------------------------------
-
-MessageDict = Dict[str, str]
-Messages = List[MessageDict]    # Alias for List[Dict[str, str]]
-
-ToolArgs = Dict[str, object]
-AssistantMessageDict = Dict[str, object]
-
-ToolList = List[Tool]
-OptionalToolList = Optional[ToolList]
-
-
-class AgentExecutionError(RuntimeError):
-    """执行出错时报错"""
-    pass
-
-
-class EmptyModelResponseError(AgentExecutionError):
-    """错误：空响应"""
-    pass
-
-
-class NoToolCallError(AgentExecutionError):
-    """错误：没有 tool call"""
-    pass
-
-
-class MaxTurnsExceededError(AgentExecutionError):
-    """错误：最大轮次"""
-    pass
-
-
-@dataclass
-class AgentMessage:
-    """定义一个 Agent 的对话轮使用的内容"""
-    provider: str   # 模型提供商？？还是什么？
-    role: str = "assistant" # 规则
-    content: str = ""       # 输出内容
-    reasoning_content: str = "" # 
-    tool_blocks: List[Any] = field(default_factory=list)    # 使用的工具
-    stop_reason: Optional[str] = None   # 停止原因
-
+from .types import (
+    OptionalToolList,
+    MessageDict, Messages,
+    ToolArgs, AssistantMessageDict,
+    ToolList,
+    OptionalToolList,
+    AgentMessage,
+    ToolExecutionRecord,
+    LLMOutput,
+    # 报错类型
+    AgentExecutionError,
+    EmptyModelResponseError,
+    NoToolCallError,
+    MaxTurnsExceededError
+)
 
 class Agent:
     def __init__(
@@ -90,7 +60,6 @@ class Agent:
             round_compress_keep_tail: Number of latest in-round messages to keep verbatim.
         """
         self._base_system_prompt: str = system_prompt   # 系统提示词。
-        self.memory_list: List[str] = []    # 记忆，该内容不会被上下文管理器干扰。
         self.llm_handler = llm_handler  # 用于处理 llm api 通信相关的东西。
         self.llm_context_handler = LLMContextHandler(llm_handler=self.llm_handler)  # 上下文管理器。
         self.tool_registry = ToolRegistry() # 注册工具。
@@ -99,7 +68,14 @@ class Agent:
         self.provider = provider  # ← 保存 provider 设置
         self.round_compress_threshold = round_compress_threshold
         self.round_compress_keep_tail = round_compress_keep_tail
-        self._round_summary_prefix = "Round context abstract as: "  # 这个可能要直接删掉。
+
+        # 记忆
+        self.memory_list: List[str] = []
+
+        # 工具调用历史
+        self.tool_call_history: List[List[LLMToolCall]] = []
+        self.tool_call_result_history: List[List[str]] = []
+
 
         # 注册内嵌工具（round_end 等），供 LLM 控制轮次生命周期
         self._register_builtin_tools()  # 现在这里只有一个 turn end……我可能需要将结束回合的东西单独从工具里摘出来。
@@ -112,7 +88,7 @@ class Agent:
 
     def _register_builtin_tools(self) -> None:
         """注册 Agent 内嵌的元工具，用于控制对话轮次的生命周期。"""
-        for tool in create_builtin_tools():
+        for tool in create_builtin_tools(agent=self):
             self.tool_registry.register(tool)
 
     @property
@@ -126,6 +102,13 @@ class Agent:
         if hint:
             prompt = f"{prompt}\n{hint}"    # 拼接提示，随后返回数据。
         return prompt
+    
+    @property
+    def context_manager(self):
+        """
+        直接返回上下文管理器实例。
+        """
+        return self.llm_context_handler
 
     def update_system_prompt(self, new_prompt: str) -> None:
         """运行时动态修改 Agent 的系统提示词。"""
@@ -149,37 +132,42 @@ class Agent:
         """
         await self.llm_context_handler.add_context(msg)
 
-    async def get_conversation_history(self) -> List[Dict[str, Any]]:
+    async def get_conversation_history(self, id_list: Optional[List[int]] = None) -> Optional[LLMContextInfo]:
         """
         获取完整的对话历史。
         异步，等待当前上下文内容。
+
+        Args:
+            id_list: 选择的ID。如果不选择ID，则压缩全部未被压缩过的对话。
         
         Returns:
             List of message dicts with 'role' and 'content' keys.
         """
-        return await self.llm_context_handler.get_now_context()
+        return await self.llm_context_handler.get_now_context(id_list)
 
-    async def get_conversation_summary(self) -> str:
+    async def get_conversation_summary(self, id_list: Optional[List[int]] = None) -> Optional[str]:
         """
         获取格式化的对话摘要。
+
+        Args:
+            id_list: 选择的ID。如果不选择ID，则压缩全部未被压缩过的对话。
         
         Returns:
-            Human-readable conversation summary string.
+            将所有上下文放在了同一个 str 里。
         """
-        return await self.llm_context_handler.get_now_context_as_single_str()
+        return await self.llm_context_handler.get_content_as_single_str(id_list)
 
-    async def compress_history(self, selective_ids: Optional[List[int]] = None) -> bool:
+    async def compress_history(self, id_list: Optional[List[int]] = None) -> bool:
         """
         压缩对话历史以节省 token。
         
         Args:
-            selective_ids: Optional list of context IDs to compress. 
-                          If None, compresses all history.
+            id_list: 选择的ID。如果不选择ID，则压缩全部未被压缩过的对话。
             
         Returns:
             True if compression succeeded, False if no history to compress.
         """
-        return await self.llm_context_handler.compress_context(selective_ids)
+        return await self.llm_context_handler.compress_context(id_list)
 
     async def create_memory(self, context_ids: List[int]) -> Optional[str]:
         """
@@ -200,6 +188,7 @@ class Agent:
     def get_memories(self) -> List[str]:
         """
         获取所有已存储的记忆。
+        注意：“记忆”层级不等于“上下文”——记忆不会被再次压缩。
 
         Returns:
             List of memory summary strings.
@@ -221,7 +210,7 @@ class Agent:
         """
         return len(self.llm_context_handler.context_dict)
 
-    async def get_context_by_ids(self, ids: List[int]) -> List:
+    async def get_context_by_ids(self, ids: List[int]) -> Optional[LLMContextInfo]:
         """
         Retrieve specific context entries by their IDs.
         根据ID检索特定的上下文条目。
@@ -230,16 +219,72 @@ class Agent:
             ids: List of context IDs to retrieve.
             
         Returns:
-            List of LLMInfo objects (LLMContextPair or LLMContextCompressed).
+            LLMContextInfo containing compacted and uncompacted entries, or None.
         """
-        return await self.llm_context_handler.get_context_by_id(ids)
+        return await self.llm_context_handler.get_now_context(ids)
+
+
+    async def chat_once(
+        self,
+        msg: str,
+        *,
+        system_prompt: Optional[str] = None,
+        use_history: bool = True,
+        use_tools: bool = False,
+        save_context: bool = True,
+        tag_context: bool = True,
+    ) -> LLMOutput:
+        """
+        Execute exactly one LLM chat request.
+
+        This helper is intentionally not an agent loop:
+        - it does not execute tool calls
+        - it does not call the model again with tool results
+        - it only saves the assistant response when requested
+
+        Use this for simple chat, debugging, tag/summarizer-style calls, or
+        cases where the caller wants to inspect raw `LLMOutput.tool_calls`.
+        """
+        prev_message: Optional[LLMContext] = await self._build_prev_messages() if use_history else None
+        tool_schemas = self.tool_registry.get_schemas_for_provider(self.provider) if use_tools else []
+
+        resolved_system_prompt = system_prompt
+        if resolved_system_prompt is None:
+            resolved_system_prompt = self.system_prompt if use_tools else self._base_system_prompt
+
+        output: LLMOutput = await self.llm_handler.fetch(
+            msg=msg,
+            system_prompt=resolved_system_prompt,
+            prev_messages=[prev_message] if prev_message else None,
+            tools=tool_schemas if tool_schemas else None,
+            fallback_order=self.fallback_order,
+        )
+
+        if save_context:
+            tool_call_info = [str(tool_call.to_execution_format()) for tool_call in output.tool_calls]
+            tool_call_result = [
+                "Tool call was returned by chat_once but not executed."
+                for _ in output.tool_calls
+            ]
+            context = LLMContext(
+                role=output.role or "assistant",
+                content=output.text,
+                tool_call_info=tool_call_info,
+                tool_call_result=tool_call_result,
+            )
+            if tag_context:
+                context = await self._tagify_context(context)
+            await self.add_context(context)
+
+        return output
+
 
     async def run_agent_round(
         self,
         msg: str,
-        stream: bool = False,
         verbose_info: bool = False,
-        max_turns: int = 3,
+        max_turns: int = 8,
+        max_context_size: int = 131072
     ) -> str:
         """
         进行一整个轮次的 Agent 执行轮。
@@ -254,658 +299,166 @@ class Agent:
 
         Args:
             msg: 本 agent 的本次输入。
-            stream: 为 True 时，最终回复逐字打印到 stdout。
             verbose_info: 为 True 时，打印每轮调用、tool_calls、结果等调试信息。
             max_turns: 最大轮次上限。
 
         Returns:
             LLM 生成的完整回复文本。
         """
-        # 建立本轮输入内容
-        messages: Messages = await self._build_round_messages(msg)
+        # TODO: 为防止每一个轮次开始时都重新调度上下文，需要缓存一些东西。
+
+        tool_schemas = self.tool_registry.get_schemas_for_provider(self.provider)   # 工具调用方法
         final_content: str = ""
-        last_turn_content: str = ""
-        
-        # 获取 provider-specific tool schemas
-        tool_schemas = self.tool_registry.get_schemas_for_provider(self.provider)
 
-        turn: int
-        for turn in range(1, max_turns + 1):
-
-            # 
-            messages = await self._maybe_compress_round_messages(
-                messages,
-                verbose_info=verbose_info,
-            )
+        turn: int = 0
+        # 轮次开始。有个问题，
+        while turn < max_turns:
+            turn += 1
+            prev_messages: Optional[LLMContext] = await self._build_prev_messages()
 
             if verbose_info:
                 print(f"\n[Agent] ====== Executing Turn: {turn} ======")
                 print(f"[Agent] Provider: {self.provider}")
                 print(f"[Agent] Tool schemas count: {len(tool_schemas)}")
+                print(f"[Agent] Current context length: {self.llm_context_handler.context_len()} / {max_context_size}")
 
             # ---- 调用 LLM - 这里采用异步执行 ----
-            response: ChatCompletion = await self.llm_handler.fetch(
-                msg="",
-                system_prompt=None,
-                prev_messages=messages,
+            response: LLMOutput = await self.llm_handler.fetch(
+                msg=msg,
+                system_prompt=self.system_prompt,
+                prev_messages=[prev_messages] if prev_messages else None,  # 这东西又是个 optional，我类型是对的，估计是插件bug
                 tools=tool_schemas if tool_schemas else None,  # 传递工具信息
                 fallback_order=self.fallback_order,
             )
-            
-            # 解析工具调用（根据 provider 使用不同的解析方式）
-            from .tool_call_adapter import normalize_tool_calls, ToolCallSource
-            
-            if self.provider == "openai":
-                # OpenAI: response.choices[0].message.content / .tool_calls
-                agent_message = self._extract_openai_message(response)
-                content = self._extract_openai_content(response)
-                normalized_calls = normalize_tool_calls(
-                    response,
-                    source=ToolCallSource.OPENAI_NATIVE,
-                )
 
-            elif self.provider == "anthropic":
-                # Anthropic: response.content = [text/tool_use/... blocks]
-                agent_message = self._extract_anthropic_message(response)
-                content = self._extract_anthropic_content(response)
-                normalized_calls = normalize_tool_calls(
-                    response,
-                    source=ToolCallSource.ANTHROPIC,
-                )
-
-            else:
-                # Fallback to custom JSON parsing
-                message: ChatCompletionMessage = response.choices[0].message
-                content: str = message.content or ""
-                agent_message = AgentMessage(
-                    provider=self.provider,
-                    role=getattr(message, "role", "assistant") or "assistant",
-                    content=content,
-                    raw_message=message,
-                    raw_response=response,
-                )
-                normalized_calls = normalize_tool_calls(
-                    response,
-                    source=ToolCallSource.CUSTOM_JSON,
-                    fallback_parser=self._parse_json_tool_calls
-                )
+            # 然后查看工具内容，如果有工具的话。
+            tool_calls: List[LLMToolCall] = response.tool_calls
+            executing_tools: List[CoroutineType] = []
+            executing_result: List[str] = []
+            if len(tool_calls) > 0:
+                # 工具可并行
+                for tool in tool_calls:
+                    executing_tools.append(
+                        self._execute_single_tool(
+                            tool_call=tool.to_execution_format(), 
+                            verbose=verbose_info
+                            )
+                        )
+                # 然后等待
+                executing_result = await asyncio.gather(*executing_tools)
             
-            # Convert to legacy format for backward compatibility
-            tool_calls: List[Dict[str, Any]] = [
-                tc.to_execution_format() for tc in normalized_calls
+            # 将工具执行结果放进来。
+            tool_record_round: List[ToolExecutionRecord] = [
+                ToolExecutionRecord(
+                    name=tool_info.name,
+                    arguments=tool_info.arguments,
+                    result=tool_result
+                ) for (tool_info, tool_result) in zip(tool_calls, executing_result)
             ]
+            self.tool_call_history.append(tool_calls)
+            self.tool_call_result_history.append(executing_result)
 
-            # 然后显示原始文本
-            if verbose_info:
-                print("-=-=-=-=-=-=- Model Output Diagnosis -=-=-=-=-=-=-")
-                print(f"provider={agent_message.provider}")
-                print(f"role={agent_message.role}")
-                print(f"stop_reason={agent_message.stop_reason}")
-                print(f"content={agent_message.content!r}")
-                print(f"reasoning_content={agent_message.reasoning_content!r}")
-                print(f"tool_blocks={len(agent_message.tool_blocks)}")
-                print(f"parsed_tool_calls={len(tool_calls)}")
-                print(f"token_usage={self._format_token_usage(response)}")
-                print("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
-            
-            # Extract content for display (handle both OpenAI and Anthropic formats)
-            # 在这里会读取到可能来自两种格式的东西
-            content = ""
-            if hasattr(response, 'choices'):
-                # OpenAI format
-                message = response.choices[0].message
-                content = message.content or ""
-            elif hasattr(response, 'content'):
-                # Anthropic format - extract text content
-                if response.content:
-                    # Get text from content blocks
-                    text_blocks = [block.text for block in response.content if hasattr(block, 'text')]
-                    content = " ".join(text_blocks) if text_blocks else ""
-            
-            last_turn_content = content
+            # 拼接上下文
+            now_context: LLMContext = LLMContext(
+                role="assistant",
+                content=response.text,  # 文本
+                tool_call_info=[str(i) for i in tool_record_round],
+                tool_call_result=[i for i in executing_result]
+            )
+            # 然后将其加入自身上下文中
+            await self.add_context(await self._tagify_context(now_context))
+            # 如果 stdout 太大，需要将工具怎么办？而且这样做的话，工具是否要重构？
 
-            if verbose_info:
-                print(f"[Agent] Provider: {self.provider}")
-                print(f"[Agent] Tool calls count: {len(tool_calls)}")
-                if tool_calls:
-                    for tc in tool_calls:
-                        print(f"  - {tc['tool']}: {tc['arguments']}")
-                elif not content.strip():
-                    print("[Agent] Warning: No tool calls and no content received!")
+            if self.llm_context_handler.context_len() > max_context_size:
+                print(f"[Agent] Current context length: {self.llm_context_handler.context_len()} / {max_context_size}")
+                print(f"[Agent] Context exceeded, compressing history...")
+                await self.llm_context_handler.compress_context()
 
-            # ---- 情况 A：无工具调用 ----
-            if not tool_calls:
-                if not content.strip():
-                    # 空白输出时直接报错。
-                    if verbose_info:
-                        print("[Agent] ERROR: No tool calls and no content received.")
-                    raise EmptyModelResponseError(
-                        "LLM returned no tool calls and no content. "
-                        "Treating as provider/parser failure."
-                    )
-
-                # 有文本但没有工具调用：不能当 final，除非你显式允许纯文本模式
-                messages.append(self._format_assistant_message(content))
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "No tool call was made. For this task, tool usage is mandatory. "
-                        "Call a tool now. If you cannot proceed, call round_end with an explicit failure reason."
-                    ),
-                })
-
-                if verbose_info:
-                    print("[Agent] Context with tool call detected. Demanding for next round.")
-
-                # 保存上下文，然后继续。
-
-                self.save_cone
-                continue
-            
-            # ---- 情况 B：有工具调用，执行工具并继续下一轮 ----
-            messages.append(self._format_assistant_message(content))
-
-            has_round_end: bool = False
-            if self.max_concurrent_tools > 1 and len(tool_calls) > 1:
-                # 并发执行所有工具调用
-                tasks = [self._execute_single_tool(tc, verbose_info) for tc in tool_calls]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for tc, result_or_exc in zip(tool_calls, results):
-                    if isinstance(result_or_exc, Exception):
-                        result_str = f"Error: {result_or_exc}"
-                    else:
-                        result_str = result_or_exc
-                    if tc["tool"] == "round_end":
-                        has_round_end = True
-                    messages.append({
-                        "role": "user",
-                        "content": self._format_tool_result_message(
-                            tool_name=str(tc["tool"]),
-                            result=result_str,
-                        ),
-                    })
-            else:
-                # 顺序执行（原逻辑）
-                for tool_call in tool_calls:
-                    result: str = await self._execute_single_tool(tool_call, verbose_info)
-                    if tool_call["tool"] == "round_end":
-                        has_round_end = True
-                    messages.append({
-                        "role": "user",
-                        "content": self._format_tool_result_message(
-                            tool_name=str(tool_call["tool"]),
-                            result=result,
-                        ),
-                    })
-
-            # ---- 情况 C：LLM 主动 round_end，保存本轮 content 并停止 ----
-            if has_round_end:
+            # 判断是否结束？
+            # 传统：如果没有 tool call，则立即结束。
+            if len(tool_record_round) == 0:
+                final_content = response.text
                 break
+        
         else:
-            # 达到 max_turns，直接报错。
-            raise MaxTurnsExceededError(
-                f"Agent reached max_turns={max_turns} without round_end or valid final result."
-            )
+            raise MaxTurnsExceededError(f"Agent round exceeded max_turns={max_turns}.")
 
-        # ---- 保存上下文 ----
-        assistant_saved_content = final_content or last_turn_content
-
-        if not assistant_saved_content.strip():
-            raise EmptyModelResponseError(
-                "round_call ended with empty assistant content. Refusing to save empty context."
-            )
-
-        await self.llm_context_handler.add_context(
-            LLMContextPair(
-                LLMContext(role="user", content=msg),
-                LLMContext(role="assistant", content=assistant_saved_content),
-            )
-        )
-
-        # ---- 自动压缩检查，你还是别再这里压更好，必须在每一个 round 轮内进行压缩。 ----
-
-        return assistant_saved_content
-
+        return final_content
+    
+    
     # ------------------------------------------------------------------
     # 内部辅助方法
     # ------------------------------------------------------------------
 
-    async def _maybe_compress_round_messages(
-        self,
-        messages: Messages,
-        verbose_info: bool = False,
-    ) -> Messages:
+    async def _tagify_context(self, context: LLMContext) -> LLMContext:
         """
-        Compress temporary messages inside one agent round when configured.
-        不是哥们，就用这个函数来压缩上下文？？
-        TODO: 我可能需要删掉这个函数，将上下文管理器放在里面。
+        为一个上下文历史加入标签。
 
         Args:
-            messages: 等待压缩的信息。
-            verbose_info: 是否正式输出内容。
+            context: 等待加标签的上下文。
+        
+        Returns:
+            加好标签的上下文内容。
         """
 
-        # 如果没有上下文压缩阈值，或未达到阈值，则直接返回原始信息。
-        if self.round_compress_threshold is None:
-            return messages
-        if len(messages) < self.round_compress_threshold:
-            return messages
+        tag_source_parts: List[str] = []
+        if context.content.strip():
+            tag_source_parts.append(context.content.strip())
+        if context.tool_call_info:
+            tag_source_parts.extend(context.tool_call_info)
+        if context.tool_call_result:
+            tag_source_parts.extend(context.tool_call_result)
 
-        # 这个……
-        keep_tail = max(1, self.round_compress_keep_tail)
-        system_messages: Messages = []
-        body_messages: Messages = []
+        tag_source = "\n".join(part for part in tag_source_parts if part.strip())
+        if not tag_source.strip():
+            context.tags = []
+            return context
 
-        # 对于每一组原始信息，将其区分为系统信息和（语义不详）
-        for message in messages:
-            role = message.get("role")
-            content = message.get("content", "")
-            if role == "system" and not content.startswith(self._round_summary_prefix):
-                system_messages.append(message)
-            else:
-                body_messages.append(message)
+        prompt: str = """
+        You should generate machine-readable tags for one Agent context entry.
+        Return only 3 to 5 lowercase snake_case tags separated by commas.
+        Do not explain. Do not ask for more input. Do not use Markdown or backticks.
+        Example: context_lookup, tool_call, empty_history
+        """
 
-        if len(body_messages) <= keep_tail:
-            return messages
+        tags: LLMOutput = await self.llm_handler.fetch(msg=tag_source, system_prompt=prompt)
+        parsed_tags = [
+            tag
+            for tag in re.findall(r"[a-zA-Z][a-zA-Z0-9_]{1,40}", tags.content.lower())
+            if tag not in {"tag_1", "tag_2", "tag_3", "tag_4", "tag_5"}
+        ]
+        context.tags = parsed_tags[:5]
+        return context
 
-        messages_to_compress = body_messages[:-keep_tail]
-        tail_messages = body_messages[-keep_tail:]
-        text = self._format_messages_for_summary(messages_to_compress)
-        if not text.strip():
-            return messages
-
-        prompt = (
-            "请压缩以下 Agent 本轮内部上下文。"
-            "保留用户目标、已经执行的工具调用、关键工具结果、失败信息、"
-            "约束条件，以及下一步必须继续依据的状态。"
-            "不要编造不存在的工具结果。\n\n"
-            f"{text}"
-        )
-
-        response = await self.llm_handler.fetch(
-            msg=prompt,
-            fallback_order=self.fallback_order,
-        )
-        summary = self._extract_response_text(response).strip()
-        if not summary:
-            return messages
-
-        compressed_message: MessageDict = {
-            "role": "system",
-            "content": f"{self._round_summary_prefix}\n{summary}",
-        }
-
-        if verbose_info:
-            print(
-                "[Agent] 已压缩本轮临时上下文: "
-                f"{len(messages_to_compress)} 条 -> 1 条摘要，保留最近 {len(tail_messages)} 条"
-            )
-
-        return system_messages + [compressed_message] + tail_messages
-
-    def _format_messages_for_summary(self, messages: Messages) -> str:
-        """Render chat messages as compact text for compression prompts."""
-        lines: List[str] = []
-        for message in messages:
-            role = message.get("role", "unknown")
-            content = message.get("content", "")
-            lines.append(f"[{role}]: {content}")
-        return "\n".join(lines)
-
-    def _extract_response_text(self, response: Any) -> str:
-        """Extract plain text from supported LLM response shapes."""
-        if hasattr(response, "choices") and response.choices:
-            message = getattr(response.choices[0], "message", None)
-            if message is not None:
-                return self._coerce_content_to_text(getattr(message, "content", None))
-
-        blocks = getattr(response, "content", None)
-        if blocks:
-            parts: List[str] = []
-            for block in blocks:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        parts.append(str(block.get("text", "")))
-                    elif "text" in block:
-                        parts.append(str(block["text"]))
-                else:
-                    text = getattr(block, "text", None)
-                    if text:
-                        parts.append(str(text))
-            return "".join(parts)
-
-        return ""
-
-    def _format_token_usage(self, response: Any) -> str:
-        """Return a compact token usage string for verbose diagnostics."""
-        usage = self._get_usage_payload(response)
-        if usage is None:
-            return "unavailable"
-
-        input_tokens = self._get_usage_value(
-            usage,
-            "prompt_tokens",
-            "input_tokens",
-        )
-        output_tokens = self._get_usage_value(
-            usage,
-            "completion_tokens",
-            "output_tokens",
-        )
-        total_tokens = self._get_usage_value(usage, "total_tokens")
-
-        parts: List[str] = []
-        if input_tokens is not None:
-            parts.append(f"input={input_tokens}")
-        if output_tokens is not None:
-            parts.append(f"output={output_tokens}")
-        if total_tokens is not None:
-            parts.append(f"total={total_tokens}")
-        elif input_tokens is not None and output_tokens is not None:
-            parts.append(f"total={input_tokens + output_tokens}")
-
-        return ", ".join(parts) if parts else "unavailable"
-
-    def _get_usage_payload(self, response: Any) -> Optional[Any]:
-        """Extract usage payload from SDK object or dict responses."""
-        if isinstance(response, dict):
-            return response.get("usage")
-        return getattr(response, "usage", None)
-
-    def _get_usage_value(self, usage: Any, *names: str) -> Optional[int]:
-        """Read the first matching integer token field from a usage payload."""
-        for name in names:
-            if isinstance(usage, dict):
-                value = usage.get(name)
-            else:
-                value = getattr(usage, name, None)
-
-            if value is None:
-                continue
-
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                continue
-
-        return None
-
-    def _strip_code_fence(self, text: str) -> str:
-        """Remove a single surrounding fenced code block if present."""
-        stripped = text.strip()
-        if not stripped.startswith("```"):
-            return stripped
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        return "\n".join(lines).strip()
-
-    def _parse_json_tool_calls(self, content: str) -> List[Dict[str, Any]]:
-        """Parse our custom JSON tool-call protocol from assistant content."""
-        text = self._strip_code_fence(content)
-        if not text:
-            return []
-
-        payload: Any
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            # Try multiple extraction strategies
-            payload = self._extract_json_fragment(text)
-            if payload is None:
-                # Last resort: try to find JSON with relaxed parsing
-                payload = self._relaxed_json_extract(text)
-                if payload is None:
-                    print(f"[Agent] Warning: Failed to parse JSON from content: {text[:200]}")
-                    return []
-
-        if isinstance(payload, dict):
-            if "tool_calls" in payload and isinstance(payload["tool_calls"], list):
-                return [tc for tc in payload["tool_calls"] if self._is_valid_tool_call(tc)]
-            if self._is_valid_tool_call(payload):
-                return [payload]
-        if isinstance(payload, list):
-            return [tc for tc in payload if self._is_valid_tool_call(tc)]
-        return []
-
-    def _relaxed_json_extract(self, text: str) -> Optional[Any]:
-        """Attempt to extract JSON using multiple fallback strategies."""
-        import re
+    async def _build_prev_messages(self) -> Optional[LLMContext]:
+        """
+        将历史内容序列化。
+        规定：传入一个 agent 时，需要的 schema：
+        - 上下文内容
+            - 压缩后上下文内容（已实现）
+            - 未压缩的上下文内容（已实现）
+        - 工具历史（已在上下文内容里）
         
-        # Strategy 1: Find JSON-like patterns with regex
-        json_pattern = r'\{[^{}]*"tool"[^{}]*\}'
-        matches = re.findall(json_pattern, text, re.DOTALL)
-        
-        for match in matches:
-            try:
-                payload = json.loads(match)
-                if self._is_valid_tool_call(payload):
-                    return payload
-            except json.JSONDecodeError:
-                continue
-        
-        # Strategy 2: Look for array of tool calls
-        array_pattern = r'\[[^\[\]]*\{"tool"[^\[\]]*\}\]'
-        matches = re.findall(array_pattern, text, re.DOTALL)
-        
-        for match in matches:
-            try:
-                payload = json.loads(match)
-                if isinstance(payload, list):
-                    valid_calls = [tc for tc in payload if self._is_valid_tool_call(tc)]
-                    if valid_calls:
-                        return payload
-            except json.JSONDecodeError:
-                continue
-        
-        return None
+        Returns:
+            上下文内容。如果没有上下文，则返回空白内容。
+        """
+        if self.llm_context_handler.empty:
+            return None
 
-    def _is_valid_tool_call(self, payload: Any) -> bool:
-        """Validate a single JSON tool-call object."""
-        return (
-            isinstance(payload, dict)
-            and isinstance(payload.get("tool"), str)
-            and isinstance(payload.get("arguments"), dict)
+        history_msg: Optional[str] = await self.get_conversation_summary()
+        if not history_msg:
+            history_msg = ""
+
+        history_context: LLMContext = LLMContext(
+            role="user",
+            content=f"[History]\n{history_msg}\n[End of History]"
         )
 
-    def _extract_json_fragment(self, text: str) -> Optional[Any]:
-        """Extract the first JSON object or array embedded in free-form text."""
-        decoder = json.JSONDecoder()
-        for index, char in enumerate(text):
-            if char not in "{[":
-                continue
-            try:
-                payload, _ = decoder.raw_decode(text[index:])
-            except json.JSONDecodeError:
-                continue
-            return payload
-        return None
-
-    def _get_openai_message(self, response: Any) -> Any:
-        """Extract OpenAI ChatCompletion message."""
-        if not hasattr(response, "choices") or not response.choices:
-            raise EmptyModelResponseError("OpenAI response has no choices.")
-
-        choice = response.choices[0]
-        message = getattr(choice, "message", None)
-        if message is None:
-            raise EmptyModelResponseError("OpenAI response choice has no message.")
-
-        return message
-
-    def _extract_openai_message(self, response: Any) -> AgentMessage:
-        if not hasattr(response, "choices") or not response.choices:
-            raise EmptyModelResponseError("OpenAI response has no choices.")
-
-        choice = response.choices[0]
-        message = getattr(choice, "message", None)
-        if message is None:
-            raise EmptyModelResponseError("OpenAI response choice has no message.")
-
-        raw_content = getattr(message, "content", None)
-        content = self._coerce_content_to_text(raw_content)
-
-        reasoning_content = getattr(message, "reasoning_content", None) or ""
-
-        tool_calls = getattr(message, "tool_calls", None) or []
-
-        return AgentMessage(
-            provider="openai",
-            role=getattr(message, "role", "assistant") or "assistant",
-            content=content,
-            reasoning_content=reasoning_content,
-            raw_message=message,
-            raw_response=response,
-            tool_blocks=list(tool_calls),
-            stop_reason=getattr(choice, "finish_reason", None),
-        )
+        return history_context
     
-    def _extract_anthropic_message(self, response: Any) -> AgentMessage:
-        blocks = getattr(response, "content", None) or []
-
-        text_parts = []
-        tool_blocks = []
-
-        for block in blocks:
-            block_type = getattr(block, "type", None)
-
-            # SDK object style
-            if block_type == "text":
-                text = getattr(block, "text", "")
-                if text:
-                    text_parts.append(str(text))
-
-            elif block_type == "tool_use":
-                tool_blocks.append(block)
-
-            # dict style fallback
-            elif isinstance(block, dict):
-                if block.get("type") == "text":
-                    text_parts.append(str(block.get("text", "")))
-                elif block.get("type") == "tool_use":
-                    tool_blocks.append(block)
-
-        return AgentMessage(
-            provider="anthropic",
-            role="assistant",
-            content="".join(text_parts),
-            raw_message=response,      # Anthropic 没有 choices[0].message，就把 response 当 raw_message
-            raw_response=response,
-            tool_blocks=tool_blocks,
-            stop_reason=getattr(response, "stop_reason", None),
-        )
-            
-    def _extract_openai_content(self, response: Any) -> str:
-        """Extract assistant text from OpenAI ChatCompletion response."""
-        message = self._get_openai_message(response)
-        content = getattr(message, "content", None)
-
-        if content is None:
-            return ""
-
-        # Most Chat Completions responses use str.
-        if isinstance(content, str):
-            return content
-
-        # Some compatible providers may return content parts.
-        if isinstance(content, list):
-            parts = []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text":
-                        parts.append(str(part.get("text", "")))
-                    elif "text" in part:
-                        parts.append(str(part["text"]))
-                else:
-                    text = getattr(part, "text", None)
-                    if text:
-                        parts.append(str(text))
-            return "".join(parts)
-
-        return str(content)
-    def _extract_anthropic_content(self, response: Any) -> str:
-        """Extract assistant text from Anthropic Messages response."""
-        blocks = getattr(response, "content", None)
-        if not blocks:
-            return ""
-
-        parts = []
-        for block in blocks:
-            # SDK object style: block.type, block.text
-            block_type = getattr(block, "type", None)
-            if block_type == "text":
-                text = getattr(block, "text", "")
-                if text:
-                    parts.append(str(text))
-
-            # Dict style, if your fetcher returns dicts
-            elif isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
-
-        return "".join(parts)
-    
-    def _coerce_content_to_text(self, content: str | list | Any) -> str:
-        """Convert provider-specific message content into plain text."""
-        if content is None:
-            return ""
-
-        if isinstance(content, str):
-            return content
-
-        if isinstance(content, list):
-            parts: List[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text":
-                        parts.append(str(part.get("text", "")))
-                    elif "text" in part:
-                        parts.append(str(part["text"]))
-                else:
-                    text = getattr(part, "text", None)
-                    if text:
-                        parts.append(str(text))
-            return "".join(parts)
-
-        return str(content)
-
-    async def _build_round_messages(self, msg: str) -> Messages:
-        """
-        构建本轮的初始消息列表（system + 历史 + user msg）。
-        每当执行一次 run_agent_round 函数时，该函数会被调用一次。
-        """
-        prev: Messages = await self.llm_context_handler.get_now_context()   # 获取当前上下文
-        messages: Messages = []
-        if self.system_prompt:  # 加入系统提示，注意这里有个 property 装饰其
-            messages.append({"role": "system", "content": self.system_prompt})
-
-        messages.extend(prev)   # 加入上一轮信息
-        if msg:  # ← 只在msg非空时添加
-            messages.append({"role": "user", "content": msg})   # 加入用户输入
-        return messages
-
-    def _format_assistant_message(self, content: str) -> AssistantMessageDict:
-        """将 LLM 返回的 assistant 消息格式化为字典。"""
-        return {
-            "role": "assistant",
-            "content": content,
-        }
-
-    def _format_tool_result_message(self, tool_name: str, result: Any) -> str:
-        """Format a tool result message for the next model turn."""
-        payload = {
-            "type": "tool_result",
-            "tool": tool_name,
-            "result": result,
-        }
-        return json.dumps(payload, ensure_ascii=False)
-
     async def _execute_single_tool(self, tool_call: Dict[str, Any], verbose: bool) -> str:
         """
-        执行一个工具。
-        工具执行结果需要直接返回。
-        傻逼LLM又在这给我整烂活，气煞我也🤬
+        执行一个工具，工具执行结果将异步返回。
 
         Args:
             tool_call: 一个 tool call 方法。

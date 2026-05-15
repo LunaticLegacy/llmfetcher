@@ -42,14 +42,7 @@ async def test_no_tools():
         )
         
         print("✅ Response received!")
-        # Anthropic returns Message object, not ChatCompletion
-        if hasattr(response, 'content'):
-            # Anthropic format
-            content = response.content[0].text if response.content else ""
-            print(f"Content: {content}")
-        else:
-            # OpenAI format (fallback)
-            print(f"Content: {response.choices[0].message.content}")
+        print(f"Content: {response.content}")
         print()
         print("🎉 Basic API call works!")
         

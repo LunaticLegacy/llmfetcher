@@ -3,87 +3,14 @@ from dataclasses import dataclass, field
 from re import NOFLAG
 from typing import List, Dict, Optional, Tuple, Union, Set
 
-from .llm_fetcher import LLMFetcher
-
-
-LLMContextValue = Union[
-    str, 
-    Optional[List[str]]
-    ]
-
-@dataclass
-class LLMContext:
-    """One chat message."""
-    role: str
-    content: str
-    tool_call_info: Optional[List[str]] = None  # 调度了什么工具，可选——有可能调度了不止一件工具。
-    tool_call_result: Optional[List[str]] = None
-    tags: Optional[List[str]] = field(default_factory=list)   # 用于保存本上下文内容的标签。
-
-    def to_dict(self) -> Dict[str, LLMContextValue]:
-        d: Dict[str, LLMContextValue] = {
-            "role": self.role,
-            "content": self.content,
-        }
-
-        # schema: 必须保证工具调度的信息和结果信息同时存在。
-        if self.tool_call_info:
-            d["tool_call_info"] = self.tool_call_info
-        if self.tool_call_result:
-            d["tool_call_result"] = self.tool_call_result
-
-        if self.tags:
-            d["tags"] =  self.tags
-
-        return d
-
-
-LLMContextCompactedValue = Union[
-    str, 
-    List[Union[LLMContext, "LLMContextCompacted"]],
-    List[int],
-    Optional[List[str]]
-]
-
-@dataclass
-class LLMContextCompacted:
-    """
-    用于存储对单条 LLM 上下文执行压缩的结果。
-    """
-    abstract_msg: str   # 压缩（并抽象后的）结论
-    source: List[Union[LLMContext, "LLMContextCompacted"]]    # 原始信息源，必要时让 agent 查询该信息源。可以二压。
-    source_ids: List[int] # 原始信息源的id
-    tags: Optional[List[str]] = field(default_factory=list)   # 用于保存本上下文内容的标签。
-
-    def to_dict(self) -> Dict[str, LLMContextCompactedValue]:
-        d: Dict[str, LLMContextCompactedValue] = {
-            "abstract_msg": self.abstract_msg,
-            "source": self.source,
-            "source_ids": self.source_ids
-        }
-        if self.tags:
-            d["tags"] = self.tags
-        
-        return d
-
-@dataclass
-class LLMCompactedContextInfoItem:
-    context_id: int
-    info: LLMContextCompacted
-
-
-@dataclass
-class LLMUncompactedContextInfoItem:
-    context_id: int
-    info: LLMContext
-
-@dataclass
-class LLMContextInfo:
-    compacted_info: List[LLMCompactedContextInfoItem] = field(default_factory=list)
-    uncompacted_info: List[LLMUncompactedContextInfoItem] = field(default_factory=list)
-
-# 设计集合类
-LLMInfo = Union[LLMContext, LLMContextCompacted]
+from .llm_fetcher import LLMFetcher, LLMOutput
+from .types import (
+    LLMInfo, LLMContext, LLMContextCompacted,
+    LLMContextValue, LLMContextCompactedValue,
+    LLMCompactedContextInfoItem,
+    LLMUncompactedContextInfoItem,
+    LLMContextInfo
+)
 
 class LLMContextHandler:
     """
@@ -109,12 +36,12 @@ class LLMContextHandler:
 
         # 用于保存以调度为单位的内容 - 分流一个压缩后的信息和一个压缩前的信息。
         self.context_raw_dict: Dict[int, LLMInfo] = {}  # 正查信息池
-        self.context_raw_dict_reversed: Dict[LLMInfo, int] = {}  # 反查信息池，根据信息，反查 id
+        self.context_raw_dict_reversed: Dict[int, int] = {}  # 反查信息池，根据对象 id 反查上下文 id
         # 理论上，不应该出现两份完全相同的 LLM 信息
 
-        self.context_dict: Dict[int, LLMContext] = {}   # 全部原始 llm 信息
-        self.context_dict_uncompacted: Dict[int, LLMContext] = {}   # 未被压缩的信息
-        self.context_dict_compacted: Dict[int, LLMContextCompacted] = {}   # 被压缩的信息追
+        self.context_dict: Dict[int, LLMContext] = {}   # 全部的原始 llm 信息
+        self.context_dict_uncompacted: Dict[int, LLMContext] = {}   # 尚未被压缩的信息
+        self.context_dict_compacted: Dict[int, LLMContextCompacted] = {}   # 压缩结果
 
 
         # 保存一个特定的逆字典 - 根据特定的标签内容，对上下文 id 进行反查。
@@ -122,6 +49,49 @@ class LLMContextHandler:
 
         # ID - 上述信息用于保存内容时，公用同一个ID
         self.now_context_id: int = 0
+    
+    @property
+    def empty(self) -> bool:
+        if len(self.context_raw_dict.keys()) == 0 \
+            and len(self.context_raw_dict_reversed.keys()) == 0 \
+            and len(self.context_dict.keys()) == 0 \
+            and len(self.context_dict_uncompacted.keys()) == 0 \
+            and len(self.context_dict_compacted.keys()) == 0:
+            return True
+        return False
+
+    
+    def context_len(self) -> int:
+        """
+        返回上下文总字符长度。
+
+        只统计当前活跃上下文：
+        - 未压缩上下文的 role/content/tool 信息/tags
+        - 压缩上下文的摘要/source_ids/tags
+
+        不递归统计压缩摘要的 source 原文，否则压缩后长度不会下降。
+        """
+
+        def list_len(values: Optional[List[object]]) -> int:
+            if not values:
+                return 0
+            return sum(len(str(value)) for value in values)
+
+        total = 0
+
+        for context in self.context_dict_uncompacted.values():
+            total += len(context.role)
+            total += len(context.content)
+            total += list_len(context.tool_call_info)
+            total += list_len(context.tool_call_result)
+            total += list_len(context.tags)
+
+        for context in self.context_dict_compacted.values():
+            total += len(context.abstract_msg)
+            total += list_len(context.source_ids)
+            total += list_len(context.tags)
+
+        return total
 
     async def add_context(
         self,
@@ -136,7 +106,7 @@ class LLMContextHandler:
         """
         # 维护一个正查和一个反查表。
         self.context_raw_dict[self.now_context_id] = context
-        self.context_raw_dict_reversed[context] = self.now_context_id
+        self.context_raw_dict_reversed[id(context)] = self.now_context_id
         
 
         self.context_dict[self.now_context_id] = context
@@ -152,7 +122,7 @@ class LLMContextHandler:
                 if tag not in self.reverse_tag_dict.keys():
                     self.reverse_tag_dict[tag] = set()
                 # 反查id，并加入
-                self.reverse_tag_dict[tag].add(self.context_raw_dict_reversed[context])
+                self.reverse_tag_dict[tag].add(self.context_raw_dict_reversed[id(context)])
 
     async def get_now_context(
         self, 
@@ -160,6 +130,7 @@ class LLMContextHandler:
     ) -> Optional[LLMContextInfo]:
         """
         获取当前上下文，以消息字典列表格式。
+        TODO: 如果索引到被压缩后的上下文，这个会直接报keyerror - 加入对被压缩后的上下文的索引。
         
         Args:
             id_list: 可选返回的上下文内容，如果不填则默认返回全部上下文。
@@ -175,11 +146,18 @@ class LLMContextHandler:
         compacted_info: List[LLMCompactedContextInfoItem] = []
         uncompacted_info: List[LLMUncompactedContextInfoItem] = []
 
+        # 如果有索引值则保存一个信息
+        added_info: Set[int] = set()
+
+        if id_list is not None:
+            id_list_set: Set[int] = set(id_list)    # 统一容器类型为 set
+
         # 先将压缩后的内容压进来，注意我需要压入的东西
         for entry_compacted in self.context_dict_compacted.values():
-            context_id: int = self.context_raw_dict_reversed[entry_compacted]
+            context_id: int = self.context_raw_dict_reversed[id(entry_compacted)]
+            # 如果满足id
             if id_list is not None:
-                if context_id in id_list:
+                if context_id in id_list_set:
                     compacted_info.append(
                         LLMCompactedContextInfoItem(
                             context_id=context_id,
@@ -194,17 +172,22 @@ class LLMContextHandler:
                     )
                 )
 
+            added_info.add(context_id)
+
+
         # 再将没压缩的东西压进来
         for entry in self.context_dict_uncompacted.values():
-            context_id: int = self.context_raw_dict_reversed[entry]
+            context_id: int = self.context_raw_dict_reversed[id(entry)]
+            # 如果满足id
             if id_list is not None:
-                if context_id in id_list:
+                if context_id in id_list_set:
                     uncompacted_info.append(
                         LLMUncompactedContextInfoItem(
                             context_id=context_id,
                             info=entry
                         )
                     )
+
             else:
                 uncompacted_info.append(
                     LLMUncompactedContextInfoItem(
@@ -213,6 +196,23 @@ class LLMContextHandler:
                     )
                 )
 
+            added_info.add(context_id)
+        
+
+        # 检查：如果当前列表不在全局信息池内，从储存原始信息的池里查找原始信息。
+        if id_list is not None:
+            lefting_ids: Set[int] = set(id_list) - set(added_info)
+            for entry_all in self.context_dict.values():
+                # 还剩多少个
+                context_id: int = self.context_raw_dict_reversed[id(entry_all)]
+                if context_id in lefting_ids:
+                    uncompacted_info.append(
+                        LLMUncompactedContextInfoItem(
+                            context_id=context_id,
+                            info=entry_all
+                        )
+                    )
+                
         # 根据键进行排序，从小到大进行
         compacted_info.sort(key=lambda x: x.context_id)
         uncompacted_info.sort(key=lambda x: x.context_id)
@@ -222,12 +222,15 @@ class LLMContextHandler:
             uncompacted_info=uncompacted_info
         )
     
-    async def get_now_context_as_single_str(
+    async def get_content_as_single_str(
         self, 
         id_list: Optional[List[int]] = None
     ) -> Optional[str]:
         """
         获取当前上下文，以单个字符串格式。每行一条内容。
+
+        Args:
+            id_list: 可选返回的上下文内容，如果不填则默认返回全部上下文。
         """
         messages: Optional[LLMContextInfo] = await self.get_now_context(id_list)
         if messages == None:
@@ -241,19 +244,20 @@ class LLMContextHandler:
         lines: List[str] = []
         for c_info in compacted_info:
             msg_str: str = f"""
-            [COMPACTED ABSTRACT] 
+            [Context (Compacted)]:
             Abstract info: {c_info.info.abstract_msg}
+            Tag: {c_info.info.tags}
             This abstract is originally from messages with id: {c_info.context_id}.
             """
             lines.append(msg_str)
 
-            # 这块地方 pyright 会报错，怎么做？
-        
+
         for u_info in uncompacted_info:
             msg_str: str = f"""
-            [ROUND]
+            [Context (Uncompacted)]:
             Role: {u_info.info.role}
-            Content: {u_info.info.content},
+            Tag: {u_info.info.tags}
+            Content: {u_info.info.content}
             """
             if not u_info.info.tool_call_info:
                 msg_str_additional_tool: str = f"""
@@ -264,7 +268,7 @@ class LLMContextHandler:
                 Called tools: {u_info.info.tool_call_info},
                 Results: {u_info.info.tool_call_result}
                 """
-            msg_str.join(msg_str_additional_tool)
+            msg_str += msg_str_additional_tool
 
             lines.append(msg_str)
 
@@ -273,52 +277,100 @@ class LLMContextHandler:
     async def compress_context(self, id_list: Optional[List[int]] = None) -> bool:
         """
         压缩当前全部未压缩上下文，或给定压缩索引，将其压缩。
-        TODO: 让 id_list 可用。
+
+        Args:
+            id_list: 可选压缩的上下文内容，如果不填则默认压缩未被压缩的上下文。
         """
-        if not self.context_dict:
+        if not self.context_dict_uncompacted:
             return False
-        
-        # 如果指定了 id，则单独提取并序列化这些。
-        # TODO: 需要一个工具函数。
 
-        # 否则，获取当前上下文内容，并将其转为文本
-        lines = await self.get_now_context_as_single_str(id_list)
+        # 1. 确定要压缩哪些 id
+        if id_list is None:
+            # 不指定的场合，要求所有内容都压缩
+            target_ids = sorted(self.context_dict_uncompacted.keys())
+        else:
+            target_ids = [
+                context_id
+                for context_id in id_list
+                if context_id in self.context_dict_uncompacted
+            ]
 
-        # 构建上下文内容。
-        prompt = f"Please compact the following context, keep essential information:\n\n{lines}"
+        if not target_ids:
+            return False
 
-        # 等待压缩结果。
-        response = await self.llm_handler.fetch(msg=prompt, fallback_order=self.fallback_order)
-        Compacted_text = response.choices[0].message.content or ""
-        
-        
+        # 2. 序列化目标上下文
+        lines = await self.get_content_as_single_str(target_ids)
+        if lines is None:
+            return False
+
+        prompt = (
+            "Please compact the following context, keep essential information:\n\n"
+            f"{lines}"
+        )
+
+        # 3. 请求 LLM 压缩
+        response: LLMOutput = await self.llm_handler.fetch(
+            msg=prompt,
+            fallback_order=self.fallback_order,
+        )
+        compacted_text = response.content.strip()
+
+        if not compacted_text:
+            return False
+
+        # 4. 收集源对象与 tags
+        source_items: List[LLMContext] = [
+            self.context_dict_uncompacted[context_id]
+            for context_id in target_ids
+        ]
+
+        merged_tags: Set[str] = set()
+        for item in source_items:
+            if item.tags:
+                merged_tags.update(item.tags)
+
+        # 5. 创建压缩对象
+        compacted_info = LLMContextCompacted(
+            abstract_msg=compacted_text,
+            source=source_items,       # pyright: ignore[reportArgumentType]
+            source_ids=target_ids,
+            tags=sorted(merged_tags),
+        )
+
+        # 6. 分配新 id
+        compacted_id = self.now_context_id
+        self.now_context_id += 1
+
+        # 7. 注册到总池和压缩池
+        self.context_raw_dict[compacted_id] = compacted_info
+        self.context_raw_dict_reversed[id(compacted_info)] = compacted_id
+        self.context_dict_compacted[compacted_id] = compacted_info
+
+        # 8. 从未压缩 active 信息里移除源 id
+        for context_id in target_ids:
+            self.context_dict_uncompacted.pop(context_id, None)
+
+        # 9. 给压缩摘要建立 tag 倒排索引
+        for tag in compacted_info.tags or []:
+            self.reverse_tag_dict.setdefault(tag, set()).add(compacted_id)
+
         return True
-    
-    async def get_context_by_id(
-        self, 
-        id_list: List[int]
-    ) -> List[LLMInfo]:
-        """
-        根据上下文 ID，获取上下文内容。
-        """
-        return [self.context_dict[i] for i in id_list if i in self.context_dict]
-    
+
     async def generate_memory(self, id_list: List[int]) -> Optional[str]:
         """
         将特定的上下文内容提取为短条内容。
         - 这是作为“记忆“的重要部分，记忆不会被格式化。
+
+        Args:
+            id_list: 目标上下文内容 id。
         """
         if not self.context_dict:
             return None
-        
-        entries = await self.get_context_by_id(id_list)
-        if not entries:
-            return None
 
-        lines = await self.get_now_context_as_single_str()
+        lines = await self.get_content_as_single_str(id_list)
 
         prompt = f"Please conclude the folowing conversations into an abstract for memory, \
             keep the essential information:\n\n{lines}"
 
         response = await self.llm_handler.fetch(msg=prompt, fallback_order=self.fallback_order)
-        return response.choices[0].message.content or None
+        return response.content or None

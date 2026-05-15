@@ -1,28 +1,10 @@
 import asyncio
 import json
 from dataclasses import dataclass
+from re import I
 from typing import Any, Callable, Dict, List
 
-
-@dataclass
-class Tool:
-    """A single tool that an Agent can call."""
-
-    name: str   # 工具名
-    description: str    # 工具描述
-    parameters: Dict[str, Any]  # JSON Schema - 工具传参用。
-    handler: Callable[..., Any]  # sync or async callable
-
-    async def execute(self, **kwargs: Any) -> Any:
-        """
-        Invoke the tool handler, awaiting if necessary.
-
-        要求所有工具均使用异步模式。
-        """
-        if asyncio.iscoroutinefunction(self.handler):
-            return await self.handler(**kwargs)
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self.handler(**kwargs))
+from .types import Tool
 
 
 class ToolRegistry:

@@ -20,6 +20,8 @@ __author__ = "LunaticLegacy"
 from .llm_fetcher import (
     LLMFetcher,
     LLMBackendConfig,
+    LLMOutput,
+    LLMToolCall,
     LLMError,
     LLMTimeoutError,
     LLMBackendError,
@@ -41,8 +43,7 @@ from .thinking_graph import (
 from .llm_context import (
     LLMContextHandler,
     LLMContext,
-    LLMContextPair,
-    LLMContextCompressed,
+    LLMContextCompacted,
 )
 
 # ============================================================================
@@ -74,6 +75,7 @@ from .swarm.runtime_slot import (
 from .tools.shell_tools import create_shell_tools
 from .tools.builtin_tools import create_builtin_tools
 from .tools.ctf_tools import create_ctf_tools
+from .tools.obscura_tools import create_obscura_tools
 
 # ============================================================================
 # Agent I/O (Optional - for advanced file operations)
@@ -102,6 +104,8 @@ __all__ = [
     # Core classes
     "LLMFetcher",
     "LLMBackendConfig",
+    "LLMOutput",
+    "LLMToolCall",
     "LLMError",
     "LLMTimeoutError",
     "LLMBackendError",
@@ -120,8 +124,7 @@ __all__ = [
     # Context Management
     "LLMContextHandler",
     "LLMContext",
-    "LLMContextPair",
-    "LLMContextCompressed",
+    "LLMContextCompacted",
     
     # Swarm orchestration
     "AgentSwarm",
@@ -147,6 +150,7 @@ __all__ = [
     "create_shell_tools",
     "create_builtin_tools",
     "create_ctf_tools",
+    "create_obscura_tools",
     
     # Agent I/O
     "AgentFileIOManager",

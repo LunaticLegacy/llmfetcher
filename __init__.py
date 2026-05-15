@@ -20,6 +20,8 @@ __author__ = "LunaticLegacy"
 from .pack import (
     LLMFetcher,
     LLMBackendConfig,
+    LLMOutput,
+    LLMToolCall,
     LLMError,
     LLMTimeoutError,
     LLMBackendError,
@@ -38,8 +40,6 @@ from .pack import (
 # ============================================================================
     LLMContextHandler,
     LLMContext,
-    LLMContextPair,
-    LLMContextCompressed,
 # ============================================================================
 # Swarm Orchestration
 # ============================================================================
@@ -93,6 +93,8 @@ __all__ = [
     # Core classes
     "LLMFetcher",
     "LLMBackendConfig",
+    "LLMOutput",
+    "LLMToolCall",
     "LLMError",
     "LLMTimeoutError",
     "LLMBackendError",
@@ -111,8 +113,6 @@ __all__ = [
     # Context Management
     "LLMContextHandler",
     "LLMContext",
-    "LLMContextPair",
-    "LLMContextCompressed",
     
     # Swarm orchestration
     "AgentSwarm",
@@ -138,7 +138,8 @@ __all__ = [
     "create_shell_tools",
     "create_builtin_tools",
     "create_ctf_tools",
-    
+    "create_obscura_tools",
+
     # Agent I/O
     "AgentFileIOManager",
     "AgentWorkspacePolicy",

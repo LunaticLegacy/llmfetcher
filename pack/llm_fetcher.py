@@ -4,58 +4,23 @@
 支持 fallback 自动切换、流式增量提取（含 reasoning 内容）、
 超时重试以及限流器集成。
 
-主要导出内容：
-    - :class:`LLMContext`: 单条对话消息。
-    - :class:`LLMBackendConfig`: 单个后端配置。
-    - :class:`LLMError`: 基础异常。
-    - :class:`LLMTimeoutError`: 超时异常。
-    - :class:`LLMBackendError`: 所有后端均失败异常。
-    - :class:`LLMFetcher`: 请求路由管理器。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
+from .types import (
+    LLMBackendConfig,
+    LLMContext, LLMToolCall, LLMOutput,
+    LLMError,
+    LLMTimeoutError, LLMBackendError
+)
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for static analysis
     from openai import OpenAI
-    from openai.types.chat import ChatCompletion
-
-
-@dataclass
-class LLMContext:
-    """One chat message carried into a backend request."""
-
-    role: str
-    content: str
-
-
-@dataclass
-class LLMBackendConfig:
-    """Configuration for one routable LLM backend."""
-
-    name: str
-    provider: str
-    model: str
-    api_key: str
-    api_url: Optional[str] = None
-    timeout: float = 60.0
-    max_retries: int = 0
-    extra: Dict[str, Any] = field(default_factory=dict)
-
-
-class LLMError(RuntimeError):
-    """Base error for LLM backends."""
-
-
-class LLMTimeoutError(LLMError, TimeoutError):
-    """Raised when the selected LLM backend times out."""
-
-
-class LLMBackendError(LLMError):
-    """Raised when every configured backend fails."""
 
 
 class LLMFetcher:
@@ -198,7 +163,7 @@ class LLMFetcher:
     def _build_messages(
         self,
         msg: str,
-        prev_messages: Optional[List[Any]] = None,
+        prev_messages: Optional[List[LLMContext]] = None,
         system_prompt: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """构造发送给后端的消息列表。
@@ -212,8 +177,12 @@ class LLMFetcher:
             符合聊天接口格式的消息列表。
         """
         messages: List[Dict[str, str]] = []
+
+        # 系统提示词内容
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
+        
+        # 历史上下文内容
         if prev_messages:
             for item in prev_messages:
                 if isinstance(item, dict):
@@ -459,6 +428,164 @@ class LLMFetcher:
         """
         return max(1, int(backend.max_retries))
 
+    def _read_field(self, value: Any, name: str, default: Any = None) -> Any:
+        """Read a field from either a mapping or an SDK object."""
+        if isinstance(value, dict):
+            return value.get(name, default)
+        return getattr(value, name, default)
+
+    def _coerce_content_to_text(self, content: Any) -> str:
+        """Convert provider-specific text/content-block shapes into plain text."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        parts.append(str(part.get("text", "")))
+                    elif "text" in part:
+                        parts.append(str(part["text"]))
+                else:
+                    text = getattr(part, "text", None)
+                    if text:
+                        parts.append(str(text))
+            return "".join(parts)
+        return str(content)
+
+    def _usage_to_dict(self, usage: Any) -> Dict[str, Any]:
+        """Normalize SDK usage objects into a small dict."""
+        if usage is None:
+            return {}
+        if isinstance(usage, dict):
+            return dict(usage)
+        if hasattr(usage, "model_dump"):
+            dumped = usage.model_dump()
+            return dict(dumped) if isinstance(dumped, dict) else {}
+
+        result: Dict[str, Any] = {}
+        for name in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "input_tokens",
+            "output_tokens",
+        ):
+            value = getattr(usage, name, None)
+            if value is not None:
+                result[name] = value
+        return result
+
+    def _parse_arguments(self, arguments: Any) -> Dict[str, Any]:
+        """Normalize tool-call arguments into a dict."""
+        if isinstance(arguments, dict):
+            return arguments
+        if isinstance(arguments, str) and arguments.strip():
+            try:
+                parsed = json.loads(arguments)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _normalize_openai_tool_calls(self, message: Any) -> List[LLMToolCall]:
+        """Extract OpenAI-compatible native tool calls."""
+        raw_calls = self._read_field(message, "tool_calls", None) or []
+        calls: List[LLMToolCall] = []
+        for raw_call in raw_calls:
+            function = self._read_field(raw_call, "function", {}) or {}
+            name = self._read_field(function, "name", "")
+            if not name:
+                continue
+            calls.append(
+                LLMToolCall(
+                    name=str(name),
+                    arguments=self._parse_arguments(self._read_field(function, "arguments", {})),
+                    call_id=self._read_field(raw_call, "id", None),
+                    source="openai_native",
+                )
+            )
+        return calls
+
+    def _normalize_anthropic_blocks(
+        self,
+        blocks: Iterable[Any],
+    ) -> tuple[str, str, List[LLMToolCall]]:
+        """Extract text, reasoning, and tool-use blocks from Anthropic content."""
+        text_parts: List[str] = []
+        reasoning_parts: List[str] = []
+        tool_calls: List[LLMToolCall] = []
+
+        for block in blocks:
+            block_type = self._read_field(block, "type", None)
+            if block_type == "text":
+                text_parts.append(str(self._read_field(block, "text", "")))
+            elif block_type in {"thinking", "reasoning"}:
+                reasoning = self._read_field(block, "thinking", None)
+                if reasoning is None:
+                    reasoning = self._read_field(block, "text", "")
+                reasoning_parts.append(str(reasoning))
+            elif block_type == "tool_use":
+                name = self._read_field(block, "name", "")
+                if not name:
+                    continue
+                tool_calls.append(
+                    LLMToolCall(
+                        name=str(name),
+                        arguments=self._parse_arguments(self._read_field(block, "input", {})),
+                        call_id=self._read_field(block, "id", None),
+                        source="anthropic",
+                    )
+                )
+
+        return "".join(text_parts), "".join(reasoning_parts), tool_calls
+
+    def _normalize_completion_response(
+        self,
+        backend: LLMBackendConfig,
+        response: Any,
+    ) -> LLMOutput:
+        """Convert a provider SDK response into the public LLMOutput shape."""
+        if backend.provider in {"openai", "litellm"}:
+            choices = self._read_field(response, "choices", None) or []
+            choice = choices[0] if choices else None
+            message = self._read_field(choice, "message", None) if choice is not None else None
+            content = self._coerce_content_to_text(self._read_field(message, "content", None))
+            reasoning = self._read_field(message, "reasoning_content", None)
+            if reasoning is None:
+                reasoning = self._read_field(message, "reasoning", "")
+
+            return LLMOutput(
+                content=content,
+                provider=backend.provider,
+                backend_name=backend.name,
+                model=backend.model,
+                role=self._read_field(message, "role", "assistant") or "assistant",
+                reasoning_content=str(reasoning or ""),
+                tool_calls=self._normalize_openai_tool_calls(message),
+                stop_reason=self._read_field(choice, "finish_reason", None),
+                usage=self._usage_to_dict(self._read_field(response, "usage", None)),
+            )
+
+        if backend.provider == "anthropic":
+            blocks = self._read_field(response, "content", None) or []
+            content, reasoning, tool_calls = self._normalize_anthropic_blocks(blocks)
+            return LLMOutput(
+                content=content,
+                provider=backend.provider,
+                backend_name=backend.name,
+                model=backend.model,
+                role=self._read_field(response, "role", "assistant") or "assistant",
+                reasoning_content=reasoning,
+                tool_calls=tool_calls,
+                stop_reason=self._read_field(response, "stop_reason", None),
+                usage=self._usage_to_dict(self._read_field(response, "usage", None)),
+            )
+
+        raise ValueError(f"Unsupported provider: {backend.provider}")
+
     def _extract_content(self, delta: Any) -> Optional[str]:
         """从流式增量中提取正文内容。
 
@@ -471,8 +598,8 @@ class LLMFetcher:
         if delta is None:
             return None
         if isinstance(delta, dict):
-            return delta.get("content")
-        return getattr(delta, "content", None)
+            return delta.get("content") or delta.get("text")
+        return getattr(delta, "content", None) or getattr(delta, "text", None)
 
     def _extract_reasoning(self, delta: Any) -> Optional[str]:
         """从流式增量中提取推理内容。
@@ -486,13 +613,18 @@ class LLMFetcher:
         if delta is None:
             return None
         if isinstance(delta, dict):
-            return delta.get("reasoning_content") or delta.get("reasoning")
-        return getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            return delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+        return (
+            getattr(delta, "reasoning_content", None)
+            or getattr(delta, "reasoning", None)
+            or getattr(delta, "thinking", None)
+        )
 
     def _iter_stream_text(
         self,
         response: Iterable[Any],
         *,
+        backend: LLMBackendConfig,
         output_reasoning: bool,
     ) -> Iterable[str]:
         """将流式响应标准化为文本片段。
@@ -504,9 +636,55 @@ class LLMFetcher:
         Yields:
             标准化后的文本片段。
         """
-        # 维护 thinking 状态机，用于在 reasoning 内容与正文之间插入分界标记
         in_thinking = False
+
+        def emit_reasoning(reasoning: Optional[str]) -> Iterable[str]:
+            nonlocal in_thinking
+            if not reasoning or not output_reasoning:
+                return
+            if not in_thinking:
+                yield "\n<THINK>\n"
+                in_thinking = True
+            yield reasoning
+
+        def emit_content(content: Optional[str]) -> Iterable[str]:
+            nonlocal in_thinking
+            if not content:
+                return
+            if in_thinking:
+                yield "\n</THINK>\n"
+                in_thinking = False
+            yield content
+
         for chunk in response:
+            if backend.provider == "anthropic":
+                event_type = self._read_field(chunk, "type", None)
+                delta = self._read_field(chunk, "delta", None)
+
+                if event_type == "content_block_start":
+                    block = self._read_field(chunk, "content_block", None)
+                    block_type = self._read_field(block, "type", None)
+                    if block_type == "text":
+                        yield from emit_content(self._read_field(block, "text", None))
+                    elif block_type in {"thinking", "reasoning"}:
+                        yield from emit_reasoning(self._extract_reasoning(block))
+                    continue
+
+                if event_type == "content_block_delta":
+                    delta_type = self._read_field(delta, "type", None)
+                    if delta_type == "text_delta":
+                        yield from emit_content(self._read_field(delta, "text", None))
+                    elif delta_type in {"thinking_delta", "reasoning_delta"}:
+                        yield from emit_reasoning(self._extract_reasoning(delta))
+                    continue
+
+                if event_type in {"text_delta", "thinking_delta", "reasoning_delta"}:
+                    if event_type == "text_delta":
+                        yield from emit_content(self._extract_content(delta or chunk))
+                    else:
+                        yield from emit_reasoning(self._extract_reasoning(delta or chunk))
+                    continue
+
             choices = getattr(chunk, "choices", None)
             if not choices and isinstance(chunk, dict):
                 choices = chunk.get("choices")
@@ -544,7 +722,7 @@ class LLMFetcher:
         backend_name: Optional[str] = None,
         fallback_order: Optional[Sequence[str]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
-    ) -> Any:
+    ) -> LLMOutput:
         """执行一次非流式请求，并按顺序尝试后端回退。
 
         Args:
@@ -558,7 +736,7 @@ class LLMFetcher:
             tools: 可选的 OpenAI tools schema 列表。
 
         Returns:
-            后端 SDK 返回的原始补全响应对象。
+            抽象后的 LLM 输出，只暴露正文、推理内容、工具调用、用量等统一字段。
 
         Raises:
             LLMBackendError: 当所有候选后端均调用失败时抛出。
@@ -575,7 +753,7 @@ class LLMFetcher:
                 retries_left = self._timeout_retry_count(backend)
                 while True:
                     try:
-                        return await asyncio.to_thread(
+                        raw_response = await asyncio.to_thread(
                             self._create_completion,
                             backend,
                             messages=messages,
@@ -584,6 +762,7 @@ class LLMFetcher:
                             stream=False,
                             tools=tools,
                         )
+                        return self._normalize_completion_response(backend, raw_response)
                     except Exception as exc:
                         normalized = self._normalize_exception(backend, exc)
                         if isinstance(normalized, LLMTimeoutError) and retries_left > 0:
@@ -650,7 +829,11 @@ class LLMFetcher:
                             stream=True,
                             tools=tools,
                         )
-                        for text in self._iter_stream_text(response, output_reasoning=output_reasoning):
+                        for text in self._iter_stream_text(
+                            response,
+                            backend=backend,
+                            output_reasoning=output_reasoning,
+                        ):
                             yielded_any = True
                             yield text
                         return

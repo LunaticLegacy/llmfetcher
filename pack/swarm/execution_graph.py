@@ -88,7 +88,7 @@ class AgentNode(ExecutionNode):
         else:
             parts = [f"[输入 {i + 1}]\n{str(inp)}" for i, inp in enumerate(inputs)]
             msg = "\n\n".join(parts)
-        return await self.agent.round_call(msg, stream=False, max_turns=self.max_turns)
+        return await self.agent.run_agent_round(msg, max_turns=self.max_turns)
 
 
 class ToolNode(ExecutionNode):
@@ -135,7 +135,7 @@ class RouterNode(ExecutionNode):
                 f"输入内容：\n{content}\n\n"
                 f"请只输出一个路由标签（{list(self.routes.keys())}），不要输出其他内容。"
             )
-            result = await self.agent.round_call(prompt, stream=False, max_turns=1)
+            result = await self.agent.run_agent_round(prompt, max_turns=1)
             selected = self.default_route
             for label in self.routes:
                 if label in result:
