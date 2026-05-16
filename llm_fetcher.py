@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
+import threading
 from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
-from .types import (
+from typing import Any, AsyncGenerator, Callable, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
+from .llm_types import (
     LLMBackendConfig,
     LLMContext, LLMToolCall, LLMOutput,
     LLMError,
@@ -21,6 +23,16 @@ from .types import (
 
 if TYPE_CHECKING:  # pragma: no cover - imported only for static analysis
     from openai import OpenAI
+
+
+@dataclass
+class _OpenVINOCompletionResponse:
+    """Small internal response object for OpenVINO GenAI completions."""
+
+    content: str
+    raw: Any = None
+    usage: Dict[str, Any] = field(default_factory=dict)
+    stop_reason: Optional[str] = None
 
 
 class LLMFetcher:
@@ -62,17 +74,19 @@ class LLMFetcher:
         self.backend_order: List[str] = []
         self.openai_clients: Dict[str, Any] = {}
         self.anthropic_clients: Dict[str, Any] = {}  # ← 新增：Anthropic 客户端字典
+        self.openvino_pipelines: Dict[str, Any] = {}
+        self.openvino_modules: Dict[str, Any] = {}
 
         if backends:
             for backend in backends:
                 self._register_backend(backend)
-        elif api_key and model:
+        elif model and (api_key or provider == "openvino"):
             self._register_backend(
                 LLMBackendConfig(
                     name="default",
                     provider=provider,
                     model=model,
-                    api_key=api_key,
+                    api_key=api_key or "",
                     api_url=api_url,
                     timeout=timeout,
                 )
@@ -131,6 +145,24 @@ class LLMFetcher:
                 client_kwargs["base_url"] = backend.api_url
             
             self.anthropic_clients[backend.name] = anthropic.Anthropic(**client_kwargs)
+
+        elif backend.provider == "openvino":
+            try:
+                import openvino_genai as ov_genai
+            except ImportError as exc:  # pragma: no cover - depends on optional package
+                raise ValueError(
+                    "openvino provider requires the 'openvino-genai' package to be installed."
+                ) from exc
+
+            model_path = backend.extra.get("model_path") or backend.api_url or backend.model
+            device = backend.extra.get("device", "AUTO")
+            pipeline_kwargs = dict(backend.extra.get("pipeline_kwargs") or {})
+            self.openvino_modules[backend.name] = ov_genai
+            self.openvino_pipelines[backend.name] = ov_genai.LLMPipeline(
+                model_path,
+                device,
+                **pipeline_kwargs,
+            )
 
     def _resolve_backends(
         self,
@@ -300,6 +332,136 @@ class LLMFetcher:
         
         return anthropic_tools
 
+    def _build_openvino_chat_history(
+        self,
+        backend: LLMBackendConfig,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Any:
+        """Build an OpenVINO GenAI ChatHistory when available, otherwise a list."""
+        ov_genai = self.openvino_modules[backend.name]
+        chat_history_cls = getattr(ov_genai, "ChatHistory", None)
+        history = chat_history_cls() if chat_history_cls is not None else []
+
+        append = getattr(history, "append", None)
+        for message in messages:
+            item = {
+                "role": str(message.get("role", "")),
+                "content": str(message.get("content", "")),
+            }
+            if append is not None:
+                append(item)
+            else:
+                history.append(item)
+
+        if tools and hasattr(history, "set_tools"):
+            history.set_tools(tools)
+
+        extra_context = backend.extra.get("extra_context")
+        if extra_context and hasattr(history, "set_extra_context"):
+            history.set_extra_context(extra_context)
+
+        return history
+
+    def _openvino_generation_config(
+        self,
+        backend: LLMBackendConfig,
+        *,
+        temperature: float,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """Translate common generation options into OpenVINO GenAI kwargs."""
+        config = dict(backend.extra.get("generation_config") or {})
+        config.setdefault("max_new_tokens", max_tokens)
+        config.setdefault("temperature", temperature)
+        return config
+
+    def _call_openvino_generate(
+        self,
+        pipe: Any,
+        prompt_or_history: Any,
+        config: Dict[str, Any],
+        *,
+        streamer: Optional[Callable[[str], Any]] = None,
+    ) -> Any:
+        """Call OpenVINO GenAI with fallbacks for supported Python signatures."""
+        call_attempts: List[Callable[[], Any]]
+        if streamer is None:
+            call_attempts = [
+                lambda: pipe.generate(prompt_or_history, config),
+                lambda: pipe.generate(prompt_or_history, **config),
+            ]
+        else:
+            call_attempts = [
+                lambda: pipe.generate(prompt_or_history, config, streamer=streamer),
+                lambda: pipe.generate(prompt_or_history, streamer=streamer, **config),
+            ]
+
+        last_type_error: Optional[TypeError] = None
+        for call in call_attempts:
+            try:
+                return call()
+            except TypeError as exc:
+                last_type_error = exc
+        if last_type_error is not None:
+            raise last_type_error
+        raise RuntimeError("OpenVINO generation failed before any call attempt.")
+
+    def _openvino_result_text(self, result: Any) -> str:
+        """Extract text from OpenVINO GenAI decoded results."""
+        if result is None:
+            return ""
+        texts = self._read_field(result, "texts", None)
+        if texts:
+            return str(texts[0])
+        text = self._read_field(result, "text", None)
+        if text is not None:
+            return str(text)
+        return str(result)
+
+    def _create_openvino_stream(
+        self,
+        backend: LLMBackendConfig,
+        prompt_or_history: Any,
+        config: Dict[str, Any],
+    ) -> Iterable[str]:
+        """Run OpenVINO generation in a thread and expose streamed text chunks."""
+        pipe = self.openvino_pipelines[backend.name]
+        ov_genai = self.openvino_modules[backend.name]
+        items: queue.Queue[Any] = queue.Queue()
+        sentinel = object()
+
+        def streamer(text: str) -> Any:
+            if text:
+                items.put(str(text))
+            streaming_status = getattr(ov_genai, "StreamingStatus", None)
+            running = getattr(streaming_status, "RUNNING", None)
+            return running if running is not None else False
+
+        def worker() -> None:
+            try:
+                self._call_openvino_generate(
+                    pipe,
+                    prompt_or_history,
+                    config,
+                    streamer=streamer,
+                )
+            except BaseException as exc:
+                items.put(exc)
+            finally:
+                items.put(sentinel)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        while True:
+            item = items.get()
+            if item is sentinel:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield str(item)
+
     def _create_completion(
         self,
         backend: LLMBackendConfig,
@@ -394,7 +556,21 @@ class LLMFetcher:
             return litellm_completion(**kwargs)
         
         if backend.provider == "openvino":
-            raise NotImplementedError("Nunc OpenVINO bibo; ergo hoc adhuc in opere est.")
+            history = self._build_openvino_chat_history(backend, messages, tools=tools)
+            config = self._openvino_generation_config(
+                backend,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            if stream:
+                return self._create_openvino_stream(backend, history, config)
+
+            pipe = self.openvino_pipelines[backend.name]
+            result = self._call_openvino_generate(pipe, history, config)
+            return _OpenVINOCompletionResponse(
+                content=self._openvino_result_text(result),
+                raw=result,
+            )
 
         raise ValueError(f"Unsupported provider: {backend.provider}")
 
@@ -584,6 +760,19 @@ class LLMFetcher:
                 usage=self._usage_to_dict(self._read_field(response, "usage", None)),
             )
 
+        if backend.provider == "openvino":
+            return LLMOutput(
+                content=self._coerce_content_to_text(
+                    self._read_field(response, "content", response)
+                ),
+                provider=backend.provider,
+                backend_name=backend.name,
+                model=backend.model,
+                role="assistant",
+                stop_reason=self._read_field(response, "stop_reason", None),
+                usage=self._usage_to_dict(self._read_field(response, "usage", None)),
+            )
+
         raise ValueError(f"Unsupported provider: {backend.provider}")
 
     def _extract_content(self, delta: Any) -> Optional[str]:
@@ -657,6 +846,10 @@ class LLMFetcher:
             yield content
 
         for chunk in response:
+            if backend.provider == "openvino":
+                yield from emit_content(self._coerce_content_to_text(chunk))
+                continue
+
             if backend.provider == "anthropic":
                 event_type = self._read_field(chunk, "type", None)
                 delta = self._read_field(chunk, "delta", None)

@@ -1,7 +1,7 @@
 import os
 import asyncio
 
-from pack import LLMFetcher, LLMBackendConfig, create_obscura_tools, create_shell_tools, Tool, Agent
+from llmfetcher import LLMFetcher, LLMBackendConfig, create_obscura_tools, create_shell_tools, Tool, Agent
 
 from typing import List
 

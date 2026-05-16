@@ -4,7 +4,7 @@ from re import NOFLAG
 from typing import List, Dict, Optional, Tuple, Union, Set
 
 from .llm_fetcher import LLMFetcher, LLMOutput
-from .types import (
+from .llm_types import (
     LLMInfo, LLMContext, LLMContextCompacted,
     LLMContextValue, LLMContextCompactedValue,
     LLMCompactedContextInfoItem,

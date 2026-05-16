@@ -2,7 +2,7 @@
 llmfetcher Demo – showcases core framework features.
 
 Usage:
-    python -m pack.tests.test_llmdemo
+    python -m llmfetcher.tests.test_llmdemo
 
 Ensure at least one LLM backend is configured via environment variables:
     OPENAI_API_KEY=...  (or set LLM_BACKEND_CONFIG as a JSON string)
@@ -13,15 +13,15 @@ import os
 import sys
 from typing import Any, Dict, List
 
-# Add project root to path if running directly
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add package parent to path if running directly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from pack.llm_fetcher import LLMFetcher, LLMBackendConfig
-from pack.agent import Agent
-from pack.tool import Tool
-from pack.swarm.swarm import AgentSwarm
-from pack.thinking_graph import ThinkingGraph
-from pack.swarm.execution_graph import Edge
+from llmfetcher.llm_fetcher import LLMFetcher, LLMBackendConfig
+from llmfetcher.agent import Agent
+from llmfetcher.tool import Tool
+from llmfetcher.swarm.swarm import AgentSwarm
+from llmfetcher.thinking_graph import ThinkingGraph
+from llmfetcher.swarm.execution_graph import Edge
 
 
 # ---------------------------------------------------------------------------

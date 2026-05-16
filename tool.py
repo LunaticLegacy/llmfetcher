@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from re import I
 from typing import Any, Callable, Dict, List
 
-from .types import Tool
+from .llm_types import Tool
 
 
 class ToolRegistry:
@@ -59,7 +59,7 @@ class ToolRegistry:
         """Return tool schemas formatted for a specific LLM provider.
         
         Args:
-            provider: Target provider name. Supported: "openai", "anthropic", "custom_json"
+            provider: Target provider name. Supported: "openai", "anthropic", "openvino", "custom_json"
             
         Returns:
             List of tool definitions in provider-specific format
@@ -88,13 +88,16 @@ class ToolRegistry:
         elif provider == "anthropic":
             return self._to_anthropic_format()
         
-        elif provider == "custom_json":
+        elif provider in {"custom_json", "openvino"}:
             # For custom JSON parsing, we don't send schemas to LLM
             # Tools are described in system prompt instead
             return []
         
         else:
-            raise ValueError(f"Unsupported provider: {provider}. Use 'openai', 'anthropic', or 'custom_json'.")
+            raise ValueError(
+                f"Unsupported provider: {provider}. "
+                "Use 'openai', 'anthropic', 'openvino', or 'custom_json'."
+            )
     
     def _to_anthropic_format(self) -> List[Dict[str, Any]]:
         """Convert internal tool definitions to Anthropic Claude format.

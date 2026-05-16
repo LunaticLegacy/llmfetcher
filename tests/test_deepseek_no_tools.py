@@ -3,7 +3,7 @@
 
 import os
 import asyncio
-from pack import LLMFetcher, LLMBackendConfig
+from llmfetcher import LLMFetcher, LLMBackendConfig
 
 async def test_no_tools():
     """Test DeepSeek API without any tools."""

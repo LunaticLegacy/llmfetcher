@@ -11,9 +11,8 @@ from .llm_fetcher import LLMFetcher, LLMOutput, LLMToolCall
 from .llm_context import LLMContext, LLMContextCompacted, LLMContextHandler, LLMContextInfo
 from .tool import Tool, ToolRegistry
 from .tools.builtin_tools import create_builtin_tools
-from modules.llmfetcher.pack import tool
 
-from .types import (
+from .llm_types import (
     OptionalToolList,
     MessageDict, Messages,
     ToolArgs, AssistantMessageDict,

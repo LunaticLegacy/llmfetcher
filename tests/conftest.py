@@ -14,10 +14,11 @@ from pathlib import Path
 import pytest
 
 
-# Ensure project root is in Python path
+# Ensure package parent is in Python path
 project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+package_parent = project_root.parent
+if str(package_parent) not in sys.path:
+    sys.path.insert(0, str(package_parent))
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +33,7 @@ def mock_api_key():
 @pytest.fixture
 def sample_backend_config():
     """Sample LLMBackendConfig for testing."""
-    from pack.llm_fetcher import LLMBackendConfig
+    from llmfetcher.llm_fetcher import LLMBackendConfig
     
     return LLMBackendConfig(
         name="test-backend",

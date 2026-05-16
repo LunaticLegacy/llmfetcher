@@ -3,7 +3,7 @@
 
 import os
 import asyncio
-from pack import LLMFetcher, LLMBackendConfig, Agent
+from llmfetcher import LLMFetcher, LLMBackendConfig, Agent
 
 async def test_with_tools():
     """Test DeepSeek API with tool calling."""

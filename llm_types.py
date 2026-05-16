@@ -13,7 +13,7 @@ class LLMBackendConfig:
     name: str
     provider: str
     model: str
-    api_key: str
+    api_key: str = ""
     api_url: Optional[str] = None
     timeout: float = 60.0
     max_retries: int = 0

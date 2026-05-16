@@ -3,7 +3,7 @@
 
 import os
 import asyncio
-from pack import LLMFetcher, LLMBackendConfig
+from llmfetcher import LLMFetcher, LLMBackendConfig
 
 async def debug_messages():
     """Debug message format being sent to API."""

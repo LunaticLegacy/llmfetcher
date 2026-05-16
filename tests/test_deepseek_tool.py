@@ -3,7 +3,7 @@
 
 import os
 import asyncio
-from pack import LLMFetcher, LLMBackendConfig, Agent, Tool
+from llmfetcher import LLMFetcher, LLMBackendConfig, Agent, Tool
 
 async def test_simple_tool():
     """Test with a simple tool."""

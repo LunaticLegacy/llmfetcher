@@ -1,12 +1,12 @@
 """
 LLM Fetcher - Multi-Agent Orchestration Framework
 
-A powerful Python framework for building, orchestrating, and executing 
+A powerful Python framework for building, orchestrating, and executing
 LLM-powered multi-agent systems with structured reasoning capabilities.
 
 Example usage:
-    from pack import Agent, LLMFetcher, Tool
-    
+    from llmfetcher import Agent, LLMFetcher, Tool
+
     fetcher = LLMFetcher(backends=[...])
     agent = Agent(llm_handler=fetcher, system_prompt="...", provider="anthropic")
 """
@@ -17,7 +17,7 @@ __author__ = "LunaticLegacy"
 # ============================================================================
 # Core Classes
 # ============================================================================
-from .pack import (
+from .llm_fetcher import (
     LLMFetcher,
     LLMBackendConfig,
     LLMOutput,
@@ -25,26 +25,32 @@ from .pack import (
     LLMError,
     LLMTimeoutError,
     LLMBackendError,
-    Agent,
-    Tool, 
-    ToolRegistry,
+)
+from .agent import Agent
+from .tool import Tool, ToolRegistry
+from .thinking_graph import (
     ThinkingGraph,
     ThinkingNodeType,
     ThinkingEdgeType,
     ThinkingGraphNode,
     ThinkingGraphEdge,
     ThinkingGraphTransactionRecord,
+)
 
 # ============================================================================
 # Context Management
 # ============================================================================
+from .llm_context import (
     LLMContextHandler,
     LLMContext,
+    LLMContextCompacted,
+)
+
 # ============================================================================
 # Swarm Orchestration
 # ============================================================================
-    AgentSwarm, 
-    SwarmSpec,
+from .swarm.swarm import AgentSwarm, SwarmSpec
+from .swarm.execution_graph import (
     GraphContext,
     Edge,
     ExecutionStopState,
@@ -56,31 +62,36 @@ from .pack import (
     OutputNode,
     JoinNode,
     ExecutionGraph,
+)
+from .swarm.runtime_slot import (
     RuntimeSlot,
     RuntimeSlotManager,
     SlotStatus,
+)
 
 # ============================================================================
 # Tool Factories
 # ============================================================================
-    create_shell_tools,
-    create_builtin_tools,
-    create_ctf_tools,
+from .tools.shell_tools import create_shell_tools
+from .tools.builtin_tools import create_builtin_tools
+from .tools.ctf_tools import create_ctf_tools
+from .tools.obscura_tools import create_obscura_tools
 
 # ============================================================================
 # Agent I/O (Optional - for advanced file operations)
 # ============================================================================
+from .agent_io import (
     AgentFileIOManager,
     AgentWorkspacePolicy,
     AgentFileLocations,
     AgentFileSnapshot,
+)
 
 # ============================================================================
 # Submodules (for advanced usage)
 # ============================================================================
-    tools as tool_modules,
-    swarm as swarm_modules
-)
+from . import tools as tool_modules
+from . import swarm as swarm_modules
 
 # ============================================================================
 # Public API Exports
@@ -89,7 +100,7 @@ __all__ = [
     # Version info
     "__version__",
     "__author__",
-    
+
     # Core classes
     "LLMFetcher",
     "LLMBackendConfig",
@@ -101,7 +112,7 @@ __all__ = [
     "Agent",
     "Tool",
     "ToolRegistry",
-    
+
     # Thinking Graph
     "ThinkingGraph",
     "ThinkingNodeType",
@@ -109,11 +120,12 @@ __all__ = [
     "ThinkingGraphNode",
     "ThinkingGraphEdge",
     "ThinkingGraphTransactionRecord",
-    
+
     # Context Management
     "LLMContextHandler",
     "LLMContext",
-    
+    "LLMContextCompacted",
+
     # Swarm orchestration
     "AgentSwarm",
     "SwarmSpec",
@@ -128,12 +140,12 @@ __all__ = [
     "OutputNode",
     "JoinNode",
     "ExecutionGraph",
-    
+
     # Runtime slots
     "RuntimeSlot",
     "RuntimeSlotManager",
     "SlotStatus",
-    
+
     # Tool factories
     "create_shell_tools",
     "create_builtin_tools",
@@ -145,7 +157,7 @@ __all__ = [
     "AgentWorkspacePolicy",
     "AgentFileLocations",
     "AgentFileSnapshot",
-    
+
     # Submodules (for advanced usage)
     "tool_modules",
     "swarm_modules",

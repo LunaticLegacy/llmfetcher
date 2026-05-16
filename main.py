@@ -19,14 +19,14 @@ import os
 import sys
 from typing import Any, Dict, List
 
-# ── Add project root ──────────────────────────────────────────────────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ── Add package parent for direct script execution ────────────────────
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pack.llm_fetcher import LLMFetcher, LLMBackendConfig
-from pack.tool import Tool
-from pack.swarm.swarm import AgentSwarm
-from pack.tools.shell_tools import create_shell_tools
-from pack.swarm.execution_graph import GraphContext
+from llmfetcher.llm_fetcher import LLMFetcher, LLMBackendConfig
+from llmfetcher.tool import Tool
+from llmfetcher.swarm.swarm import AgentSwarm
+from llmfetcher.tools.shell_tools import create_shell_tools
+from llmfetcher.swarm.execution_graph import GraphContext
 
 
 # ======================================================================

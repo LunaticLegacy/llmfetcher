@@ -39,19 +39,27 @@ dev = [
     "mypy>=1.0.0",
     "ruff>=0.1.0",
 ]
+openvino = [
+    "openvino-genai>=2025.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/LunaticLegacy/llmfetcher"
 Repository = "https://github.com/LunaticLegacy/llmfetcher"
 "Bug Tracker" = "https://github.com/LunaticLegacy/llmfetcher/issues"
 
-[tool.setuptools.packages.find]
-include = ["pack*"]
+[tool.setuptools]
+packages = ["llmfetcher", "llmfetcher.swarm", "llmfetcher.tools"]
+
+[tool.setuptools.package-dir]
+llmfetcher = "."
+"llmfetcher.swarm" = "swarm"
+"llmfetcher.tools" = "tools"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["pack/tests"]
-pythonpath = ["."]
+testpaths = ["tests"]
+pythonpath = [".."]
 addopts = "-v --tb=short"
 
 [tool.black]

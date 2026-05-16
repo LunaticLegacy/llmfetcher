@@ -2,10 +2,10 @@
 
 ## Architecture
 
-- `pack/llm_fetcher.py` owns backend routing, fallback, retries, rate limiting, and conversion from SDK-specific responses into backend-neutral output objects.
-- `pack/agent.py` consumes `LLMOutput` instead of reading OpenAI or Anthropic SDK response layouts directly in the main agent loop.
-- `pack/llm_context.py` stores conversation context and uses `LLMOutput.content` when it asks the fetcher to summarize or create memory.
-- `pack/tools/builtin_tools.py` provides Agent-bound management tools for reading, listing, compressing context, and managing persistent memories.
+- `llm_fetcher.py` owns backend routing, fallback, retries, rate limiting, and conversion from SDK-specific responses into backend-neutral output objects.
+- `agent.py` consumes `LLMOutput` instead of reading OpenAI or Anthropic SDK response layouts directly in the main agent loop.
+- `llm_context.py` stores conversation context and uses `LLMOutput.content` when it asks the fetcher to summarize or create memory.
+- `tools/builtin_tools.py` provides Agent-bound management tools for reading, listing, compressing context, and managing persistent memories.
 
 ## Types
 

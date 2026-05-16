@@ -63,7 +63,7 @@ pip install .
 ### Verify Installation
 
 ```python
-from pack import Agent, LLMFetcher, Tool
+from llmfetcher import Agent, LLMFetcher, Tool
 print("✅ Installation successful!")
 ```
 
@@ -94,7 +94,7 @@ export LLM_BACKEND_CONFIG='{"name":"openai","provider":"openai","model":"gpt-4o-
 
 ```python
 import asyncio
-from pack import Agent, LLMFetcher, LLMBackendConfig
+from llmfetcher import Agent, LLMFetcher, LLMBackendConfig
 
 async def main():
     # Configure LLM backend
@@ -125,7 +125,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from pack import AgentSwarm, LLMFetcher, LLMBackendConfig
+from llmfetcher import AgentSwarm, LLMFetcher, LLMBackendConfig
 
 async def main():
     backend = LLMBackendConfig(
@@ -216,7 +216,7 @@ A directed graph representing structured reasoning with rich semantics:
 Example usage:
 
 ```python
-from pack import ThinkingGraph, ThinkingNodeType
+from llmfetcher import ThinkingGraph, ThinkingNodeType
 
 graph = ThinkingGraph()
 
@@ -258,7 +258,7 @@ A DAG (Directed Acyclic Graph) for orchestrating agent workflows:
 Example:
 
 ```python
-from pack.swarm.execution_graph import ExecutionGraph
+from llmfetcher.swarm.execution_graph import ExecutionGraph
 
 graph = ExecutionGraph(llm_fetcher=fetcher)
 
@@ -282,7 +282,7 @@ Top-level container coordinating multiple agents with shared state:
 swarm = AgentSwarm(llm_fetcher=fetcher, name="my-swarm")
 
 # Add global tools available to all agents
-from pack.tools.shell_tools import create_shell_tools
+from llmfetcher.tools.shell_tools import create_shell_tools
 swarm.add_tools(create_shell_tools())
 
 # Add agents with different capabilities
@@ -317,7 +317,7 @@ Modular functions agents can invoke. Built-in tools include:
 Create custom tools:
 
 ```python
-from pack import Tool
+from llmfetcher import Tool
 
 async def my_custom_tool(param1: str, param2: int = 10) -> str:
     """Custom tool description."""
@@ -374,13 +374,13 @@ agent.add_tool(tool)
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| `Agent` | [`pack/agent.py`](pack/agent.py) | Core agent lifecycle and tool dispatch |
-| `AgentSwarm` | [`pack/swarm/swarm.py`](pack/swarm/swarm.py) | Multi-agent orchestration |
-| `ThinkingGraph` | [`pack/thinking_graph.py`](pack/thinking_graph.py) | Structured reasoning engine |
-| `ExecutionGraph` | [`pack/swarm/execution_graph.py`](pack/swarm/execution_graph.py) | DAG-based workflow execution |
-| `LLMFetcher` | [`pack/llm_fetcher.py`](pack/llm_fetcher.py) | LLM API abstraction layer |
-| `Tool` | [`pack/tool.py`](pack/tool.py) | Base class for extensible tools |
-| `RuntimeSlot` | [`pack/swarm/runtime_slot.py`](pack/swarm/runtime_slot.py) | Per-agent state management |
+| `Agent` | [`agent.py`](agent.py) | Core agent lifecycle and tool dispatch |
+| `AgentSwarm` | [`swarm/swarm.py`](swarm/swarm.py) | Multi-agent orchestration |
+| `ThinkingGraph` | [`thinking_graph.py`](thinking_graph.py) | Structured reasoning engine |
+| `ExecutionGraph` | [`swarm/execution_graph.py`](swarm/execution_graph.py) | DAG-based workflow execution |
+| `LLMFetcher` | [`llm_fetcher.py`](llm_fetcher.py) | LLM API abstraction layer |
+| `Tool` | [`tool.py`](tool.py) | Base class for extensible tools |
+| `RuntimeSlot` | [`swarm/runtime_slot.py`](swarm/runtime_slot.py) | Per-agent state management |
 
 ## 📖 Usage Examples
 
@@ -388,8 +388,8 @@ agent.add_tool(tool)
 
 ```python
 import asyncio
-from pack import AgentSwarm, LLMFetcher, LLMBackendConfig
-from pack.thinking_graph import ThinkingNodeType
+from llmfetcher import AgentSwarm, LLMFetcher, LLMBackendConfig
+from llmfetcher.thinking_graph import ThinkingNodeType
 
 async def research_assistant():
     backend = LLMBackendConfig(
@@ -438,7 +438,7 @@ asyncio.run(research_assistant())
 
 ```python
 import asyncio
-from pack import AgentSwarm, LLMFetcher, LLMBackendConfig
+from llmfetcher import AgentSwarm, LLMFetcher, LLMBackendConfig
 
 async def parallel_pipeline():
     backend = LLMBackendConfig(
@@ -502,7 +502,7 @@ asyncio.run(parallel_pipeline())
 
 ``python
 import asyncio
-from pack import Agent, LLMFetcher, LLMBackendConfig, Tool
+from llmfetcher import Agent, LLMFetcher, LLMBackendConfig, Tool
 
 # Define custom tool
 async def web_search(query: str, max_results: int = 5) -> str:
@@ -581,7 +581,7 @@ asyncio.run(main())
 Configure and manage LLM backends:
 
 ```python
-from pack import LLMFetcher, LLMBackendConfig
+from llmfetcher import LLMFetcher, LLMBackendConfig
 
 # Single backend
 backend = LLMBackendConfig(
@@ -605,12 +605,36 @@ backends = [
 fetcher = LLMFetcher(backends=backends, fallback_order=["primary", "fallback"])
 ```
 
+OpenVINO local inference is available as an optional backend:
+
+```bash
+pip install "llmfetcher[openvino]"
+```
+
+```python
+from llmfetcher import LLMBackendConfig, LLMFetcher
+
+backend = LLMBackendConfig(
+    name="local-openvino",
+    provider="openvino",
+    model="/path/to/openvino_model",
+    extra={
+        "device": "CPU",  # CPU, GPU, NPU, or AUTO
+        "generation_config": {"top_p": 0.9},
+        "extra_context": {"enable_thinking": True},
+    },
+)
+
+fetcher = LLMFetcher(backends=[backend])
+response = await fetcher.fetch("Say hello", backend_name="local-openvino")
+```
+
 ### Agent
 
 Create and configure agents:
 
 ```python
-from pack import Agent
+from llmfetcher import Agent
 
 agent = Agent(
     llm_handler=fetcher,
@@ -639,7 +663,7 @@ response = await agent.round_call(
 Build multi-agent systems:
 
 ```python
-from pack import AgentSwarm
+from llmfetcher import AgentSwarm
 
 swarm = AgentSwarm(
     llm_fetcher=fetcher,
@@ -694,7 +718,7 @@ swarm.resume(checkpoint)
 Structured reasoning operations:
 
 ```python
-from pack import ThinkingGraph, ThinkingNodeType, ThinkingEdgeType
+from llmfetcher import ThinkingGraph, ThinkingNodeType, ThinkingEdgeType
 
 graph = ThinkingGraph()
 
@@ -737,13 +761,13 @@ Run the test suite:
 pip install pytest pytest-asyncio
 
 # Run all tests
-pytest pack/tests/ -v
+pytest tests/ -v
 
 # Run specific test file
-pytest pack/tests/test_agent_concurrency.py -v
+pytest tests/test_agent_concurrency.py -v
 
 # Run with coverage
-pytest pack/tests/ --cov=pack --cov-report=html
+pytest tests/ --cov=llmfetcher --cov-report=html
 ```
 
 ### Test Coverage

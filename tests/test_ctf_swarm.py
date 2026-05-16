@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ctf_agent import build_ctf_swarm
-from pack.swarm.execution_graph import AgentNode
+from llmfetcher.swarm.execution_graph import AgentNode
 
 
 def test_build_ctf_swarm_topology_and_tools(tmp_path: Path) -> None:
