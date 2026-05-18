@@ -1,19 +1,22 @@
-"""多后端 LLM 请求路由与流式输出管理模块。
+"""平台无关的 LLM 调度器。
 
-本模块封装对 OpenAI、LiteLLM 等后端服务的统一调用接口，
-支持 fallback 自动切换、流式增量提取（含 reasoning 内容）、
-超时重试以及限流器集成。
+本模块只负责后端注册、fallback 顺序、重试、限流与统一输出调度。
+具体 provider 的请求构造、响应归一化和流式解析都委托给 `handlers/` 里的后端类。
 
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import queue
-import threading
-from dataclasses import dataclass, field
-from typing import Any, AsyncGenerator, Callable, Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
+from typing import (
+    AsyncGenerator,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+)
+
+from .prompt import DEBUG_STREAM_SYSTEM_PROMPT
 from .llm_types import (
     LLMBackendConfig,
     LLMContext, LLMToolCall, LLMOutput,
@@ -21,19 +24,10 @@ from .llm_types import (
     LLMTimeoutError, LLMBackendError
 )
 
-if TYPE_CHECKING:  # pragma: no cover - imported only for static analysis
-    from openai import OpenAI
-
-
-@dataclass
-class _OpenVINOCompletionResponse:
-    """Small internal response object for OpenVINO GenAI completions."""
-
-    content: str
-    raw: Any = None
-    usage: Dict[str, Any] = field(default_factory=dict)
-    stop_reason: Optional[str] = None
-
+from .handlers import (
+    ToolSchema,
+    LLMBackendHandler,
+)
 
 class LLMFetcher:
     """Route chat requests across one or more configured LLM backends."""
@@ -48,7 +42,7 @@ class LLMFetcher:
         timeout: float = 60.0,
         backends: Optional[Sequence[LLMBackendConfig]] = None,
         default_backend: Optional[str] = None,
-        limiter: Optional[Any] = None,
+        limiter: Optional[_LLMLimiter] = None,
     ) -> None:
         """初始化 LLM 管理器。
 
@@ -72,10 +66,7 @@ class LLMFetcher:
         """
         self.backends: Dict[str, LLMBackendConfig] = {}
         self.backend_order: List[str] = []
-        self.openai_clients: Dict[str, Any] = {}
-        self.anthropic_clients: Dict[str, Any] = {}  # ← 新增：Anthropic 客户端字典
-        self.openvino_pipelines: Dict[str, Any] = {}
-        self.openvino_modules: Dict[str, Any] = {}
+        self.handlers: Dict[str, LLMBackendHandler] = {}
 
         if backends:
             for backend in backends:
@@ -116,53 +107,7 @@ class LLMFetcher:
             raise ValueError(f"Duplicate backend name: {backend.name}")
         self.backends[backend.name] = backend
         self.backend_order.append(backend.name)
-        
-        if backend.provider == "openai":
-            try:
-                from openai import OpenAI
-            except ImportError as exc:  # pragma: no cover - depends on optional package
-                raise ValueError("openai provider requires the 'openai' package to be installed.") from exc
-            self.openai_clients[backend.name] = OpenAI(
-                api_key=backend.api_key,
-                base_url=backend.api_url,
-                max_retries=backend.max_retries,
-            )
-        
-        elif backend.provider == "anthropic":
-            try:
-                import anthropic
-            except ImportError as exc:  # pragma: no cover - depends on optional package
-                raise ValueError("anthropic provider requires the 'anthropic' package to be installed.") from exc
-            
-            # Create Anthropic client with optional base_url (for DeepSeek compatibility)
-            client_kwargs = {
-                "api_key": backend.api_key,
-                "timeout": backend.timeout,
-            }
-            
-            # If api_url is specified, use it as base_url (for DeepSeek, etc.)
-            if backend.api_url:
-                client_kwargs["base_url"] = backend.api_url
-            
-            self.anthropic_clients[backend.name] = anthropic.Anthropic(**client_kwargs)
-
-        elif backend.provider == "openvino":
-            try:
-                import openvino_genai as ov_genai
-            except ImportError as exc:  # pragma: no cover - depends on optional package
-                raise ValueError(
-                    "openvino provider requires the 'openvino-genai' package to be installed."
-                ) from exc
-
-            model_path = backend.extra.get("model_path") or backend.api_url or backend.model
-            device = backend.extra.get("device", "AUTO")
-            pipeline_kwargs = dict(backend.extra.get("pipeline_kwargs") or {})
-            self.openvino_modules[backend.name] = ov_genai
-            self.openvino_pipelines[backend.name] = ov_genai.LLMPipeline(
-                model_path,
-                device,
-                **pipeline_kwargs,
-            )
+        self.handlers[backend.name] = LLMBackendHandler.create_for_backend(self, backend)
 
     def _resolve_backends(
         self,
@@ -191,6 +136,9 @@ class LLMFetcher:
                 names.extend(fallback_order)
             names.extend(name for name in self.backend_order if name not in names)
         return [self.backends[name] for name in names]
+
+    def _handler_for_backend(self, backend: LLMBackendConfig) -> LLMBackendHandler:
+        return self.handlers[backend.name]
 
     def _build_messages(
         self,
@@ -234,346 +182,6 @@ class LLMFetcher:
         
         return messages
 
-    def _convert_to_anthropic_messages(
-        self,
-        messages: List[Dict[str, str]]
-    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
-        """Convert OpenAI-style messages to Anthropic format.
-        
-        Anthropic has some key differences:
-        - No "system" role (use system parameter instead)
-        - Tool results use different format
-        - Content can be mixed (text + tool_use/tool_result)
-        
-        Args:
-            messages: OpenAI-format message list
-            
-        Returns:
-            Tuple of (Anthropic-format message list, system prompt string)
-        """
-        anthropic_messages = []
-        system_message = None
-        
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            
-            if role == "system":
-                # Anthropic doesn't have system role in messages
-                # Store it separately (will be passed as system parameter)
-                system_message = content
-                continue
-            
-            elif role == "tool":
-                # Convert tool result to Anthropic format
-                tool_call_id = msg.get("tool_call_id", "")
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_call_id,
-                            "content": content
-                        }
-                    ]
-                })
-            
-            else:
-                # user or assistant messages
-                anthropic_messages.append({
-                    "role": role,
-                    "content": content
-                })
-        
-        return anthropic_messages, system_message
-
-    def _convert_to_anthropic_tools(
-        self,
-        tools: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Convert OpenAI-style tool schemas to Anthropic format.
-        
-        OpenAI format:
-        {
-            "type": "function",
-            "function": {
-                "name": "...",
-                "description": "...",
-                "parameters": {...}
-            }
-        }
-        
-        Anthropic format:
-        {
-            "name": "...",
-            "description": "...",
-            "input_schema": {...}
-        }
-        
-        Args:
-            tools: OpenAI-format tool schemas
-            
-        Returns:
-            Anthropic-format tool schemas
-        """
-        anthropic_tools = []
-        
-        for tool in tools:
-            if tool.get("type") == "function":
-                func = tool.get("function", {})
-                anthropic_tools.append({
-                    "name": func.get("name", ""),
-                    "description": func.get("description", ""),
-                    "input_schema": func.get("parameters", {})
-                })
-            else:
-                # Already in Anthropic format or unknown format
-                anthropic_tools.append(tool)
-        
-        return anthropic_tools
-
-    def _build_openvino_chat_history(
-        self,
-        backend: LLMBackendConfig,
-        messages: List[Dict[str, str]],
-        tools: Optional[List[Dict[str, Any]]] = None,
-    ) -> Any:
-        """Build an OpenVINO GenAI ChatHistory when available, otherwise a list."""
-        ov_genai = self.openvino_modules[backend.name]
-        chat_history_cls = getattr(ov_genai, "ChatHistory", None)
-        history = chat_history_cls() if chat_history_cls is not None else []
-
-        append = getattr(history, "append", None)
-        for message in messages:
-            item = {
-                "role": str(message.get("role", "")),
-                "content": str(message.get("content", "")),
-            }
-            if append is not None:
-                append(item)
-            else:
-                history.append(item)
-
-        if tools and hasattr(history, "set_tools"):
-            history.set_tools(tools)
-
-        extra_context = backend.extra.get("extra_context")
-        if extra_context and hasattr(history, "set_extra_context"):
-            history.set_extra_context(extra_context)
-
-        return history
-
-    def _openvino_generation_config(
-        self,
-        backend: LLMBackendConfig,
-        *,
-        temperature: float,
-        max_tokens: int,
-    ) -> Dict[str, Any]:
-        """Translate common generation options into OpenVINO GenAI kwargs."""
-        config = dict(backend.extra.get("generation_config") or {})
-        config.setdefault("max_new_tokens", max_tokens)
-        config.setdefault("temperature", temperature)
-        return config
-
-    def _call_openvino_generate(
-        self,
-        pipe: Any,
-        prompt_or_history: Any,
-        config: Dict[str, Any],
-        *,
-        streamer: Optional[Callable[[str], Any]] = None,
-    ) -> Any:
-        """Call OpenVINO GenAI with fallbacks for supported Python signatures."""
-        call_attempts: List[Callable[[], Any]]
-        if streamer is None:
-            call_attempts = [
-                lambda: pipe.generate(prompt_or_history, config),
-                lambda: pipe.generate(prompt_or_history, **config),
-            ]
-        else:
-            call_attempts = [
-                lambda: pipe.generate(prompt_or_history, config, streamer=streamer),
-                lambda: pipe.generate(prompt_or_history, streamer=streamer, **config),
-            ]
-
-        last_type_error: Optional[TypeError] = None
-        for call in call_attempts:
-            try:
-                return call()
-            except TypeError as exc:
-                last_type_error = exc
-        if last_type_error is not None:
-            raise last_type_error
-        raise RuntimeError("OpenVINO generation failed before any call attempt.")
-
-    def _openvino_result_text(self, result: Any) -> str:
-        """Extract text from OpenVINO GenAI decoded results."""
-        if result is None:
-            return ""
-        texts = self._read_field(result, "texts", None)
-        if texts:
-            return str(texts[0])
-        text = self._read_field(result, "text", None)
-        if text is not None:
-            return str(text)
-        return str(result)
-
-    def _create_openvino_stream(
-        self,
-        backend: LLMBackendConfig,
-        prompt_or_history: Any,
-        config: Dict[str, Any],
-    ) -> Iterable[str]:
-        """Run OpenVINO generation in a thread and expose streamed text chunks."""
-        pipe = self.openvino_pipelines[backend.name]
-        ov_genai = self.openvino_modules[backend.name]
-        items: queue.Queue[Any] = queue.Queue()
-        sentinel = object()
-
-        def streamer(text: str) -> Any:
-            if text:
-                items.put(str(text))
-            streaming_status = getattr(ov_genai, "StreamingStatus", None)
-            running = getattr(streaming_status, "RUNNING", None)
-            return running if running is not None else False
-
-        def worker() -> None:
-            try:
-                self._call_openvino_generate(
-                    pipe,
-                    prompt_or_history,
-                    config,
-                    streamer=streamer,
-                )
-            except BaseException as exc:
-                items.put(exc)
-            finally:
-                items.put(sentinel)
-
-        thread = threading.Thread(target=worker, daemon=True)
-        thread.start()
-
-        while True:
-            item = items.get()
-            if item is sentinel:
-                break
-            if isinstance(item, BaseException):
-                raise item
-            yield str(item)
-
-    def _create_completion(
-        self,
-        backend: LLMBackendConfig,
-        *,
-        messages: List[Dict[str, str]],
-        temperature: float,
-        max_tokens: int,
-        stream: bool,
-        tools: Optional[List[Dict[str, Any]]] = None,
-    ) -> Any:
-        """向具体后端发起补全请求。
-
-        Args:
-            backend: 当前要调用的后端配置。
-            messages: 已整理好的消息列表。
-            temperature: 采样温度。
-            max_tokens: 最大输出 token 数。
-            stream: 是否启用流式返回。
-            tools: 可选的工具 schema 列表（OpenAI 或 Anthropic 格式）。
-
-        Returns:
-            后端 SDK 返回的原始响应对象或流式迭代器。
-
-        Raises:
-            ValueError: 当提供方类型不受支持时抛出。
-        """
-        if backend.provider == "openai":
-            client = self.openai_clients[backend.name]
-            kwargs: Dict[str, Any] = {
-                "model": backend.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "stream": stream,
-                "timeout": backend.timeout,
-            }
-            if tools:
-                # OpenAI 要求 tools 与 tool_choice 成对出现，仅在传入 tools 时补充 tool_choice
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-            kwargs.update(backend.extra)
-            return client.chat.completions.create(**kwargs)
-
-        elif backend.provider == "anthropic":
-            client = self.anthropic_clients[backend.name]
-            
-            # Anthropic 使用不同的消息格式和参数
-            # 需要将 OpenAI 格式的消息转换为 Anthropic 格式
-            anthropic_messages, system_prompt = self._convert_to_anthropic_messages(messages)
-            
-            kwargs: Dict[str, Any] = {
-                "model": backend.model,
-                "messages": anthropic_messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "stream": stream,
-            }
-            
-            # Anthropic 支持 system prompt 作为单独参数
-            if system_prompt:
-                kwargs["system"] = system_prompt
-            
-            # Anthropic 的工具格式不同
-            if tools:
-                # 转换工具 schema 为 Anthropic 格式
-                anthropic_tools = self._convert_to_anthropic_tools(tools)
-                kwargs["tools"] = anthropic_tools
-            
-            kwargs.update(backend.extra)
-            
-            return client.messages.create(**kwargs)
-
-        if backend.provider == "litellm":
-            try:
-                from litellm import completion as litellm_completion
-            except ImportError as exc:  # pragma: no cover - depends on optional package
-                raise ValueError(
-                    "litellm provider requires the 'litellm' package to be installed."
-                ) from exc
-            kwargs: Dict[str, Any] = {
-                "model": backend.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "stream": stream,
-                "timeout": backend.timeout,
-                "api_key": backend.api_key,
-            }
-            if backend.api_url:
-                kwargs["api_base"] = backend.api_url
-            kwargs.update(backend.extra)
-            return litellm_completion(**kwargs)
-        
-        if backend.provider == "openvino":
-            history = self._build_openvino_chat_history(backend, messages, tools=tools)
-            config = self._openvino_generation_config(
-                backend,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            if stream:
-                return self._create_openvino_stream(backend, history, config)
-
-            pipe = self.openvino_pipelines[backend.name]
-            result = self._call_openvino_generate(pipe, history, config)
-            return _OpenVINOCompletionResponse(
-                content=self._openvino_result_text(result),
-                raw=result,
-            )
-
-        raise ValueError(f"Unsupported provider: {backend.provider}")
-
     def _normalize_exception(self, backend: LLMBackendConfig, exc: Exception) -> LLMError:
         """将提供方异常映射为本地统一异常。
 
@@ -604,307 +212,6 @@ class LLMFetcher:
         """
         return max(1, int(backend.max_retries))
 
-    def _read_field(self, value: Any, name: str, default: Any = None) -> Any:
-        """Read a field from either a mapping or an SDK object."""
-        if isinstance(value, dict):
-            return value.get(name, default)
-        return getattr(value, name, default)
-
-    def _coerce_content_to_text(self, content: Any) -> str:
-        """Convert provider-specific text/content-block shapes into plain text."""
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: List[str] = []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text":
-                        parts.append(str(part.get("text", "")))
-                    elif "text" in part:
-                        parts.append(str(part["text"]))
-                else:
-                    text = getattr(part, "text", None)
-                    if text:
-                        parts.append(str(text))
-            return "".join(parts)
-        return str(content)
-
-    def _usage_to_dict(self, usage: Any) -> Dict[str, Any]:
-        """Normalize SDK usage objects into a small dict."""
-        if usage is None:
-            return {}
-        if isinstance(usage, dict):
-            return dict(usage)
-        if hasattr(usage, "model_dump"):
-            dumped = usage.model_dump()
-            return dict(dumped) if isinstance(dumped, dict) else {}
-
-        result: Dict[str, Any] = {}
-        for name in (
-            "prompt_tokens",
-            "completion_tokens",
-            "total_tokens",
-            "input_tokens",
-            "output_tokens",
-        ):
-            value = getattr(usage, name, None)
-            if value is not None:
-                result[name] = value
-        return result
-
-    def _parse_arguments(self, arguments: Any) -> Dict[str, Any]:
-        """Normalize tool-call arguments into a dict."""
-        if isinstance(arguments, dict):
-            return arguments
-        if isinstance(arguments, str) and arguments.strip():
-            try:
-                parsed = json.loads(arguments)
-            except json.JSONDecodeError:
-                return {}
-            return parsed if isinstance(parsed, dict) else {}
-        return {}
-
-    def _normalize_openai_tool_calls(self, message: Any) -> List[LLMToolCall]:
-        """Extract OpenAI-compatible native tool calls."""
-        raw_calls = self._read_field(message, "tool_calls", None) or []
-        calls: List[LLMToolCall] = []
-        for raw_call in raw_calls:
-            function = self._read_field(raw_call, "function", {}) or {}
-            name = self._read_field(function, "name", "")
-            if not name:
-                continue
-            calls.append(
-                LLMToolCall(
-                    name=str(name),
-                    arguments=self._parse_arguments(self._read_field(function, "arguments", {})),
-                    call_id=self._read_field(raw_call, "id", None),
-                    source="openai_native",
-                )
-            )
-        return calls
-
-    def _normalize_anthropic_blocks(
-        self,
-        blocks: Iterable[Any],
-    ) -> tuple[str, str, List[LLMToolCall]]:
-        """Extract text, reasoning, and tool-use blocks from Anthropic content."""
-        text_parts: List[str] = []
-        reasoning_parts: List[str] = []
-        tool_calls: List[LLMToolCall] = []
-
-        for block in blocks:
-            block_type = self._read_field(block, "type", None)
-            if block_type == "text":
-                text_parts.append(str(self._read_field(block, "text", "")))
-            elif block_type in {"thinking", "reasoning"}:
-                reasoning = self._read_field(block, "thinking", None)
-                if reasoning is None:
-                    reasoning = self._read_field(block, "text", "")
-                reasoning_parts.append(str(reasoning))
-            elif block_type == "tool_use":
-                name = self._read_field(block, "name", "")
-                if not name:
-                    continue
-                tool_calls.append(
-                    LLMToolCall(
-                        name=str(name),
-                        arguments=self._parse_arguments(self._read_field(block, "input", {})),
-                        call_id=self._read_field(block, "id", None),
-                        source="anthropic",
-                    )
-                )
-
-        return "".join(text_parts), "".join(reasoning_parts), tool_calls
-
-    def _normalize_completion_response(
-        self,
-        backend: LLMBackendConfig,
-        response: Any,
-    ) -> LLMOutput:
-        """Convert a provider SDK response into the public LLMOutput shape."""
-        if backend.provider in {"openai", "litellm"}:
-            choices = self._read_field(response, "choices", None) or []
-            choice = choices[0] if choices else None
-            message = self._read_field(choice, "message", None) if choice is not None else None
-            content = self._coerce_content_to_text(self._read_field(message, "content", None))
-            reasoning = self._read_field(message, "reasoning_content", None)
-            if reasoning is None:
-                reasoning = self._read_field(message, "reasoning", "")
-
-            return LLMOutput(
-                content=content,
-                provider=backend.provider,
-                backend_name=backend.name,
-                model=backend.model,
-                role=self._read_field(message, "role", "assistant") or "assistant",
-                reasoning_content=str(reasoning or ""),
-                tool_calls=self._normalize_openai_tool_calls(message),
-                stop_reason=self._read_field(choice, "finish_reason", None),
-                usage=self._usage_to_dict(self._read_field(response, "usage", None)),
-            )
-
-        if backend.provider == "anthropic":
-            blocks = self._read_field(response, "content", None) or []
-            content, reasoning, tool_calls = self._normalize_anthropic_blocks(blocks)
-            return LLMOutput(
-                content=content,
-                provider=backend.provider,
-                backend_name=backend.name,
-                model=backend.model,
-                role=self._read_field(response, "role", "assistant") or "assistant",
-                reasoning_content=reasoning,
-                tool_calls=tool_calls,
-                stop_reason=self._read_field(response, "stop_reason", None),
-                usage=self._usage_to_dict(self._read_field(response, "usage", None)),
-            )
-
-        if backend.provider == "openvino":
-            return LLMOutput(
-                content=self._coerce_content_to_text(
-                    self._read_field(response, "content", response)
-                ),
-                provider=backend.provider,
-                backend_name=backend.name,
-                model=backend.model,
-                role="assistant",
-                stop_reason=self._read_field(response, "stop_reason", None),
-                usage=self._usage_to_dict(self._read_field(response, "usage", None)),
-            )
-
-        raise ValueError(f"Unsupported provider: {backend.provider}")
-
-    def _extract_content(self, delta: Any) -> Optional[str]:
-        """从流式增量中提取正文内容。
-
-        Args:
-            delta: SDK 对象或字典形式的增量数据。
-
-        Returns:
-            提取出的正文内容；若不存在则返回 `None`。
-        """
-        if delta is None:
-            return None
-        if isinstance(delta, dict):
-            return delta.get("content") or delta.get("text")
-        return getattr(delta, "content", None) or getattr(delta, "text", None)
-
-    def _extract_reasoning(self, delta: Any) -> Optional[str]:
-        """从流式增量中提取推理内容。
-
-        Args:
-            delta: SDK 对象或字典形式的增量数据。
-
-        Returns:
-            提取出的推理内容；若不存在则返回 `None`。
-        """
-        if delta is None:
-            return None
-        if isinstance(delta, dict):
-            return delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
-        return (
-            getattr(delta, "reasoning_content", None)
-            or getattr(delta, "reasoning", None)
-            or getattr(delta, "thinking", None)
-        )
-
-    def _iter_stream_text(
-        self,
-        response: Iterable[Any],
-        *,
-        backend: LLMBackendConfig,
-        output_reasoning: bool,
-    ) -> Iterable[str]:
-        """将流式响应标准化为文本片段。
-
-        Args:
-            response: 后端返回的流式响应迭代器。
-            output_reasoning: 是否输出推理内容标记与文本。
-
-        Yields:
-            标准化后的文本片段。
-        """
-        in_thinking = False
-
-        def emit_reasoning(reasoning: Optional[str]) -> Iterable[str]:
-            nonlocal in_thinking
-            if not reasoning or not output_reasoning:
-                return
-            if not in_thinking:
-                yield "\n<THINK>\n"
-                in_thinking = True
-            yield reasoning
-
-        def emit_content(content: Optional[str]) -> Iterable[str]:
-            nonlocal in_thinking
-            if not content:
-                return
-            if in_thinking:
-                yield "\n</THINK>\n"
-                in_thinking = False
-            yield content
-
-        for chunk in response:
-            if backend.provider == "openvino":
-                yield from emit_content(self._coerce_content_to_text(chunk))
-                continue
-
-            if backend.provider == "anthropic":
-                event_type = self._read_field(chunk, "type", None)
-                delta = self._read_field(chunk, "delta", None)
-
-                if event_type == "content_block_start":
-                    block = self._read_field(chunk, "content_block", None)
-                    block_type = self._read_field(block, "type", None)
-                    if block_type == "text":
-                        yield from emit_content(self._read_field(block, "text", None))
-                    elif block_type in {"thinking", "reasoning"}:
-                        yield from emit_reasoning(self._extract_reasoning(block))
-                    continue
-
-                if event_type == "content_block_delta":
-                    delta_type = self._read_field(delta, "type", None)
-                    if delta_type == "text_delta":
-                        yield from emit_content(self._read_field(delta, "text", None))
-                    elif delta_type in {"thinking_delta", "reasoning_delta"}:
-                        yield from emit_reasoning(self._extract_reasoning(delta))
-                    continue
-
-                if event_type in {"text_delta", "thinking_delta", "reasoning_delta"}:
-                    if event_type == "text_delta":
-                        yield from emit_content(self._extract_content(delta or chunk))
-                    else:
-                        yield from emit_reasoning(self._extract_reasoning(delta or chunk))
-                    continue
-
-            choices = getattr(chunk, "choices", None)
-            if not choices and isinstance(chunk, dict):
-                choices = chunk.get("choices")
-            if not choices:
-                continue
-
-            delta = getattr(choices[0], "delta", None)
-            if delta is None and isinstance(choices[0], dict):
-                delta = choices[0].get("delta")
-
-            reasoning = self._extract_reasoning(delta)
-            if reasoning and output_reasoning:
-                if not in_thinking:
-                    yield "\n<<<THINKING>>>\n"
-                    in_thinking = True
-                yield reasoning
-
-            content = self._extract_content(delta)
-            if content:
-                if in_thinking:
-                    yield "\n<<<THINK_END>>>\n"
-                    in_thinking = False
-                yield content
-
-        if in_thinking:
-            yield "\n<<<THINK_END>>>\n"
-
     async def fetch(
         self,
         msg: str,
@@ -914,7 +221,7 @@ class LLMFetcher:
         prev_messages: Optional[List[LLMContext]] = None,
         backend_name: Optional[str] = None,
         fallback_order: Optional[Sequence[str]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[ToolSchema]] = None,
     ) -> LLMOutput:
         """执行一次非流式请求，并按顺序尝试后端回退。
 
@@ -946,16 +253,15 @@ class LLMFetcher:
                 retries_left = self._timeout_retry_count(backend)
                 while True:
                     try:
-                        raw_response = await asyncio.to_thread(
-                            self._create_completion,
-                            backend,
+                        handler = self._handler_for_backend(backend)
+                        raw_response = handler.create_completion(
                             messages=messages,
                             temperature=temperature,
                             max_tokens=max_tokens,
                             stream=False,
                             tools=tools,
                         )
-                        return self._normalize_completion_response(backend, raw_response)
+                        return handler.normalize_completion_response(raw_response)
                     except Exception as exc:
                         normalized = self._normalize_exception(backend, exc)
                         if isinstance(normalized, LLMTimeoutError) and retries_left > 0:
@@ -981,9 +287,10 @@ class LLMFetcher:
         output_reasoning: bool = False,
         backend_name: Optional[str] = None,
         fallback_order: Optional[Sequence[str]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[ToolSchema]] = None,
     ) -> AsyncGenerator[str, None]:
         """执行一次流式请求，并按顺序尝试后端回退。
+        TODO: 让这个函数可正式返回一个函数包体。
 
         Args:
             msg: 当前轮用户输入。
@@ -1014,19 +321,19 @@ class LLMFetcher:
                 while True:
                     yielded_any = False
                     try:
-                        response = self._create_completion(
-                            backend,
+                        handler = self._handler_for_backend(backend)
+                        response = handler.create_completion(
                             messages=messages,
                             temperature=temperature,
                             max_tokens=max_tokens,
                             stream=True,
                             tools=tools,
                         )
-                        for text in self._iter_stream_text(
+                        stream_iterator: Iterator[str] = handler.iter_stream_text(
                             response,
-                            backend=backend,
                             output_reasoning=output_reasoning,
-                        ):
+                        )
+                        for text in stream_iterator:
                             yielded_any = True
                             yield text
                         return
@@ -1047,7 +354,6 @@ class LLMFetcher:
             if self.limiter:
                 self.limiter.release_llm()
 
-
 async def chat_test() -> None:
     """执行本地后端接线的手工冒烟测试。"""
     llm = LLMFetcher(
@@ -1065,7 +371,7 @@ async def chat_test() -> None:
 
     async for chunk in llm.fetch_stream(
         msg="给我一段用于调试流式输出的样例文本。",
-        system_prompt="你是一个简洁的调试助手。",
+        system_prompt=DEBUG_STREAM_SYSTEM_PROMPT,
         temperature=0.7,
         max_tokens=512,
         output_reasoning=True,

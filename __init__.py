@@ -70,6 +70,23 @@ from .swarm.runtime_slot import (
 )
 
 # ============================================================================
+# Streaming
+# ============================================================================
+from .streamers import Streamer, ThinkColorStreamer
+
+# ============================================================================
+# Backend Handlers
+# ============================================================================
+from .handlers import (
+    LLMBackendHandler,
+    AnthropicHandler,
+    OpenAIHandler,
+    LiteLLMHandler,
+    OpenVINOHandler,
+)
+
+
+# ============================================================================
 # Tool Factories
 # ============================================================================
 from .tools.shell_tools import create_shell_tools
@@ -109,6 +126,11 @@ __all__ = [
     "LLMError",
     "LLMTimeoutError",
     "LLMBackendError",
+    "LLMBackendHandler",
+    "AnthropicHandler",
+    "OpenAIHandler",
+    "LiteLLMHandler",
+    "OpenVINOHandler",
     "Agent",
     "Tool",
     "ToolRegistry",
@@ -161,4 +183,8 @@ __all__ = [
     # Submodules (for advanced usage)
     "tool_modules",
     "swarm_modules",
+
+    # Streamers for streaming output
+    "Streamer",
+    "ThinkColorStreamer"
 ]

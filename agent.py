@@ -4,11 +4,13 @@ import asyncio
 import json
 import re
 from types import CoroutineType
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 
 from .llm_fetcher import LLMFetcher, LLMOutput, LLMToolCall
 from .llm_context import LLMContext, LLMContextCompacted, LLMContextHandler, LLMContextInfo
+from .prompt import TAGIFY_CONTEXT_PROMPT
+from .tool_call_adapter import ToolCallSource, normalize_tool_calls
 from .tool import Tool, ToolRegistry
 from .tools.builtin_tools import create_builtin_tools
 
@@ -27,6 +29,8 @@ from .llm_types import (
     NoToolCallError,
     MaxTurnsExceededError
 )
+
+from .streamers import Streamer, ThinkColorStreamer
 
 class Agent:
     def __init__(
@@ -228,6 +232,7 @@ class Agent:
         msg: str,
         *,
         system_prompt: Optional[str] = None,
+        temperature: float = 0.4,
         use_history: bool = True,
         use_tools: bool = False,
         save_context: bool = True,
@@ -254,16 +259,19 @@ class Agent:
         output: LLMOutput = await self.llm_handler.fetch(
             msg=msg,
             system_prompt=resolved_system_prompt,
+            temperature=temperature,
             prev_messages=[prev_message] if prev_message else None,
             tools=tool_schemas if tool_schemas else None,
             fallback_order=self.fallback_order,
         )
 
+        resolved_tool_calls = self._resolve_tool_calls(output)
+
         if save_context:
-            tool_call_info = [str(tool_call.to_execution_format()) for tool_call in output.tool_calls]
+            tool_call_info = [str(tool_call.to_execution_format()) for tool_call in resolved_tool_calls]
             tool_call_result = [
                 "Tool call was returned by chat_once but not executed."
-                for _ in output.tool_calls
+                for _ in resolved_tool_calls
             ]
             context = LLMContext(
                 role=output.role or "assistant",
@@ -281,9 +289,12 @@ class Agent:
     async def run_agent_round(
         self,
         msg: str,
+        streamer: Optional[Streamer | Callable[[str], int | None]] = lambda x: print(x, end="", flush=True),
         verbose_info: bool = False,
         max_turns: int = 8,
-        max_context_size: int = 131072
+        max_context_size: int = 131072,
+        temperature: float = 0.4,
+        stream: bool = False
     ) -> str:
         """
         进行一整个轮次的 Agent 执行轮。
@@ -298,8 +309,12 @@ class Agent:
 
         Args:
             msg: 本 agent 的本次输入。
+            streamer: 流式输出的处理器，如果无处理器则默认正常颜色输出。
             verbose_info: 为 True 时，打印每轮调用、tool_calls、结果等调试信息。
             max_turns: 最大轮次上限。
+            max_context_size: 当本次运行上下文达到该数值时，压缩上下文。
+            temperature: 本轮采样温度，透传给底层 LLM fetcher。
+            stream: 是否使用流式输出。
 
         Returns:
             LLM 生成的完整回复文本。
@@ -322,18 +337,60 @@ class Agent:
                 print(f"[Agent] Current context length: {self.llm_context_handler.context_len()} / {max_context_size}")
 
             # ---- 调用 LLM - 这里采用异步执行 ----
-            response: LLMOutput = await self.llm_handler.fetch(
-                msg=msg,
-                system_prompt=self.system_prompt,
-                prev_messages=[prev_messages] if prev_messages else None,  # 这东西又是个 optional，我类型是对的，估计是插件bug
-                tools=tool_schemas if tool_schemas else None,  # 传递工具信息
-                fallback_order=self.fallback_order,
-            )
+            if not stream:
+                response: LLMOutput = await self.llm_handler.fetch(
+                    msg=msg,
+                    system_prompt=self.system_prompt,
+                    temperature=temperature,
+                    prev_messages=[prev_messages] if prev_messages else None,  # 这东西又是个 optional，我类型是对的，估计是插件bug
+                    tools=tool_schemas if tool_schemas else None,  # 传递工具信息
+                    fallback_order=self.fallback_order,
+                )
+            else:
+                from time import time
+                token_num: int = 0
+                t1 = time()
+                response_stream: AsyncGenerator[str, None] = self.llm_handler.fetch_stream(
+                    msg=msg,
+                    system_prompt=self.system_prompt,
+                    temperature=temperature,
+                    prev_messages=[prev_messages] if prev_messages else None,  # 这东西又是个 optional，我类型是对的，估计是插件bug
+                    tools=tool_schemas if tool_schemas else None,  # 传递工具信息
+                    fallback_order=self.fallback_order,
+                )
+                response_chunks: List[str] = []
+                async for chunk in response_stream:
+                    if streamer:
+                        streamer(chunk)
+                    response_chunks.append(chunk)
+                    token_num += 1
+                t2 = time()
+                dt = t2 - t1
+                tps = token_num / dt
+                # 如果这样做的话……不太符合这个东西的 schema 记录，但现在只能这样了
+                response = LLMOutput(
+                    content="".join(response_chunks),
+                    provider=self.provider,
+                    backend_name="",
+                    model="",
+                    role="assistant",
+                )
 
             # 然后查看工具内容，如果有工具的话。
-            tool_calls: List[LLMToolCall] = response.tool_calls
+            message: str = response.text
+            tool_calls: List[LLMToolCall] = self._resolve_tool_calls(response)
             executing_tools: List[CoroutineType] = []
             executing_result: List[str] = []
+            if verbose_info:
+                if stream:
+                    print(f"\nTokens: {token_num}, Time elapsed: {dt}, TPS: {tps}")
+                if not stream:
+                    print(f"\n[Agent] Message output: \n{message}")
+                    print(f"[Agent] Parsed tool calls: {len(tool_calls)}")
+                    if tool_calls:
+                        for idx, tool in enumerate(tool_calls, start=1):
+                            print(f"[Agent] Tool call {idx}: {tool.to_execution_format()}")
+
             if len(tool_calls) > 0:
                 # 工具可并行
                 for tool in tool_calls:
@@ -360,7 +417,7 @@ class Agent:
             # 拼接上下文
             now_context: LLMContext = LLMContext(
                 role="assistant",
-                content=response.text,  # 文本
+                content=message,  # 文本
                 tool_call_info=[str(i) for i in tool_record_round],
                 tool_call_result=[i for i in executing_result]
             )
@@ -376,7 +433,7 @@ class Agent:
             # 判断是否结束？
             # 传统：如果没有 tool call，则立即结束。
             if len(tool_record_round) == 0:
-                final_content = response.text
+                final_content = message
                 break
         
         else:
@@ -413,14 +470,10 @@ class Agent:
             context.tags = []
             return context
 
-        prompt: str = """
-        You should generate machine-readable tags for one Agent context entry.
-        Return only 3 to 5 lowercase snake_case tags separated by commas.
-        Do not explain. Do not ask for more input. Do not use Markdown or backticks.
-        Example: context_lookup, tool_call, empty_history
-        """
-
-        tags: LLMOutput = await self.llm_handler.fetch(msg=tag_source, system_prompt=prompt)
+        tags: LLMOutput = await self.llm_handler.fetch(
+            msg=tag_source,
+            system_prompt=TAGIFY_CONTEXT_PROMPT,
+        )
         parsed_tags = [
             tag
             for tag in re.findall(r"[a-zA-Z][a-zA-Z0-9_]{1,40}", tags.content.lower())
@@ -481,3 +534,119 @@ class Agent:
             print(f"[Agent] Result of tool {tool_name} as: \n{str(result)}")
 
         return str(result)
+
+    def _coerce_tool_arguments(self, value: Any) -> Dict[str, Any]:
+        """Coerce tool arguments from dict/string/None into a dict."""
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _parse_custom_json_tool_calls(self, content: str) -> List[Dict[str, Any]]:
+        """Parse tool calls embedded in a text response."""
+        if not content:
+            return []
+
+        candidates: List[str] = []
+        fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", content, flags=re.IGNORECASE | re.DOTALL)
+        candidates.extend(block.strip() for block in fenced_blocks if block.strip())
+
+        xml_blocks = re.findall(r"<tool_call>\s*(.*?)\s*</tool_call>", content, flags=re.IGNORECASE | re.DOTALL)
+        candidates.extend(block.strip() for block in xml_blocks if block.strip())
+
+        xml_list_blocks = re.findall(r"<tool_calls>\s*(.*?)\s*</tool_calls>", content, flags=re.IGNORECASE | re.DOTALL)
+        candidates.extend(block.strip() for block in xml_list_blocks if block.strip())
+
+        stripped = content.strip()
+        if stripped:
+            candidates.append(stripped)
+
+        parsed_calls: List[Dict[str, Any]] = []
+        for candidate in candidates:
+            parsed = self._try_parse_tool_payload(candidate)
+            if parsed:
+                parsed_calls.extend(parsed)
+
+        for match in re.finditer(r"\{.*?\}", content, flags=re.DOTALL):
+            parsed = self._try_parse_tool_payload(match.group(0))
+            if parsed:
+                parsed_calls.extend(parsed)
+
+        deduped: List[Dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in parsed_calls:
+            tool_name = str(item.get("tool", "")).strip()
+            if not tool_name:
+                continue
+            arguments = item.get("arguments") or {}
+            signature = (tool_name, json.dumps(arguments, sort_keys=True, ensure_ascii=False))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            deduped.append({"tool": tool_name, "arguments": arguments})
+
+        return deduped
+
+    def _try_parse_tool_payload(self, text: str) -> List[Dict[str, Any]]:
+        """Parse a JSON object or array into tool call dicts."""
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        return self._normalize_tool_payload(payload)
+
+    def _normalize_tool_payload(self, payload: Any) -> List[Dict[str, Any]]:
+        """Normalize a parsed JSON payload into tool call dicts."""
+        if isinstance(payload, dict):
+            if "tool_calls" in payload and isinstance(payload["tool_calls"], list):
+                normalized: List[Dict[str, Any]] = []
+                for entry in payload["tool_calls"]:
+                    normalized.extend(self._normalize_tool_payload(entry))
+                return normalized
+
+            tool_name = payload.get("tool", payload.get("name"))
+            if tool_name:
+                raw_arguments = payload.get("arguments", payload.get("input", {}))
+                return [
+                    {
+                        "tool": str(tool_name),
+                        "arguments": self._coerce_tool_arguments(raw_arguments),
+                    }
+                ]
+            return []
+
+        if isinstance(payload, list):
+            normalized: List[Dict[str, Any]] = []
+            for entry in payload:
+                normalized.extend(self._normalize_tool_payload(entry))
+            return normalized
+
+        return []
+
+    def _resolve_tool_calls(self, response: LLMOutput) -> List[LLMToolCall]:
+        """Resolve tool calls from native outputs or custom JSON text."""
+        if response.tool_calls:
+            return response.tool_calls
+
+        if self.provider not in {"custom_json", "openvino"}:
+            return []
+
+        normalized = normalize_tool_calls(
+            response,
+            source=ToolCallSource.CUSTOM_JSON,
+            fallback_parser=self._parse_custom_json_tool_calls,
+        )
+        return [
+            LLMToolCall(
+                name=item.tool_name,
+                arguments=item.arguments,
+                call_id=item.call_id,
+                source=item.source.value,
+            )
+            for item in normalized
+        ]

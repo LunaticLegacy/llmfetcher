@@ -4,6 +4,7 @@ from re import NOFLAG
 from typing import List, Dict, Optional, Tuple, Union, Set
 
 from .llm_fetcher import LLMFetcher, LLMOutput
+from .prompt import CONTEXT_COMPACT_PROMPT_TEMPLATE, MEMORY_CONCLUDE_PROMPT_TEMPLATE
 from .llm_types import (
     LLMInfo, LLMContext, LLMContextCompacted,
     LLMContextValue, LLMContextCompactedValue,
@@ -303,10 +304,7 @@ class LLMContextHandler:
         if lines is None:
             return False
 
-        prompt = (
-            "Please compact the following context, keep essential information:\n\n"
-            f"{lines}"
-        )
+        prompt = CONTEXT_COMPACT_PROMPT_TEMPLATE.format(lines=lines)
 
         # 3. 请求 LLM 压缩
         response: LLMOutput = await self.llm_handler.fetch(
@@ -369,8 +367,7 @@ class LLMContextHandler:
 
         lines = await self.get_content_as_single_str(id_list)
 
-        prompt = f"Please conclude the folowing conversations into an abstract for memory, \
-            keep the essential information:\n\n{lines}"
+        prompt = MEMORY_CONCLUDE_PROMPT_TEMPLATE.format(lines=lines)
 
         response = await self.llm_handler.fetch(msg=prompt, fallback_order=self.fallback_order)
         return response.content or None

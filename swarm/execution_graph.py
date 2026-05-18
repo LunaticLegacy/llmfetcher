@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from ..agent import Agent
+from ..prompt import AGENT_START_PROMPT, ROUTER_SELECTION_PROMPT_TEMPLATE
 from ..tool import Tool
 
 
@@ -82,7 +83,7 @@ class AgentNode(ExecutionNode):
 
     async def run(self, ctx: GraphContext, inputs: List[Any]) -> str:
         if not inputs:
-            msg = "请开始执行任务。"
+            msg = AGENT_START_PROMPT
         elif len(inputs) == 1:
             msg = str(inputs[0])
         else:
@@ -129,21 +130,21 @@ class RouterNode(ExecutionNode):
 
         if self.agent and len(self.routes) > 1:
             routes_desc = "\n".join(f"- {k}: {v}" for k, v in self.routes.items())
-            prompt = (
-                f"请根据以下输入内容，选择最合适的一个或多个路由方向。\n\n"
-                f"可选方向：\n{routes_desc}\n\n"
-                f"输入内容：\n{content}\n\n"
-                f"请只输出一个路由标签（{list(self.routes.keys())}），不要输出其他内容。"
+            prompt = ROUTER_SELECTION_PROMPT_TEMPLATE.format(
+                routes_desc=routes_desc,
+                content=content,
+                route_labels=list(self.routes.keys()),
             )
             result = await self.agent.run_agent_round(prompt, max_turns=1)
-            selected = self.default_route
-            for label in self.routes:
-                if label in result:
-                    selected = label
-                    break
-            return {"route": selected, "raw": result, "input": content}
+            selected_routes = [label for label in self.routes if label in result]
+            if not selected_routes and self.default_route is not None:
+                selected_routes = [self.default_route]
 
-        return {"route": self.default_route, "input": content}
+            route_value: Any = selected_routes[0] if len(selected_routes) == 1 else selected_routes
+            return {"route": route_value, "routes": selected_routes, "raw": result, "input": content}
+
+        default_routes = [self.default_route] if self.default_route is not None else []
+        return {"route": self.default_route, "routes": default_routes, "input": content}
 
 
 class InputNode(ExecutionNode):
@@ -619,8 +620,8 @@ class ExecutionGraph:
             if not self._stop_state.soft_requested and not self._stop_state.hard_requested:
                 for edge in self._downstream_of(nid):
                     if edge.label is not None:
-                        route = self._extract_route(result)
-                        if route != edge.label:
+                        routes = self._extract_routes(result)
+                        if edge.label not in routes:
                             continue
                     await emit(
                         "branch.started",
@@ -629,6 +630,7 @@ class ExecutionGraph:
                             "target_node_id": edge.target_id,
                             "label": edge.label,
                             "route": self._extract_route(result),
+                            "routes": self._extract_routes(result),
                         },
                     )
                     ctx.node_inputs.setdefault(edge.target_id, []).append(result)
@@ -726,10 +728,23 @@ class ExecutionGraph:
             return await asyncio.wait_for(coro, timeout=timeout)
         return await coro
 
-    def _extract_route(self, result: Any) -> Optional[str]:
+    def _extract_routes(self, result: Any) -> List[str]:
         if isinstance(result, dict):
-            return result.get("route")
-        return None
+            routes = result.get("routes")
+            if isinstance(routes, list):
+                return [str(route) for route in routes if route is not None]
+            route = result.get("route")
+            if isinstance(route, list):
+                return [str(item) for item in route if item is not None]
+            if route is not None:
+                return [str(route)]
+        return []
+
+    def _extract_route(self, result: Any) -> Optional[Any]:
+        routes = self._extract_routes(result)
+        if not routes:
+            return None
+        return routes[0] if len(routes) == 1 else routes
 
     # --- Angelus compatibility ---
 

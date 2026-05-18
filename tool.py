@@ -1,10 +1,10 @@
 import asyncio
-import json
 from dataclasses import dataclass
 from re import I
 from typing import Any, Callable, Dict, List
 
 from .llm_types import Tool
+from .prompt import build_tool_prompt_hint
 
 
 class ToolRegistry:
@@ -89,9 +89,10 @@ class ToolRegistry:
             return self._to_anthropic_format()
         
         elif provider in {"custom_json", "openvino"}:
-            # For custom JSON parsing, we don't send schemas to LLM
-            # Tools are described in system prompt instead
-            return []
+            # For prompt-based tool calling, reuse the OpenAI-compatible schema shape.
+            # OpenVINO chat templates can consume these tool definitions, and custom_json
+            # providers can still benefit from explicit schema hints in the prompt.
+            return self.schemas
         
         else:
             raise ValueError(
@@ -117,24 +118,4 @@ class ToolRegistry:
 
     def get_prompt_hint(self) -> str:
         """Return a prompt snippet that instructs the LLM how to call tools."""
-        if not self._tools: # 没有工具，不返回任何东西
-            return ""
-
-        lines: List[str] = [    # 工具文本。
-            "",
-            "=== AVAILABLE TOOLS ===",
-            "When you need a tool, respond with ONE valid JSON object and nothing else.",
-            "Use one of these shapes:",
-            '  {"tool": "<tool_name>", "arguments": {<key>: <value>, ...}}',
-            '  {"tool_calls": [{"tool": "<tool_name>", "arguments": {...}}, ...]}',
-            "If you do not need any tool, answer normally in natural language.",
-            ""
-        ]  # 对每一个工具，加入这些东西。
-        for t in self._tools.values():
-            lines.append(f"Tool: {t.name}")
-            lines.append(f"  Description: {t.description}")
-            params = json.dumps(t.parameters, ensure_ascii=False)
-            lines.append(f"  Parameters: {params}")
-            lines.append("")
-        lines.append("=== END TOOLS ===")
-        return "\n".join(lines)
+        return build_tool_prompt_hint(self._tools.values())

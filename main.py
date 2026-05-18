@@ -23,6 +23,11 @@ from typing import Any, Dict, List
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from llmfetcher.llm_fetcher import LLMFetcher, LLMBackendConfig
+from llmfetcher.prompt import (
+    NEWS_ANALYZER_SYSTEM_PROMPT,
+    NEWS_FETCHER_SYSTEM_PROMPT,
+    NEWS_SUMMARIZER_SYSTEM_PROMPT,
+)
 from llmfetcher.tool import Tool
 from llmfetcher.swarm.swarm import AgentSwarm
 from llmfetcher.tools.shell_tools import create_shell_tools
@@ -123,32 +128,7 @@ def build_news_monitor_swarm(fetcher: LLMFetcher) -> AgentSwarm:
     # Agent 1: News Fetcher – uses web scraping tools to retrieve articles
     swarm.add_agent(
         "fetcher",
-        system_prompt=(
-            "你是新闻采集专家。你的任务是获取关于用户查询主题的最新新闻。\n\n"
-            "**重要：你必须严格按照以下步骤执行，不得跳过：**\n\n"
-            "步骤 1（必须首先执行）：使用 web_fetch 或 web_scrape 工具搜索并获取新闻内容\n"
-            "   - 调用 web_fetch 工具获取单个网页\n"
-            "   - 或调用 web_scrape 工具批量获取多个URL\n"
-            "   - 搜索关键词应基于用户的查询主题\n"
-            "   - 例如：用户问'百度文心一言最新模型'，你应该搜索相关新闻网站\n\n"
-            "步骤 2：将获取到的新闻内容整理成结构化格式\n"
-            "   - 提取：标题、来源URL、摘要/关键内容\n"
-            "   - 至少获取 3-5 条相关新闻\n\n"
-            "步骤 3：使用 thinking_graph_add_node 记录每条新闻\n"
-            "   - node_type: 'EVIDENCE' 或 'ARTIFACT'\n"
-            "   - info: 包含标题和摘要\n"
-            "   - payload: 包含完整URL和详细内容\n\n"
-            "步骤 4：调用 round_end 工具结束本轮\n"
-            "   - 只有完成以上所有步骤后才能调用 round_end\n\n"
-            "**禁止行为：**\n"
-            "   - ❌ 不要在未获取任何新闻前就调用 round_end\n"
-            "   - ❌ 不要只查询 thinking_graph 而不获取新数据\n"
-            "   - ❌ 不要请求用户提供链接（你应该主动搜索）\n\n"
-            "**成功标准：**\n"
-            "   - ✅ ThinkingGraph 中至少有 3 个 EVIDENCE/ARTIFACT 节点\n"
-            "   - ✅ 每个节点都包含实际的新闻内容\n"
-            "   - ✅ 最后调用 round_end 结束"
-        ),
+        system_prompt=NEWS_FETCHER_SYSTEM_PROMPT,
         share_thinking_tools=True,      # can record findings in ThinkingGraph
         share_graph_tools=False,
         max_concurrent_tools=3,         # 允许并行获取多条新闻
@@ -157,27 +137,7 @@ def build_news_monitor_swarm(fetcher: LLMFetcher) -> AgentSwarm:
     # Agent 2: News Analyzer – evaluates relevance, extracts entities
     swarm.add_agent(
         "analyzer",
-        system_prompt=(
-            "你是新闻分析专家。你的任务是从 ThinkingGraph 中读取 Fetcher 采集的新闻并进行深度分析。\n\n"
-            "**执行步骤：**\n\n"
-            "步骤 1：使用 thinking_graph_get_full_graph 获取所有新闻节点\n"
-            "   - 查找 node_type 为 'EVIDENCE' 或 'ARTIFACT' 的节点\n"
-            "   - 如果 graph 为空或没有新闻节点，说明 Fetcher 未完成工作\n\n"
-            "步骤 2：对每条新闻进行分析\n"
-            "   1. 相关性评分（高/中/低）- 与用户查询主题的匹配度\n"
-            "   2. 提取关键实体（人名、组织、技术术语、产品名）\n"
-            "   3. 识别核心观点和主要信息\n"
-            "   4. 判断情感倾向（正面/负面/中性）\n"
-            "   5. 标记可能的偏见、冲突或不一致之处\n\n"
-            "步骤 3：将分析结果写入 ThinkingGraph\n"
-            "   - 为每条新闻创建 'CLAIM' 或 'SUMMARY' 节点\n"
-            "   - 使用 SUPPORTS/DERIVES_FROM 边连接到原始 EVIDENCE 节点\n"
-            "   - payload 中包含完整的分析结果\n\n"
-            "步骤 4：调用 round_end 结束\n\n"
-            "**注意：**\n"
-            "   - 如果 ThinkingGraph 中没有新闻数据，不要进行分析，直接报告问题\n"
-            "   - 保持客观，标注信息来源的不确定性"
-        ),
+        system_prompt=NEWS_ANALYZER_SYSTEM_PROMPT,
         share_thinking_tools=True,
         share_graph_tools=False,
         max_concurrent_tools=2,
@@ -186,45 +146,7 @@ def build_news_monitor_swarm(fetcher: LLMFetcher) -> AgentSwarm:
     # Agent 3: Summarizer – produces final digest
     swarm.add_agent(
         "summarizer",
-        system_prompt=(
-            "你是新闻摘要专家。你的任务是综合 Fetcher 和 Analyzer 的工作成果，生成最终报告。\n\n"
-            "**执行步骤：**\n\n"
-            "步骤 1：使用 thinking_graph_get_full_graph 获取完整思考图谱\n"
-            "   - 查看所有节点类型：EVIDENCE（原始新闻）、CLAIM/SUMMARY（分析结果）\n"
-            "   - 理解节点之间的关系（通过 edges）\n\n"
-            "步骤 2：从图谱中提取关键信息\n"
-            "   - 最重要的发现和趋势\n"
-            "   - 各方观点和立场\n"
-            "   - 存在的争议或不确定性\n\n"
-            "步骤 3：生成结构化的最终摘要（Markdown 格式）\n"
-            "   ```\n"
-            "   # [主题] 新闻摘要\n"
-            "   \n"
-            "   ## 📌 总览\n"
-            "   [1-2句话概括核心内容]\n"
-            "   \n"
-            "   ## 📰 主要新闻\n"
-            "   ### 1. [标题]\n"
-            "   - **来源**: [来源名称/URL]\n"
-            "   - **要点**: [2-3句话摘要]\n"
-            "   - **分析**: [相关性、关键观点等]\n"
-            "   \n"
-            "   ## 🔍 关键洞察\n"
-            "   - [洞察点1]\n"
-            "   - [洞察点2]\n"
-            "   \n"
-            "   ## ⚠️ 注意事项\n"
-            "   - [偏见/冲突/不确定性说明]\n"
-            "   \n"
-            "   ## 📚 信息来源\n"
-            "   - [列出所有参考的新闻来源]\n"
-            "   ```\n\n"
-            "步骤 4：输出最终摘要并调用 round_end\n\n"
-            "**质量要求：**\n"
-            "   - 内容准确，基于 ThinkingGraph 中的实际数据\n"
-            "   - 结构清晰，易于阅读\n"
-            "   - 标注信息来源，保持透明度"
-        ),
+        system_prompt=NEWS_SUMMARIZER_SYSTEM_PROMPT,
         share_thinking_tools=True,      # reads ThinkingGraph nodes from previous agents
         share_graph_tools=False,
         max_concurrent_tools=1,
