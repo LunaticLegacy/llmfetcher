@@ -89,6 +89,17 @@ Legacy `reported` snapshots are normalized from their saved `TaskReport`.
 
 ## `llmfetcher.webapp` connector store
 
+### `webapp._default_state_root(project_root)` / `STATE_ROOT`
+
+Resolves the browser Workbench state location before module startup creates it.
+An explicit `LLMFETCHER_STATE_DIR` takes priority. Without that override, a
+standalone LLMFetcher checkout uses `project_root/workspace`; when its parent
+superproject registers the exact project directory as a `llmfetcher`
+submodule, it instead uses the parent `workspace/`. This keeps Angelus session
+history, connectors and traces visible after package installation moves from
+the superproject root into the submodule. The helper only reads `.gitmodules`;
+it is called by module-level `STATE_ROOT` initialization and has no subclasses.
+
 The local web console owns a JSON connector registry at
 `workspace/connectors.json`. The registry is separate from conversation
 context and can contain API keys, so writes attempt filesystem mode 0600.

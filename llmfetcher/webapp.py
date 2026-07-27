@@ -34,9 +34,45 @@ from .task_planning import TaskPlanStore, create_task_planning_tools
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
+
+
+def _default_state_root(project_root: Path = PROJECT_ROOT) -> Path:
+    """Choose the local Workbench state directory for one source checkout.
+
+    Args:
+        project_root: Root containing the LLMFetcher package, frontend, and
+            packaging metadata. Tests may supply a temporary checkout root.
+
+    Returns:
+        The project-local ``workspace`` directory for a standalone checkout,
+        or the parent superproject's ``workspace`` directory when this exact
+        checkout is registered as its ``llmfetcher`` Git submodule.
+
+    Side Effects:
+        Reads a parent ``.gitmodules`` file when present. It never creates
+        directories or changes Git configuration.
+    """
+    superproject_root = project_root.parent
+    gitmodules_path = superproject_root / ".gitmodules"
+
+    # A submodule checkout should retain the superproject's existing sessions
+    # instead of silently creating a second workspace inside the submodule.
+    if gitmodules_path.is_file():
+        gitmodules = gitmodules_path.read_text(encoding="utf-8", errors="replace")
+        if f"path = {project_root.name}" in gitmodules:
+            return superproject_root / "workspace"
+
+    return project_root / "workspace"
+
+
 # Every browser-visible session owns one private directory under ``workspace``.
-# The environment override remains useful for tests and portable deployments.
-STATE_ROOT = Path(os.environ.get("LLMFETCHER_STATE_DIR", PROJECT_ROOT / "workspace")).resolve()
+# An explicit deployment override always takes precedence over checkout layout.
+_configured_state_root = os.environ.get("LLMFETCHER_STATE_DIR")
+STATE_ROOT = (
+    Path(_configured_state_root).resolve()
+    if _configured_state_root
+    else _default_state_root().resolve()
+)
 WORKSPACE_ROOT = STATE_ROOT
 WORKSPACE_INDEX = STATE_ROOT / "sessions.json"
 CONNECTOR_INDEX = STATE_ROOT / "connectors.json"
