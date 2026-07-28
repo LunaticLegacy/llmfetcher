@@ -166,6 +166,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # list-tools
     sub.add_parser("list-tools", help="List available tool sets")
 
+    # web — starts the browser console without requiring a separate command.
+    web_p = sub.add_parser("web", help="Start the local web console")
+    web_p.add_argument("--host", default="127.0.0.1", help="Bind host (default: %(default)s)")
+    web_p.add_argument("--port", type=int, default=8765, help="Bind port (default: %(default)s)")
+
+    # session — browser-visible conversations with independent work paths.
+    session_p = sub.add_parser("session", help="Manage local web-console sessions")
+    session_sub = session_p.add_subparsers(dest="session_command", required=True)
+    session_sub.add_parser("list", help="List sessions")
+    create_p = session_sub.add_parser("create", help="Create a session")
+    create_p.add_argument("name", help="Display name for the new session")
+
     return parser
 
 
@@ -264,13 +276,14 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     agent = _bootstrap_agent(args)
     try:
-        agent.run(
+        result = agent.run(
             message=prompt,
             max_rounds=args.max_rounds,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
             verbose=args.verbose,
         )
+        print(result.content)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
@@ -294,13 +307,68 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             break
 
         try:
-            agent.run(
+            result = agent.run(
                 message=prompt,
                 max_rounds=args.max_rounds,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 verbose=args.verbose,
             )
+            print(result.content)
         except KeyboardInterrupt:
             print("\n(interrupted)")
             continue
+
+
+def _cmd_web(args: argparse.Namespace) -> None:
+    """Run the optional FastAPI browser console."""
+    try:
+        import uvicorn
+        from llmfetcher.webapp import app
+    except ImportError as exc:
+        print(f"error: web console dependencies are unavailable: {exc}", file=sys.stderr)
+        print("install the package dependencies, then retry.", file=sys.stderr)
+        sys.exit(1)
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+def _cmd_session(args: argparse.Namespace) -> None:
+    """Create or list browser-visible sessions and their private directories."""
+    from llmfetcher.webapp import WORKSPACE_ROOT, _read_workspaces, _session_id_from_name, _write_workspaces
+
+    if args.session_command == "list":
+        for workspace in _read_workspaces():
+            print(f"{workspace['id']}\t{workspace['name']}")
+        return
+
+    name = args.name.strip()
+    if not name:
+        print("error: session name is required", file=sys.stderr)
+        sys.exit(2)
+    records = _read_workspaces()
+    session = {"id": _session_id_from_name(name, {item["id"] for item in records}), "name": name}
+    records.append(session)
+    _write_workspaces(records)
+    (WORKSPACE_ROOT / session["id"]).mkdir(parents=True, exist_ok=True)
+    print(f"Created session {session['name']} ({session['id']})")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse CLI arguments and dispatch the selected llmfetcher command."""
+    args = _build_parser().parse_args(argv)
+    if args.command == "list-backends":
+        _cmd_list_backends()
+    elif args.command == "list-tools":
+        _cmd_list_tools()
+    elif args.command == "run":
+        _cmd_run(args)
+    elif args.command == "chat":
+        _cmd_chat(args)
+    elif args.command == "web":
+        _cmd_web(args)
+    elif args.command == "session":
+        _cmd_session(args)
+
+
+if __name__ == "__main__":
+    main()

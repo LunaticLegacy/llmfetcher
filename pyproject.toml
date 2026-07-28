@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 name = "llmfetcher"
 version = "0.4.0"
 description = "Multi-agent LLM orchestration framework"
-license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
 authors = [
     {name = "LunaticLegacy"},
@@ -16,20 +15,13 @@ dependencies = [
     "anthropic>=0.100.0",
     "litellm>=1.0.0",
     "markdown-it-py",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
 llmfetcher = "llmfetcher.cli:main"
+llmfetcher-web = "llmfetcher.webapp:main"
 
-[tool.setuptools]
-package-dir = {llmfetcher = "."}
-packages = [
-    "llmfetcher",
-    "llmfetcher.context_handlers",
-    "llmfetcher.fetcher_handlers",
-    "llmfetcher.memory",
-    "llmfetcher.rag_module",
-    "llmfetcher.rag_module.knowledge",
-    "llmfetcher.swarm_module",
-    "llmfetcher.tools",
-]
+[tool.setuptools.packages.find]
+include = ["llmfetcher*"]

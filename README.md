@@ -55,6 +55,43 @@ The base dependencies install the OpenAI, Anthropic, and LiteLLM client
 libraries. Local OpenVINO and ONNX Runtime handlers require their respective
 runtime packages.
 
+## Web Console
+
+The repository includes a local, single-page frontend for chatting with an
+`Agent` and observing its execution. It exposes the same backend configuration,
+tool registration, budgets, event hooks, and cooperative stop controls used by
+the Python API.
+
+```bash
+pip install -e .
+llmfetcher-web
+```
+
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765). Configure a provider,
+model, optional API URL and key, then send a message. The Connection selector
+can save multiple named provider configurations, including their API keys, in
+the local `workspace/connectors.json` store (the file is written with mode
+0600 where the OS permits it). Keys are not stored in persisted chat context.
+
+The optional Shell switch exposes the existing restricted `shell` tool with its
+working directory limited to the process directory. Only enable it for models
+you trust with local-machine access.
+
+### Sessions and CLI
+
+Each browser-visible session owns an independent local directory under
+`workspace/<session>/`. Select one in the console, or manage it from the main
+CLI:
+
+```bash
+llmfetcher session list
+llmfetcher session create "产品研究"
+llmfetcher web --port 8765
+```
+
+`llmfetcher web` is equivalent to `llmfetcher-web`; the latter remains a
+convenient dedicated console entry point.
+
 ## Quick Start
 
 Create one text Agent. `Agent.run()` is synchronous and returns the final
@@ -179,10 +216,8 @@ apply side-effect policy, and return bounded results suitable for model context.
 
 ## Context and Memory
 
-`ContextHandlerLinear` stores short-term history and persists complete tool
-results as JSON when an Agent has a `context_path`. If the conversation exceeds
-the model context budget, a separate compaction request protects the next model
-call; this does not overwrite the persisted tool result.
+`ContextHandlerLinear` stores short-term history and persists it as JSON when
+an Agent has a `context_path`. Large tool output is truncated before storage.
 When its threshold is exceeded, the handler asks the configured LLM for a
 bounded standalone summary instead of replaying an unbounded transcript.
 
@@ -348,9 +383,11 @@ PYTHONPATH="$(pwd)/.." python -m unittest discover -s tests -v
   dynamic workers created by `create_swarm_tools()` use the configured shared
   fetcher. There is no persisted `AgentProfile` that selects a visual, OCR, or
   text model by task capability.
-- **No library-level durable execution store.** `ExecutionGraph` and `TaskBus`
-  state live in memory. Applications can persist events and run state through
-  hooks, but graph checkpoint/recovery is not a built-in package feature.
+- **No in-flight execution recovery.** `ExecutionGraph.save()` / `load()`
+  persist a quiescent topology, Agent specifications, callback IDs, and
+  TaskBus mailbox state. They deliberately do not checkpoint running threads;
+  application-owned tools, custom contexts, mappers, and routers require safe
+  serializer/resolver registries.
 - **No generic middleware pipeline.** Policies such as model routing, tool
   approvals, retries, PII filtering, and budget enforcement currently belong
   in application code or individual tool handlers.
@@ -371,8 +408,5 @@ adding:
 
 ## License
 
-This repository is licensed under the GNU Affero General Public License,
-version 3 or later (AGPL-3.0-or-later).  For code whose copyright is held by
-LunaticLegacy, a separately executed commercial license is also available;
-see [LICENSING.md](LICENSING.md).  The open-source license text remains in
-[LICENSE](LICENSE).
+No license file is currently distributed with this repository. Confirm the
+project's intended license before redistributing it.

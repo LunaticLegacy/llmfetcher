@@ -19,4 +19,3 @@ def test_task_plan_round_trip_and_recursive_status_update() -> None:
         updated = store.update_status("test", "completed")
         assert updated["tasks"][0]["subtasks"][0]["status"] == "completed"
         assert store.read()["goal"] == "Ship a release"
-

@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, override
+from typing import Any, Dict, List, Optional, Protocol
 
 from .base import ContextHandler
 from ..llm_types import (
@@ -131,14 +131,6 @@ class ContextHandlerLinear(ContextHandler):
     # -- public API ---------------------------------------------------------
     # System prompt should NOT be included in this context manager.
 
-    @override
-    def clear_context(self):
-        self.abstract = None
-        self.messages = []
-        return True
-
-
-    @override
     def add_user_message(
         self,
         message: str,
@@ -159,7 +151,6 @@ class ContextHandlerLinear(ContextHandler):
             content=message,
         ))
 
-    @override
     def add_assistant_message(
         self,
         message: LLMOutput,
@@ -246,7 +237,6 @@ class ContextHandlerLinear(ContextHandler):
         self.messages.clear()
         return True
 
-    @override
     def get_prev_messages(self) -> List[LLMContext | LLMContextCompacted]:
         """Return the stored conversation history."""
         result: List[LLMContext | LLMContextCompacted] = list(self.messages)
@@ -254,7 +244,6 @@ class ContextHandlerLinear(ContextHandler):
             result.insert(0, self.abstract)
         return result
 
-    @override
     def build_messages(self) -> List[Dict[str, Any]]:
         """Build context messages for an LLM request.
 
@@ -305,21 +294,42 @@ class ContextHandlerLinear(ContextHandler):
         self,
         tool_results: Optional[Dict[str, str]],
     ) -> Dict[str, str]:
-        """Copy complete tool output into the in-memory conversation history.
+        """Bound tool output before it becomes persistent chat history.
 
         Tool calls may return complete HTML pages, archives, or command output.
-        The history keeps the complete value for lossless persistence. Context
-        compaction remains the separate mechanism that protects model requests.
+        Keeping those payloads verbatim makes later context compaction exceed a
+        model's context window. Detailed data must instead remain in its file
+        artifact and be referenced by the retained prefix.
 
         Args:
             tool_results: Raw tool output keyed by provider tool-call ID.
 
         Returns:
-            A copied mapping containing every complete tool result.
+            Copy with a per-result and aggregate character limit. Truncated
+            values include their original size for the Agent's next round.
         """
         if not tool_results:
             return {}
-        return {call_id: str(raw_value) for call_id, raw_value in tool_results.items()}
+        remaining = _TOOL_RESULT_TOTAL_MAX_CHARS
+        bounded: Dict[str, str] = {}
+        for call_id, raw_value in tool_results.items():
+            raw_text = str(raw_value)
+            allowed = min(_TOOL_RESULT_MAX_CHARS, remaining)
+            if allowed <= 0:
+                bounded[call_id] = (
+                    f"[tool result omitted; {len(raw_text)} characters total; "
+                    "aggregate context budget exhausted]"
+                )
+                continue
+            if len(raw_text) > allowed:
+                bounded[call_id] = (
+                    f"{raw_text[:allowed]}\n\n[tool result truncated; "
+                    f"{len(raw_text)} characters total]"
+                )
+            else:
+                bounded[call_id] = raw_text
+            remaining -= min(len(raw_text), allowed)
+        return bounded
 
     def _build_compaction_input(self) -> str:
         """Render a bounded, newest-first transcript for one summary request.
@@ -406,7 +416,6 @@ class ContextHandlerLinear(ContextHandler):
 
     # -- persistence -------------------------------------------------------
 
-    @override
     def save(self, path: str | Path) -> bool:
         """Serialize the conversation history to a JSON file.
 
@@ -433,7 +442,6 @@ class ContextHandlerLinear(ContextHandler):
         except (OSError, TypeError, ValueError):
             return False
 
-    @override
     def load(self, path: Optional[str | Path]) -> bool:
         """Deserialize conversation history from a JSON file.
 

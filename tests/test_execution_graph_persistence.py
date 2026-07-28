@@ -65,4 +65,3 @@ class ExecutionGraphPersistenceTests(unittest.TestCase):
         graph.set_router("source", lambda _output: [])
         with self.assertRaises(GraphPersistenceError):
             graph.to_snapshot()
-

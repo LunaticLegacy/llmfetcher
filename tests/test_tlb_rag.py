@@ -46,4 +46,3 @@ class TLBRAGTests(unittest.TestCase):
             self.assertEqual(read_file(str(permitted)), "routing")
             with self.assertRaises(PermissionError):
                 read_file(str(sibling))
-

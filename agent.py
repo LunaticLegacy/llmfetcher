@@ -31,7 +31,21 @@ class AgentRunControl(Protocol):
 
 
 class AgentRunStopped(RuntimeError):
-    """Signal that cooperative execution stopped at a completed step boundary."""
+    """Signal a cooperative stop after durable completion of one Agent step.
+
+    Args:
+        message: Human-readable reason for ending the current run.
+        last_output: Model result from the completed boundary. It is ``None``
+            only when no model round completed before the stop was observed.
+
+    The exception is raised only after the latest assistant message has been
+    added to the context and that context has been saved. Browser callers use
+    ``last_output`` to persist the matching display transcript.
+    """
+
+    def __init__(self, message: str, *, last_output: LLMOutput | None = None) -> None:
+        super().__init__(message)
+        self.last_output = last_output
 
 
 def _tool_result_text(value: Any) -> str:
@@ -39,10 +53,16 @@ def _tool_result_text(value: Any) -> str:
 
     Args:
         value: Raw value returned by a tool handler.
+        max_chars: Maximum number of characters retained in the summary.
+
     Returns:
-        Complete string form of ``value`` without a display or persistence limit.
+        String form of ``value``, truncated with an explicit size marker when
+        it exceeds ``max_chars``.
     """
-    return str(value)
+    text = str(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}\n[truncated; {len(text)} characters total]"
 
 
 class Agent:
@@ -69,7 +89,7 @@ class Agent:
             context_handler: Optional custom context implementation, such as
                 ``RetrievedContextHandler``.
             default_max_rounds: Default maximum model-and-tool steps for a
-                ``run`` call that omits ``max_rounds``.
+                ``run`` call that omits ``max_rounds``. ``0`` means unlimited.
             default_max_tokens: Default maximum generated tokens per model
                 step for a ``run`` call that omits ``max_tokens``.
 
@@ -77,11 +97,11 @@ class Agent:
             None.
 
         Raises:
-            ValueError: If the round budget is negative or the token budget is
-                not positive.
+            ValueError: If either default execution budget is negative or the
+                token budget is not positive.
         """
-        if default_max_rounds < 0:
-            raise ValueError("default_max_rounds must be zero or greater")
+        if default_max_rounds <= 0:
+            raise ValueError("default_max_rounds must be greater than zero")
         if default_max_tokens <= 0:
             raise ValueError("default_max_tokens must be greater than zero")
         self.llm_fetcher = llm_fetcher
@@ -233,6 +253,22 @@ class Agent:
             + self.tool_handler.get_all_tool_description()
         )
 
+    def _save_context(self) -> bool:
+        """Persist the current context when this Agent has a storage path.
+
+        Returns:
+            ``True`` when a configured context was saved successfully;
+            ``False`` when persistence is disabled or the handler reports a
+            write failure.
+
+        This helper is called for both ordinary completion and cooperative
+        stops so a completed model-and-tool boundary is never lost merely
+        because execution will not enter another round.
+        """
+        if self.context_path is None:
+            return False
+        return self.context_handler.save(self.context_path)
+
     # -- run ------------------------------------------------------------
 
     def run(
@@ -249,7 +285,7 @@ class Agent:
         Args:
             message: User request or explicit task package for this run.
             max_rounds: Maximum model-and-tool steps. ``None`` uses the
-                Agent's ``default_max_rounds``; ``0`` means no round limit.
+                Agent's ``default_max_rounds``; ``0`` means unlimited.
             temperature: Model sampling temperature.
             max_tokens: Maximum generated tokens per model step. ``None``
                 uses the Agent's ``default_max_tokens``.
@@ -261,14 +297,21 @@ class Agent:
             Last model output produced by the Agent.
 
         Raises:
+            ValueError: If a resolved execution budget is negative or the
+                token budget is not positive.
+            AgentRunStopped: If ``control`` requests a stop after a completed
+                model-and-tool boundary. That boundary is persisted before
+                the exception is raised.
             RuntimeError: If execution completes without a model response.
         """
-        resolved_max_rounds = self.default_max_rounds if max_rounds is None else max_rounds
+        resolved_max_rounds = (
+            self.default_max_rounds if max_rounds is None else max_rounds
+        )
         resolved_max_tokens = (
             self.default_max_tokens if max_tokens is None else max_tokens
         )
-        if resolved_max_rounds < 0:
-            raise ValueError("max_rounds must be zero or greater")
+        if resolved_max_rounds <= 0:
+            raise ValueError("max_rounds must be greater than zero")
         if resolved_max_tokens <= 0:
             raise ValueError("max_tokens must be greater than zero")
         self._completion_requested.clear()
@@ -317,7 +360,6 @@ class Agent:
         result: LLMOutput | None = None
         round_idx = 0
 
-        round_idx = 0
         while resolved_max_rounds == 0 or round_idx < resolved_max_rounds:
             round_idx += 1
             if verbose:
@@ -383,7 +425,7 @@ class Agent:
                 ])
                 have_tool_call = True
 
-                # Publish complete outcomes so persistence and export never lose tool evidence.
+                # Publish bounded outcomes after every parallel tool batch.
                 completed_calls = []
                 for call, raw_result in zip(requested_calls, results_list):
                     result_ok = not isinstance(raw_result, Exception)
@@ -392,7 +434,7 @@ class Agent:
                     completed_calls.append({
                         **call,
                         "ok": result_ok,
-                        "result": _tool_result_text(raw_result),
+                        "result": _tool_result_summary(raw_result),
                     })
                 self._emit(
                     "agent",
@@ -453,16 +495,22 @@ class Agent:
                 )
                 break
 
-            # Controls are intentionally observed after response persistence
-            # and the complete tool batch, preserving one coherent step.
+            # Persist before checking controls because stops are observed only
+            # after a completed response and its complete tool batch.
             if control is not None and control.should_stop():
+                self._save_context()
                 self._emit(
                     "agent", name, "agent:stopped",
                     f"Stopped after round {round_idx}",
                     data={"round": round_idx},
                 )
-                raise AgentRunStopped("Agent stopped after the current step")
+                raise AgentRunStopped(
+                    "Agent stopped after the current step",
+                    last_output=result,
+                )
 
+            # Safe controls are intentionally observed after response
+            # persistence and the complete tool batch, preserving one step.
             steers = control.drain_steers() if control is not None else []
             if steers:
                 for steer in steers:
@@ -477,11 +525,7 @@ class Agent:
             if not have_tool_call and not steers:
                 break
 
-        save_result = (
-            self.context_handler.save(self.context_path)
-            if self.context_path is not None
-            else False
-        )
+        save_result = self._save_context()
         if verbose:
             if not save_result:
                 print("Context saving failed.")
@@ -510,9 +554,3 @@ class Agent:
     def close(self) -> None:
         """Release sub-interpreter resources held by the tool executor."""
         self.tool_executor.close()
-
-    def clear_context(self) -> None:
-        """
-        Clear context.
-        """
-        self.context_handler.clear_context()

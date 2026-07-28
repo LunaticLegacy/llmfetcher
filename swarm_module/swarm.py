@@ -250,6 +250,27 @@ class AgentSwarm:
         """
         self._graph.add_hook(hook)
 
+    def view_snapshot(self) -> dict[str, Any]:
+        """Return a safe, UI-oriented snapshot of the active graph topology.
+
+        Returns:
+            JSON-compatible node, edge, assignment, and task-state data from
+            the underlying :class:`ExecutionGraph`.
+        """
+        return self._graph.view_snapshot()
+
+    def finalize_tasks(self) -> dict[str, str]:
+        """Close unfinished dynamic tasks after any terminal run outcome.
+
+        Returns:
+            Mapping of changed task identifiers to ``interrupted`` or
+            ``cancelled``.
+
+        Side Effects:
+            Emits terminal task lifecycle events through registered hooks.
+        """
+        return self._graph.finalize_tasks()
+
     def request_shutdown(self) -> None:
         """Stop scheduling further runnable Agents in the active graph.
 
@@ -275,11 +296,16 @@ class AgentSwarm:
 
         Args:
             message: Initial input supplied to every root Agent.
-            max_rounds: Maximum rounds passed to every Agent; ``0`` means
-                unlimited and ``None`` uses each Agent's default.
             control: Optional stop and steering source shared by graph Agents.
 
         Returns:
             Mapping of agent name to its raw output.
+
+        Side Effects:
+            Finalizes every unfinished dynamic assignment before returning or
+            propagating a scheduler exception.
         """
-        return self._graph.run(message, max_rounds=max_rounds, control=control)
+        try:
+            return self._graph.run(message, max_rounds=max_rounds, control=control)
+        finally:
+            self._graph.finalize_tasks()

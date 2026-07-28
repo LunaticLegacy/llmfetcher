@@ -1,14 +1,5 @@
 # Semantic map
 
-## `llmfetcher.agent`
-
-### `agent._tool_result_summary(value, max_chars=4_000)`
-
-Converts a raw tool return value into a bounded observability string without
-changing the full tool result persisted in the Agent context. It rejects a
-negative limit with `ValueError`. `Agent.run()` calls it when emitting its
-`agent:tools_completed` event; it has no subclasses and performs no I/O.
-
 ## `llmfetcher.swarm_module.execution_graph.ExecutionGraph`
 
 Owns a dependency DAG of `Agent` nodes, routing-only nodes, callbacks and a
@@ -422,4 +413,3 @@ case: the selected workspace was removed by an earlier action or another
 browser tab. It reloads the registry, current history, plan and graph before
 showing a trace notice, instead of leaving a stale localStorage workspace ID
 selected. Other error statuses remain visible to the user.
-

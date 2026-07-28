@@ -12,4 +12,3 @@ def test_shell_tool_runs_with_popen_pipes() -> None:
         result = shell.handler(command="printf hello")
 
     assert result == "[stdout]\nhello"
-
