@@ -74,8 +74,8 @@ def create_swarm_tools(
         ValueError: If the worker execution budgets or context threshold are
             outside their supported ranges.
     """
-    if worker_max_rounds < 0:
-        raise ValueError("worker_max_rounds must be zero or greater")
+    if worker_max_rounds <= 0:
+        raise ValueError("worker_max_rounds must be greater than zero")
     if worker_max_tokens <= 0:
         raise ValueError("worker_max_tokens must be greater than zero")
     if worker_max_context_threshold < 1024:

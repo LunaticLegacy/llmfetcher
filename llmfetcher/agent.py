@@ -53,10 +53,16 @@ def _tool_result_text(value: Any) -> str:
 
     Args:
         value: Raw value returned by a tool handler.
+        max_chars: Maximum number of characters retained in the summary.
+
     Returns:
-        Complete string form of ``value`` without a display or persistence limit.
+        String form of ``value``, truncated with an explicit size marker when
+        it exceeds ``max_chars``.
     """
-    return str(value)
+    text = str(value)
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}\n[truncated; {len(text)} characters total]"
 
 
 class Agent:
@@ -94,8 +100,8 @@ class Agent:
             ValueError: If either default execution budget is negative or the
                 token budget is not positive.
         """
-        if default_max_rounds < 0:
-            raise ValueError("default_max_rounds must be zero or greater")
+        if default_max_rounds <= 0:
+            raise ValueError("default_max_rounds must be greater than zero")
         if default_max_tokens <= 0:
             raise ValueError("default_max_tokens must be greater than zero")
         self.llm_fetcher = llm_fetcher
@@ -298,12 +304,14 @@ class Agent:
                 the exception is raised.
             RuntimeError: If execution completes without a model response.
         """
-        resolved_max_rounds = self.default_max_rounds if max_rounds is None else max_rounds
+        resolved_max_rounds = (
+            self.default_max_rounds if max_rounds is None else max_rounds
+        )
         resolved_max_tokens = (
             self.default_max_tokens if max_tokens is None else max_tokens
         )
-        if resolved_max_rounds < 0:
-            raise ValueError("max_rounds must be zero or greater")
+        if resolved_max_rounds <= 0:
+            raise ValueError("max_rounds must be greater than zero")
         if resolved_max_tokens <= 0:
             raise ValueError("max_tokens must be greater than zero")
         self._completion_requested.clear()
@@ -417,7 +425,7 @@ class Agent:
                 ])
                 have_tool_call = True
 
-                # Publish complete outcomes so persistence and export never lose tool evidence.
+                # Publish bounded outcomes after every parallel tool batch.
                 completed_calls = []
                 for call, raw_result in zip(requested_calls, results_list):
                     result_ok = not isinstance(raw_result, Exception)
@@ -426,7 +434,7 @@ class Agent:
                     completed_calls.append({
                         **call,
                         "ok": result_ok,
-                        "result": _tool_result_text(raw_result),
+                        "result": _tool_result_summary(raw_result),
                     })
                 self._emit(
                     "agent",
@@ -546,9 +554,3 @@ class Agent:
     def close(self) -> None:
         """Release sub-interpreter resources held by the tool executor."""
         self.tool_executor.close()
-
-    def clear_context(self) -> None:
-        """
-        Clear context.
-        """
-        self.context_handler.clear_context()

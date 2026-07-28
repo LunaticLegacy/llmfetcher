@@ -296,8 +296,6 @@ class AgentSwarm:
 
         Args:
             message: Initial input supplied to every root Agent.
-            max_rounds: Maximum rounds passed to every Agent; ``0`` means
-                unlimited and ``None`` uses each Agent's default.
             control: Optional stop and steering source shared by graph Agents.
 
         Returns:

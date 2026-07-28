@@ -77,14 +77,6 @@ class ContextHandler(ABC):
             path: Path to file.
 
         Returns:
-            A boolean for indicate whether successfully loaded or not.
+            A boolean for indicate whether successfully saved or not.
         """
 
-    @abstractmethod
-    def clear_context(self) -> bool:
-        """
-        Clear context.
-        
-        Returns:
-            A boolean for indicate whether successfully clear or not.
-        """
