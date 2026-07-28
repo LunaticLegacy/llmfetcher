@@ -33,6 +33,10 @@ jobs:
     - name: Run tests
       run: |
         python -m unittest discover -s tests -v
+      env:
+        # The project uses a flat package layout: the checkout itself is the
+        # ``llmfetcher`` package, so Python must see its parent directory.
+        PYTHONPATH: ${{ github.workspace }}/..
 
   checks:
     runs-on: ubuntu-latest
