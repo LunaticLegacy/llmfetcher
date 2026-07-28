@@ -18,5 +18,5 @@ third-party dependencies or services.  GPL/AGPL rights already granted to
 recipients remain valid and are not revoked.
 
 For a commercial agreement, use the repository's
-[commercial-licensing guide](./commercial-licensing.md) as the scope
+[commercial-licensing guide](./LICENSE_COMMERCIAL.md) as the scope
 checklist; the signed agreement controls.
