@@ -49,4 +49,4 @@ docs/_build/
 .codex
 
 # local llm workspace for testing
-worksapce/
+workspace/
