@@ -1,52 +1,137 @@
-"""Private read_file tool factory for the TLB RAG worker agent.
+"""Private read_file tool factory and path safety for the TLB RAG worker.
 
-This tool is internal to the ``rag_module_tlb`` package — it is NOT exported
-via ``__init__.py``. External code should use ``create_tlb_rag_tool`` instead.
+This module is internal to the ``rag_module_tlb`` package — it is NOT
+exported via ``__init__.py``.
 """
 
+import hashlib
+import os
 from pathlib import Path
 
 from ..llm_types import Tool, ToolSchema, ToolParameter
 
 
-def create_read_file_tool(root: Path) -> Tool:
-    """Create a sandboxed ``read_file`` tool for TLB file-tree traversal.
+def resolve_inside_root(root: Path, candidate: str | Path) -> Path:
+    """Resolve *candidate* and verify it lies inside *root*.
 
-    The returned tool reads files within the given root directory only.
-    Attempts to read files outside the root raise ``PermissionError``.
+    Uses :meth:`Path.resolve` on both arguments and checks containment
+    via :meth:`Path.is_relative_to`. Rejects absolute-path escapes,
+    ``..`` traversal, same-prefix sibling directories, and symlink
+    escapes.
 
-    This tool is registered on the internal worker Agent and is not
-    intended for use outside this module.
+    Args:
+        root: The sandbox root directory.
+        candidate: A relative or absolute path to resolve and validate.
+
+    Returns:
+        The fully resolved absolute ``Path``.
+
+    Raises:
+        PermissionError: If the resolved path is not inside *root*.
+        FileNotFoundError: If the resolved path does not exist.
+    """
+    resolved_root = root.resolve()
+    resolved = Path(candidate).resolve()
+
+    if not resolved.is_relative_to(resolved_root):
+        raise PermissionError(
+            f"Path escape blocked: '{candidate}' resolves to "
+            f"'{resolved}' which is outside root '{resolved_root}'"
+        )
+
+    return resolved
+
+
+def _compute_file_attrs(path: Path) -> tuple[int, int, str]:
+    """Return (mtime_ns, byte_size, sha256_hex) for a file.
+
+    Args:
+        path: Resolved and validated file path.
+
+    Returns:
+        Tuple of modification time in nanoseconds, byte size, and
+        SHA-256 hex digest.
+    """
+    stat = path.stat()
+    mtime_ns = stat.st_mtime_ns
+    byte_size = stat.st_size
+    sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    return mtime_ns, byte_size, sha256
+
+
+def create_read_file_tool(root: Path) -> tuple[Tool, list]:
+    """Create a sandboxed traced ``read_file`` tool for TLB traversal.
+
+    Returns a tuple of ``(tool, trace_list)``. The *trace_list* is
+    mutated in-place by the tool handler — after the worker agent
+    completes, it contains :class:`~.type.ReadTraceEntry` records for
+    every file actually read.
 
     Args:
         root: The root directory that the tool is allowed to read from.
 
     Returns:
-        A ``Tool`` instance named ``"read_file"`` with a single
-        ``file_path`` parameter.
+        A ``(Tool, list[ReadTraceEntry])`` pair.
     """
+    # Defer import to avoid circular dependency at module level.
+    from .type import ReadTraceEntry
+
+    trace: list = []
 
     def handler(file_path: str) -> str:
         """Read a file within the sandboxed root directory.
 
+        Records every read in *trace* with resolved path, hash, size,
+        mtime, and success/error status.
+
         Args:
-            file_path: Absolute path to the file to read. Must resolve
-                to a path within the configured root.
+            file_path: Absolute or relative path to read.
 
         Returns:
-            The file contents as a UTF-8 string.
+            File contents as a UTF-8 string.
 
         Raises:
-            PermissionError: If the resolved path is outside the root.
+            PermissionError: If the resolved path is outside root.
         """
-        resolved = Path(file_path).resolve()
-        if not str(resolved).startswith(str(root.resolve())):
-            raise PermissionError(
-                f"Access denied: '{file_path}' is outside the TLB root '{root}'"
-            )
-        return resolved.read_text(encoding="utf-8")
+        try:
+            resolved = resolve_inside_root(root, file_path)
+        except (PermissionError, FileNotFoundError) as exc:
+            trace.append(ReadTraceEntry(
+                resolved_path=str(Path(file_path).resolve()),
+                is_index=False,
+                byte_size=0,
+                mtime_ns=0,
+                sha256="",
+                success=False,
+                error=str(exc),
+            ))
+            raise
 
-    return Tool(
+        try:
+            content = resolved.read_text(encoding="utf-8")
+            mtime_ns, byte_size, sha256 = _compute_file_attrs(resolved)
+            trace.append(ReadTraceEntry(
+                resolved_path=str(resolved),
+                is_index=resolved.name == "INDEX.md",
+                byte_size=byte_size,
+                mtime_ns=mtime_ns,
+                sha256=sha256,
+                success=True,
+            ))
+            return content
+        except OSError as exc:
+            trace.append(ReadTraceEntry(
+                resolved_path=str(resolved),
+                is_index=resolved.name == "INDEX.md",
+                byte_size=0,
+                mtime_ns=0,
+                sha256="",
+                success=False,
+                error=str(exc),
+            ))
+            raise
+
+    tool = Tool(
         name="read_file",
         description=(
             "Read the contents of a file within the TLB root directory. "
@@ -65,3 +150,5 @@ def create_read_file_tool(root: Path) -> Tool:
         ),
         handler=handler,
     )
+
+    return tool, trace
