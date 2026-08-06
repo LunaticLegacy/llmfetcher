@@ -133,8 +133,14 @@ class ContextHandlerLinear(ContextHandler):
 
     @override
     def clear_context(self):
+        """Clear all conversation entries and restart timeline numbering.
+
+        Returns:
+            ``True`` after the in-memory context and round counter are reset.
+        """
         self.abstract = None
         self.messages = []
+        self._round = 0
         return True
 
 
@@ -422,6 +428,7 @@ class ContextHandlerLinear(ContextHandler):
         try:
             data: Dict[str, Any] = {
                 "compress_threshold": self.compress_threshold,
+                "round": self._round,
                 "abstract": self._compacted_to_dict(self.abstract),
                 "messages": [self._context_to_dict(m) for m in self.messages],
             }
@@ -459,10 +466,20 @@ class ContextHandlerLinear(ContextHandler):
             self.messages = [
                 self._context_from_dict(m) for m in raw.get("messages", [])
             ]
+            # Old context files do not contain ``round``. Recover their next
+            # timeline boundary from both retained and compacted history.
+            restored_timelines = [message.timeline for message in self.messages]
+            if self.abstract is not None:
+                restored_timelines.extend(self.abstract.source_timeline)
+            saved_round = raw.get("round", 0)
+            if not isinstance(saved_round, int) or isinstance(saved_round, bool):
+                raise ValueError("round must be an integer")
+            self._round = max([saved_round, *restored_timelines], default=0)
             return True
         except (TypeError, KeyError, ValueError):
             self.messages = []
             self.abstract = None
+            self._round = 0
             return False
 
     # -- serialization helpers ---------------------------------------------
