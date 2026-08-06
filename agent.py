@@ -324,6 +324,29 @@ class Agent:
                 print("=" * 10 + "  ROUND " + str(round_idx) + "=" * 10)
 
             round_started_at = time.perf_counter()
+            self._emit(
+                "agent",
+                name,
+                "agent:llm_request",
+                f"LLM request round {round_idx}",
+                data={
+                    "round": round_idx,
+                    "message": message,
+                    "system_prompt": prompt,
+                    "temperature": temperature,
+                    "max_tokens": resolved_max_tokens,
+                    "backend": {
+                        "name": backend.name,
+                        "provider": backend.provider,
+                        "model": backend.model,
+                    },
+                    "tools": [
+                        {"name": tool.name, "description": tool.description}
+                        for tool in self.tool_handler.get_all_tools()
+                    ],
+                },
+            )
+
             result = self.llm_fetcher.fetch(
                 msg=message,
                 system_prompt=prompt,
