@@ -240,8 +240,10 @@ class LLMBackendHandler(ABC):
             output_tokens=int(raw.get("output_tokens", raw.get("completion_tokens", 0)) or 0),
             total_tokens=int(raw.get("total_tokens", 0) or 0),
             cached_tokens=int(
-                raw.get("cached_tokens", raw.get("cache_read_input_tokens", 0)) or 0
-                + raw.get("cache_creation_input_tokens", 0) or 0
+                raw.get("cached_tokens")
+                if raw.get("cached_tokens") is not None
+                else (raw.get("cache_read_input_tokens") or 0)
+                + (raw.get("cache_creation_input_tokens") or 0)
             ),
             reasoning_tokens=int(raw.get("reasoning_tokens", 0) or 0),
         )
