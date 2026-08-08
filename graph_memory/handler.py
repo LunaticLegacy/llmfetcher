@@ -126,6 +126,31 @@ class GraphContextHandler(ContextHandler):
         """
         return self.linear.compress_threshold
 
+    @property
+    def extra_usage(self) -> Any:
+        """Aggregate token usage from linear compaction + graph LLM calls.
+
+        Sums the inner linear handler's compaction usage with the graph
+        builder extraction usage and the retriever seed-extraction usage so
+        ``Agent.run`` reports the full hidden cost.
+        """
+        from ..llm_types import TokenUsage
+        total = TokenUsage()
+        for component in (self.linear, self.builder, self.retriever):
+            comp_usage = getattr(component, "extra_usage", None)
+            if comp_usage is None:
+                continue
+            total.input_tokens += comp_usage.input_tokens or 0
+            total.output_tokens += comp_usage.output_tokens or 0
+            total.total_tokens += comp_usage.total_tokens or 0
+            total.cached_tokens += comp_usage.cached_tokens or 0
+            total.reasoning_tokens += comp_usage.reasoning_tokens or 0
+        return total
+
+    def record_usage(self, usage: Optional[Any]) -> None:
+        """Forward one internal LLM call's usage to the inner linear handler."""
+        self.linear.record_usage(usage)
+
     # -- public API --------------------------------------------------------
 
     def retrieve(self, query: str) -> GraphRetrievalResult:

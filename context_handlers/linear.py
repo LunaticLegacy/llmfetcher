@@ -232,6 +232,8 @@ class ContextHandlerLinear(ContextHandler):
             max_tokens=self.compaction_output_max_tokens,
             context_handler=None,
         )
+        # Account for the compaction LLM call in the reported usage.
+        self.record_usage(result.usage)
         compacted_raw: str = result.content
 
         if not compacted_raw.strip():

@@ -348,6 +348,8 @@ class GraphRetriever:
         self.query_fetcher = query_fetcher
         self.config = config or RetrievalConfig()
         self.query_prompt = query_prompt
+        from ..llm_types import TokenUsage
+        self.extra_usage: TokenUsage = TokenUsage()
 
     # -- public API --------------------------------------------------------
 
@@ -418,6 +420,13 @@ class GraphRetriever:
                     max_tokens=256,
                     context_handler=None,
                 )
+                usage = getattr(result, "usage", None)
+                if usage is not None:
+                    self.extra_usage.input_tokens += usage.input_tokens or 0
+                    self.extra_usage.output_tokens += usage.output_tokens or 0
+                    self.extra_usage.total_tokens += usage.total_tokens or 0
+                    self.extra_usage.cached_tokens += usage.cached_tokens or 0
+                    self.extra_usage.reasoning_tokens += usage.reasoning_tokens or 0
                 content = getattr(result, "content", "")
                 parsed = _extract_json_object(content) if content else None
                 if parsed:
