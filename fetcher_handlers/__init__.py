@@ -6,6 +6,11 @@ except ImportError:
     OpenAIHandler = None  # pragma: no cover — optional handler
 
 try:
+    from .deepseek import DeepSeekHandler
+except ImportError:
+    DeepSeekHandler = None  # pragma: no cover — optional handler
+
+try:
     from .litellm import LiteLLMHandler
 except ImportError:
     LiteLLMHandler = None  # pragma: no cover
@@ -32,6 +37,7 @@ __all__ = [
     "ToolSchemaDict",
     "LLMBackendHandler",
     "OpenAIHandler",
+    "DeepSeekHandler",
     "LiteLLMHandler",
     "AnthropicHandler",
     "OpenVINOHandler",
