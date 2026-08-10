@@ -165,3 +165,102 @@ class DeepSeekHandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeepSeekThinkLeakTests(unittest.TestCase):
+    """<think> feedback-loop control: outbound strip + inbound extraction."""
+
+    def _handler_with_fake_client(self, recorded: dict) -> DeepSeekHandler:
+        handler = _make_handler()
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                recorded["messages"] = kwargs.get("messages", [])
+                recorded["kwargs"] = kwargs
+                return object()  # caller only inspects sent messages here
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        handler.client = _FakeClient()  # type: ignore[attr-defined]
+        return handler
+
+    def test_create_completion_strips_think_blocks_outbound(self) -> None:
+        """Assistant <think> wrappers from the context handler never reach DeepSeek."""
+        recorded: dict = {}
+        handler = self._handler_with_fake_client(recorded)
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "<think>\nsecret chain\n</think>\n\nSummary here."},
+            {"role": "user", "content": "go"},
+        ]
+        handler.create_completion(
+            messages=messages,
+            temperature=0.4,
+            max_tokens=1024,
+            stream=False,
+        )
+        sent = recorded["messages"]
+        self.assertNotIn("<think>", sent[1]["content"])
+        self.assertIn("Summary here.", sent[1]["content"])
+        self.assertNotIn("secret chain", sent[1]["content"])
+        # Other roles are untouched.
+        self.assertEqual(sent[0]["content"], "sys")
+        self.assertEqual(sent[2]["content"], "go")
+
+    def test_create_completion_leaves_clean_messages_untouched(self) -> None:
+        """Messages without think markers pass through byte-for-byte."""
+        recorded: dict = {}
+        handler = self._handler_with_fake_client(recorded)
+        messages = [
+            {"role": "assistant", "content": "Plain assistant reply."},
+            {"role": "user", "content": "ok"},
+        ]
+        handler.create_completion(
+            messages=messages, temperature=0.4, max_tokens=100, stream=False
+        )
+        self.assertEqual(recorded["messages"][0]["content"], "Plain assistant reply.")
+
+    def test_normalize_completion_response_extracts_think_leak(self) -> None:
+        """A <think> block the model echoed inside content moves to reasoning."""
+        handler = _make_handler()
+        response = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "<think>\nleaked chain\n</think>\n\nFinal answer",
+                    "reasoning_content": "native reasoning",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        out = handler.normalize_completion_response(response)
+        self.assertEqual(out.content, "Final answer")
+        self.assertNotIn("<think>", out.content)
+        self.assertIn("leaked chain", out.reasoning_content)
+        self.assertIn("native reasoning", out.reasoning_content)
+
+    def test_normalize_completion_response_keeps_clean_content(self) -> None:
+        """Content without think markers is returned unchanged."""
+        handler = _make_handler()
+        response = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Clean answer",
+                    "reasoning_content": "R",
+                },
+                "finish_reason": "stop",
+            }],
+        }
+        out = handler.normalize_completion_response(response)
+        self.assertEqual(out.content, "Clean answer")
+        self.assertEqual(out.reasoning_content, "R")
+
+
+if __name__ == "__main__":
+    unittest.main()
