@@ -49,4 +49,5 @@ docs/_build/
 .codex
 
 # local llm workspace for testing
-workspace/
+worksapce/
+.llmfetcher/
