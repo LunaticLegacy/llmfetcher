@@ -167,6 +167,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # list-tools
     sub.add_parser("list-tools", help="List available tool sets")
 
+    # web — starts the browser console without requiring a separate command.
+    web_p = sub.add_parser("web", help="Start the local web console")
+    web_p.add_argument("--host", default="127.0.0.1", help="Bind host (default: %(default)s)")
+    web_p.add_argument("--port", type=int, default=8765, help="Bind port (default: %(default)s)")
+
+    # workspace — local workspaces used by the web console.
+    workspace_p = sub.add_parser("workspace", help="Manage local web-console workspaces")
+    workspace_sub = workspace_p.add_subparsers(dest="workspace_command", required=True)
+    workspace_sub.add_parser("list", help="List workspaces")
+    create_p = workspace_sub.add_parser("create", help="Create a workspace")
+    create_p.add_argument("name", help="Display name for the new workspace")
+
     return parser
 
 
