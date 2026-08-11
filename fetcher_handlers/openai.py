@@ -75,14 +75,53 @@ class OpenAIHandler(LLMBackendHandler):
             )
         return calls
 
+    def _message_reasoning(
+        self,
+        message: object | Mapping[str, Any] | None,
+    ) -> str:
+        """Extract reasoning text from a non-streamed assistant message.
+
+        The generic OpenAI-compatible handler probes the common aliases
+        (``reasoning_content``, then ``reasoning``) so it keeps working with
+        compatible endpoints. Platform-specialised subclasses override this
+        hook to read exactly their own field and never fall back to aliases
+        owned by other providers (which caused thinking leakage).
+        """
+        reasoning = self._read_field(message, "reasoning_content", None)
+        if reasoning is None:
+            reasoning = self._read_field(message, "reasoning", None)
+        return str(reasoning or "")
+
+    def _delta_reasoning(
+        self,
+        delta: object | Mapping[str, Any] | None,
+    ) -> Optional[str]:
+        """Extract reasoning text from a single streamed delta.
+
+        Same contract as :meth:`_message_reasoning` for streaming chunks.
+        """
+        if delta is None:
+            return None
+        if isinstance(delta, dict):
+            reasoning = (
+                delta.get("reasoning_content")
+                or delta.get("reasoning")
+                or delta.get("thinking")
+            )
+        else:
+            reasoning = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+                or getattr(delta, "thinking", None)
+            )
+        return str(reasoning) if reasoning else None
+
     def normalize_completion_response(self, response) -> LLMOutput:
         choices = self._read_field(response, "choices", None) or []
         choice = choices[0] if choices else None
         message = self._read_field(choice, "message", None) if choice is not None else None
         content = self._coerce_content_to_text(self._read_field(message, "content", None))
-        reasoning = self._read_field(message, "reasoning_content", None)
-        if reasoning is None:
-            reasoning = self._read_field(message, "reasoning", "")
+        reasoning = self._message_reasoning(message)
 
         return LLMOutput(
             content=content,
@@ -121,12 +160,11 @@ class OpenAIHandler(LLMBackendHandler):
             if delta is None:
                 continue
 
+            reasoning = self._delta_reasoning(delta)
             if isinstance(delta, dict):
-                reasoning = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
                 content = delta.get("content") or delta.get("text")
                 raw_tool_calls = delta.get("tool_calls") or []
             else:
-                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None) or getattr(delta, "thinking", None)
                 content = getattr(delta, "content", None) or getattr(delta, "text", None)
                 raw_tool_calls = getattr(delta, "tool_calls", None) or []
 

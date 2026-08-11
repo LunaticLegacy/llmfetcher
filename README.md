@@ -163,6 +163,7 @@ Supported handler names are:
 | Provider value | Handler | Typical use |
 | --- | --- | --- |
 | `openai` | OpenAI-compatible Chat Completions | OpenAI and compatible endpoints |
+| `deepseek` | DeepSeek (OpenAI-compatible) | DeepSeek chat and reasoner models (`reasoning_content`, `prompt_cache_hit_tokens`) |
 | `anthropic` | Anthropic Messages API | Claude-compatible endpoints |
 | `litellm` | LiteLLM | LiteLLM-supported providers |
 | `openvino` | OpenVINO | Local inference |

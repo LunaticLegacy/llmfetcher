@@ -29,9 +29,10 @@ if __name__ == "__main__" and not __package__:
     __package__ = "llmfetcher"
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llmfetcher.llm_fetcher import LLMBackendConfig, LLMFetcher
-from llmfetcher.llm_types import Tool
-from llmfetcher.agent import Agent
+from .llm_fetcher import LLMBackendConfig, LLMFetcher
+from .llm_types import Tool
+from .agent import Agent
+from .graph_memory import GraphContextHandler
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +254,12 @@ def _bootstrap_agent(args: argparse.Namespace) -> Agent:
         max_concurrency=8,
         max_context_threshold=262144,
         context_path=args.context or None,
+        # Graph long-term memory (entity/relation graph persisted as
+        # ``<context_path>.graph.json`` alongside the linear context file).
+        context_handler=GraphContextHandler(
+            compacting_fetcher=fetcher,
+            max_context_threshold=262144,
+        ),
     )
 
     tools = _load_tools(args.tools)
@@ -320,43 +327,8 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             continue
 
 
-def _cmd_web(args: argparse.Namespace) -> None:
-    """Run the optional FastAPI browser console."""
-    try:
-        import uvicorn
-        from llmfetcher.webapp import app
-    except ImportError as exc:
-        print(f"error: web console dependencies are unavailable: {exc}", file=sys.stderr)
-        print("install the package dependencies, then retry.", file=sys.stderr)
-        sys.exit(1)
-    uvicorn.run(app, host=args.host, port=args.port)
-
-
-def _cmd_workspace(args: argparse.Namespace) -> None:
-    """Create or list local workspaces used by the browser console."""
-    from llmfetcher.webapp import WORKSPACE_ROOT, _read_workspaces, _write_workspaces
-
-    if args.workspace_command == "list":
-        for workspace in _read_workspaces():
-            print(f"{workspace['id']}\t{workspace['name']}")
-        return
-
-    name = args.name.strip()
-    if not name:
-        print("error: workspace name is required", file=sys.stderr)
-        sys.exit(2)
-    import uuid
-
-    workspace = {"id": uuid.uuid4().hex, "name": name}
-    records = _read_workspaces()
-    records.append(workspace)
-    _write_workspaces(records)
-    (WORKSPACE_ROOT / workspace["id"]).mkdir(parents=True, exist_ok=True)
-    print(f"Created workspace {workspace['name']} ({workspace['id']})")
-
-
 def main(argv: list[str] | None = None) -> None:
-    """Parse CLI arguments and dispatch the selected llmfetcher command."""
+    """Parse CLI arguments and dispatch the selected command."""
     args = _build_parser().parse_args(argv)
     if args.command == "list-backends":
         _cmd_list_backends()
@@ -366,10 +338,6 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_run(args)
     elif args.command == "chat":
         _cmd_chat(args)
-    elif args.command == "web":
-        _cmd_web(args)
-    elif args.command == "workspace":
-        _cmd_workspace(args)
 
 
 if __name__ == "__main__":

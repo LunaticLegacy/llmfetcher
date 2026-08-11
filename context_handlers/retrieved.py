@@ -122,6 +122,7 @@ class RetrievedContextHandler(ContextHandler):
     ) -> None:
         from ..rag_module_tlb.core import TLBRAGHandler
 
+        super().__init__()
         self.linear = ContextHandlerLinear(
             compacting_fetcher,
             max_context_threshold=max_context_threshold,
