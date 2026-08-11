@@ -250,6 +250,27 @@ class AgentSwarm:
         """
         self._graph.add_hook(hook)
 
+    def view_snapshot(self) -> dict[str, Any]:
+        """Return a safe, UI-oriented snapshot of the active graph topology.
+
+        Returns:
+            JSON-compatible node, edge, assignment, and task-state data from
+            the underlying :class:`ExecutionGraph`.
+        """
+        return self._graph.view_snapshot()
+
+    def finalize_tasks(self) -> dict[str, str]:
+        """Close unfinished dynamic tasks after any terminal run outcome.
+
+        Returns:
+            Mapping of changed task identifiers to ``interrupted`` or
+            ``cancelled``.
+
+        Side Effects:
+            Emits terminal task lifecycle events through registered hooks.
+        """
+        return self._graph.finalize_tasks()
+
     def request_shutdown(self) -> None:
         """Stop scheduling further runnable Agents in the active graph.
 
@@ -264,6 +285,33 @@ class AgentSwarm:
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
+
+    def total_usage(self) -> dict[str, int]:
+        """Aggregate token usage across every registered Agent.
+
+        Each Agent accumulates its own per-round usage plus internal
+        compaction / graph-memory LLM usage in ``Agent.usage`` after
+        ``run`` completes. This sums them across the coordinator and all
+        (dynamically dispatched) workers.
+
+        Returns:
+            Dict with ``input``, ``output``, ``total``, ``cached`` and
+            ``reasoning`` keys, all non-negative.
+        """
+        totals = {"input": 0, "output": 0, "total": 0, "cached": 0, "reasoning": 0}
+        with self._graph._topology_lock:
+            for agent in self._graph.agent_dict.values():
+                if agent is None:
+                    continue
+                usage = getattr(agent, "usage", None)
+                if usage is None:
+                    continue
+                totals["input"] += usage.input_tokens or 0
+                totals["output"] += usage.output_tokens or 0
+                totals["total"] += usage.total_tokens or 0
+                totals["cached"] += usage.cached_tokens or 0
+                totals["reasoning"] += usage.reasoning_tokens or 0
+        return totals
 
     def run(
         self,
@@ -281,5 +329,12 @@ class AgentSwarm:
 
         Returns:
             Mapping of agent name to its raw output.
+
+        Side Effects:
+            Finalizes every unfinished dynamic assignment before returning or
+            propagating a scheduler exception.
         """
-        return self._graph.run(message, max_rounds=max_rounds, control=control)
+        try:
+            return self._graph.run(message, max_rounds=max_rounds, control=control)
+        finally:
+            self._graph.finalize_tasks()

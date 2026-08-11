@@ -29,9 +29,10 @@ if __name__ == "__main__" and not __package__:
     __package__ = "llmfetcher"
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llmfetcher.llm_fetcher import LLMBackendConfig, LLMFetcher
-from llmfetcher.llm_types import Tool
-from llmfetcher.agent import Agent
+from .llm_fetcher import LLMBackendConfig, LLMFetcher
+from .llm_types import Tool
+from .agent import Agent
+from .graph_memory import GraphContextHandler
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +242,12 @@ def _bootstrap_agent(args: argparse.Namespace) -> Agent:
         max_concurrency=8,
         max_context_threshold=262144,
         context_path=args.context or None,
+        # Graph long-term memory (entity/relation graph persisted as
+        # ``<context_path>.graph.json`` alongside the linear context file).
+        context_handler=GraphContextHandler(
+            compacting_fetcher=fetcher,
+            max_context_threshold=262144,
+        ),
     )
 
     tools = _load_tools(args.tools)
@@ -264,13 +271,14 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
     agent = _bootstrap_agent(args)
     try:
-        agent.run(
+        result = agent.run(
             message=prompt,
             max_rounds=args.max_rounds,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
             verbose=args.verbose,
         )
+        print(result.content)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
@@ -294,13 +302,31 @@ def _cmd_chat(args: argparse.Namespace) -> None:
             break
 
         try:
-            agent.run(
+            result = agent.run(
                 message=prompt,
                 max_rounds=args.max_rounds,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
                 verbose=args.verbose,
             )
+            print(result.content)
         except KeyboardInterrupt:
             print("\n(interrupted)")
             continue
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Parse CLI arguments and dispatch the selected command."""
+    args = _build_parser().parse_args(argv)
+    if args.command == "list-backends":
+        _cmd_list_backends()
+    elif args.command == "list-tools":
+        _cmd_list_tools()
+    elif args.command == "run":
+        _cmd_run(args)
+    elif args.command == "chat":
+        _cmd_chat(args)
+
+
+if __name__ == "__main__":
+    main()

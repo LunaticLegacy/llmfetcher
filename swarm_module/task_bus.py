@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,8 @@ class TaskBus:
     The bus intentionally accepts only structured assignments and reports. It
     never stores or forwards an Agent's raw ``run()`` result as a message.
     """
+
+    _TERMINAL_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
 
     def __init__(self) -> None:
         """Initialize empty task, report, and recipient-index stores.
@@ -206,6 +208,8 @@ class TaskBus:
                 raise KeyError(task_id)
             if task_id in self._reports:
                 raise ValueError(f"任务 {task_id!r} 已提交报告")
+            if self._task_states[task_id] in self._TERMINAL_STATES:
+                raise ValueError(f"任务 {task_id!r} 已处于终态")
             report = TaskReport(
                 task_id=task_id,
                 reporter=normalized_reporter,
@@ -220,10 +224,81 @@ class TaskBus:
                 created_at=time.time(),
             )
             self._reports[task_id] = report
-            self._task_states[task_id] = "reported"
+            self._task_states[task_id] = self._state_for_report_status(report.status)
             self._inboxes.setdefault(report.recipient, []).append(task_id)
             self._condition.notify_all()
             return report
+
+    def set_terminal_state(self, task_id: str, state: str) -> bool:
+        """Close one unfinished assignment without manufacturing a report.
+
+        Args:
+            task_id: Scheduled task identifier.
+            state: Canonical terminal state: ``completed``, ``failed``,
+                ``interrupted``, or ``cancelled``.
+
+        Returns:
+            ``True`` when the state changed, or ``False`` when the task was
+            already terminal.
+
+        Raises:
+            KeyError: If ``task_id`` is unknown.
+            ValueError: If ``state`` is not a canonical terminal state.
+        """
+        if state not in self._TERMINAL_STATES:
+            raise ValueError(f"Unsupported terminal task state: {state}")
+        with self._condition:
+            if task_id not in self._assignments:
+                raise KeyError(task_id)
+            if self._task_states[task_id] in self._TERMINAL_STATES:
+                return False
+            self._task_states[task_id] = state
+            self._condition.notify_all()
+            return True
+
+    def finalize_unfinished(
+        self,
+        *,
+        running_state: str = "interrupted",
+        queued_state: str = "cancelled",
+    ) -> dict[str, str]:
+        """Close every non-terminal assignment at an execution boundary.
+
+        Args:
+            running_state: Terminal state assigned to claimed work.
+            queued_state: Terminal state assigned to work never claimed.
+
+        Returns:
+            Mapping of task identifiers changed by this call to their new
+            canonical states.
+
+        Raises:
+            ValueError: If either requested state is non-terminal.
+        """
+        if running_state not in self._TERMINAL_STATES:
+            raise ValueError(f"Unsupported running terminal state: {running_state}")
+        if queued_state not in self._TERMINAL_STATES:
+            raise ValueError(f"Unsupported queued terminal state: {queued_state}")
+
+        changed: dict[str, str] = {}
+        with self._condition:
+            # Preserve existing terminals while closing work the scheduler can
+            # no longer execute.
+            for task_id, state in self._task_states.items():
+                if state == "running":
+                    self._task_states[task_id] = running_state
+                    changed[task_id] = running_state
+                elif state == "queued":
+                    self._task_states[task_id] = queued_state
+                    changed[task_id] = queued_state
+                elif state == "reported":
+                    report = self._reports.get(task_id)
+                    normalized = self._state_for_report_status(report.status if report else "")
+                    self._task_states[task_id] = normalized
+                    changed[task_id] = normalized
+            if changed:
+                self._condition.notify_all()
+        return changed
 
     def fail_unreported_task(self, task_id: str, reporter: str, reason: str) -> TaskReport | None:
         """Submit a failure report when a worker exits without reporting.
@@ -292,12 +367,121 @@ class TaskBus:
         """Return a point-in-time view of each task lifecycle state.
 
         Returns:
-            Mapping from task identifier to ``queued``, ``running``, or
-            ``reported``. The copy is safe for diagnostics but must not be
-            used as a synchronization primitive.
+            Mapping from task identifier to ``queued``, ``running``,
+            ``completed``, ``failed``, ``interrupted``, or ``cancelled``.
+            The copy is safe for diagnostics but must not be used as a
+            synchronization primitive.
         """
         with self._condition:
             return dict(self._task_states)
+
+    def to_snapshot(self) -> dict[str, Any]:
+        """Return a JSON-compatible, point-in-time copy of TaskBus state.
+
+        The returned payload includes assignments, lifecycle states, reports,
+        and recipient inbox ordering. It contains no condition variables or
+        executable callbacks, so callers can include it in an execution-graph
+        snapshot. Callers must only snapshot a quiescent graph: a task marked
+        ``running`` cannot be resumed safely after process restart.
+
+        Returns:
+            Dictionary accepted by :meth:`from_snapshot`.
+        """
+        with self._condition:
+            # Copy immutable dataclasses while holding the bus lock so the four
+            # correlated indexes describe one consistent mailbox state.
+            return {
+                "assignments": [asdict(item) for item in self._assignments.values()],
+                "task_states": dict(self._task_states),
+                "reports": [asdict(item) for item in self._reports.values()],
+                "inboxes": {name: list(ids) for name, ids in self._inboxes.items()},
+            }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Mapping[str, Any]) -> "TaskBus":
+        """Restore a TaskBus from :meth:`to_snapshot` output.
+
+        Args:
+            snapshot: JSON-decoded task mailbox data produced by
+                :meth:`to_snapshot`.
+
+        Returns:
+            A new TaskBus with immutable assignments and reports restored.
+
+        Raises:
+            ValueError: If the payload is malformed, internally inconsistent,
+                or represents an in-progress task.
+        """
+        assignments = snapshot.get("assignments", [])
+        states = snapshot.get("task_states", {})
+        reports = snapshot.get("reports", [])
+        inboxes = snapshot.get("inboxes", {})
+        if not all(isinstance(value, list) for value in (assignments, reports)):
+            raise ValueError("TaskBus snapshot assignments and reports must be lists")
+        if not isinstance(states, Mapping) or not isinstance(inboxes, Mapping):
+            raise ValueError("TaskBus snapshot indexes must be objects")
+
+        bus = cls()
+        try:
+            restored_assignments = {
+                item["id"]: TaskAssignment(
+                    id=str(item["id"]), recipient=str(item["recipient"]),
+                    reply_to=str(item["reply_to"]), objective=str(item["objective"]),
+                    handoff=str(item.get("handoff", "")),
+                    expected_artifacts=tuple(str(value) for value in item.get("expected_artifacts", [])),
+                    created_at=float(item["created_at"]),
+                )
+                for item in assignments
+            }
+            restored_reports = {
+                item["task_id"]: TaskReport(
+                    task_id=str(item["task_id"]), reporter=str(item["reporter"]),
+                    recipient=str(item["recipient"]), status=str(item["status"]),
+                    summary=str(item["summary"]),
+                    findings=tuple(str(value) for value in item.get("findings", [])),
+                    evidence=tuple(str(value) for value in item.get("evidence", [])),
+                    artifacts=tuple(str(value) for value in item.get("artifacts", [])),
+                    open_questions=tuple(str(value) for value in item.get("open_questions", [])),
+                    recommended_next_action=str(item.get("recommended_next_action", "")),
+                    created_at=float(item["created_at"]),
+                )
+                for item in reports
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid TaskBus snapshot record: {exc}") from exc
+
+        restored_states = {str(task_id): str(state) for task_id, state in states.items()}
+        if set(restored_states) != set(restored_assignments):
+            raise ValueError("TaskBus snapshot states must match assignment IDs")
+        if any(state == "running" for state in restored_states.values()):
+            raise ValueError("Cannot restore a TaskBus snapshot with running tasks")
+        valid_states = {"queued", "reported", *cls._TERMINAL_STATES}
+        if any(state not in valid_states for state in restored_states.values()):
+            raise ValueError("TaskBus snapshot contains an unsupported task state")
+        if set(restored_reports) - set(restored_assignments):
+            raise ValueError("TaskBus snapshot report refers to an unknown task")
+
+        # Normalize legacy ``reported`` snapshots while their structured
+        # report outcome remains available.
+        for task_id, state in tuple(restored_states.items()):
+            if state == "reported":
+                report = restored_reports.get(task_id)
+                restored_states[task_id] = cls._state_for_report_status(
+                    report.status if report else ""
+                )
+
+        # Rebuild the indexes directly because the historical timestamps and
+        # terminal states must remain stable across a save/load round trip.
+        with bus._condition:
+            bus._assignments = restored_assignments
+            bus._task_states = restored_states
+            bus._reports = restored_reports
+            bus._inboxes = {
+                str(recipient): [str(task_id) for task_id in task_ids]
+                for recipient, task_ids in inboxes.items()
+                if isinstance(task_ids, list)
+            }
+        return bus
 
     @staticmethod
     def _normalize_items(values: Iterable[str]) -> tuple[str, ...]:
@@ -312,3 +496,17 @@ class TaskBus:
         if isinstance(values, str):
             values = (values,)
         return tuple(str(value).strip()[:2000] for value in values if str(value).strip())[:30]
+
+    @staticmethod
+    def _state_for_report_status(status: str) -> str:
+        """Map an Agent-supplied report status to a canonical task terminal.
+
+        Args:
+            status: Free-form report status supplied through ``report_task``.
+
+        Returns:
+            ``completed`` for recognized success labels, otherwise ``failed``.
+        """
+        normalized = status.strip().lower()
+        successful = {"completed", "complete", "success", "succeeded", "done"}
+        return "completed" if normalized in successful else "failed"

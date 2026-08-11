@@ -42,6 +42,8 @@ from .tool_executor import (
 
 from .swarm_module import (
     AgentSwarm,
+    ExecutionGraph,
+    GraphPersistenceError,
     TaskAssignment,
     TaskBus,
     TaskReport,
