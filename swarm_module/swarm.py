@@ -328,7 +328,8 @@ class AgentSwarm:
             control: Optional stop and steering source shared by graph Agents.
 
         Returns:
-            Mapping of agent name to its raw output.
+            Mapping of agent name to its raw output; a failed agent maps to an
+            :class:`AgentFailure` marker (failures do not abort the swarm).
 
         Side Effects:
             Finalizes every unfinished dynamic assignment before returning or

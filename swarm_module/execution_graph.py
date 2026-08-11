@@ -63,7 +63,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     wait,
 )
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import threading
@@ -96,6 +96,30 @@ CallbackResolver = Callable[[str, str, str], Callable[..., Any]]
 
 class GraphPersistenceError(ValueError):
     """Raised when an ExecutionGraph cannot be safely saved or restored."""
+
+
+@dataclass
+class AgentFailure:
+    """Non-fatal marker placed in :meth:`ExecutionGraph.run` outputs when an
+    Agent raises during execution.
+
+    The graph keeps running: independent Agents are unaffected, the failure
+    is delivered to the coordinator through the task bus (``status="failed"``
+    report) and to observers through the ``agent:failed`` event, and the
+    failed Agent's downstream dependents are skipped.
+
+    Attributes:
+        agent_name: Graph name of the Agent that raised.
+        error: Bounded error message.
+        exception: The original exception, when available.
+    """
+
+    agent_name: str
+    error: str
+    exception: Exception | None = None
+
+    def __str__(self) -> str:
+        return f"[{self.agent_name} failed] {self.error}"
 
 
 _SNAPSHOT_VERSION = 1
@@ -1244,20 +1268,23 @@ class ExecutionGraph:
                 scheduled Agent at completed-step boundaries.
 
         Returns:
-            Mapping from every executed agent name to its raw output.
+            Mapping from every executed agent name to its raw output. A failed
+            agent maps to an :class:`AgentFailure` marker instead of an output.
             Routing-only nodes are **not** included in the returned dict.
 
         Raises:
             ValueError:
                 If the graph contains a cycle or a deadlock.
-            RuntimeError:
-                If an agent raises an exception. The original exception is
-                available as the raised exception's cause.
+            AgentRunStopped:
+                If a cooperative stop was requested while agents were running.
 
         Note:
-            Cancelling a :class:`Future` only stops work that has not started.
-            Already-running sibling agents may continue until the thread-pool
-            executor shuts down.
+            An individual Agent exception is **not** fatal: it is recorded as
+            an :class:`AgentFailure` in the returned mapping, published as an
+            ``agent:failed`` event, and (for dispatched tasks) delivered to
+            the coordinator as a ``status="failed"`` task report. The rest of
+            the graph continues executing; dependents of the failed Agent are
+            skipped rather than run with fabricated input.
         """
         with self._topology_lock:
             if not self.agent_dict:
@@ -1405,11 +1432,18 @@ class ExecutionGraph:
                                 )
                     except Exception as exc:
                         if isinstance(exc, AgentRunStopped):
+                            # Cooperative stop — abort the remaining graph.
                             if task_id:
                                 self.task_bus.set_terminal_state(task_id, "interrupted")
                             for pending_future in running:
                                 pending_future.cancel()
                             raise
+                        # --- Non-fatal agent failure ----------------------
+                        # A failed Agent is a data point, not a swarm crash.
+                        # The failure is delivered to the coordinator through
+                        # the task bus (status="failed" report) and to
+                        # observers through the agent:failed event, while the
+                        # rest of the graph keeps executing.
                         if task_id:
                             self.task_bus.fail_unreported_task(
                                 task_id,
@@ -1421,11 +1455,23 @@ class ExecutionGraph:
                             str(exc),
                             data={"error": exc},
                         )
-                        for pending_future in running:
-                            pending_future.cancel()
-                        raise RuntimeError(
-                            f"Agent {agent_name!r} failed"
-                        ) from exc
+                        outputs[agent_name] = AgentFailure(
+                            agent_name=agent_name,
+                            error=str(exc),
+                            exception=exc,
+                        )
+                        # Dependents of a failed Agent cannot run (their input
+                        # is missing); mark the whole downstream as skipped so
+                        # the graph neither deadlocks nor fabricates input.
+                        with self._topology_lock:
+                            stack = list(self._successors.get(agent_name, ()))
+                            while stack:
+                                node = stack.pop()
+                                if node in routed_out:
+                                    continue
+                                routed_out.add(node)
+                                stack.extend(self._successors.get(node, ()))
+                        continue
 
                     # Snapshot topology state, then invoke any user-defined
                     # router without blocking concurrent dynamic mutations.
