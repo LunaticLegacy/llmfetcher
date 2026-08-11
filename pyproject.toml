@@ -16,6 +16,7 @@ dependencies = [
     "anthropic>=0.100.0",
     "litellm>=1.0.0",
     "markdown-it-py",
+    "networkx",
 ]
 
 [project.scripts]
