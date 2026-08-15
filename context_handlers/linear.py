@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, override
@@ -65,12 +67,9 @@ _COMPACTING_SYSTEM_PROMPT = (
     "<context_abstract>\n"
     "A paragraph (or a few) that captures the entire conversation. "
     "Include key context, decisions, code changes, and unresolved items.\n"
-    "</context_abstract>\n"
-    "<source_timelines>\n"
-    "[1, 2, 3]\n"
-    "</source_timelines>\n\n"
-    "The `<source_timelines>` tag must contain a JSON list of the integer "
-    "timeline values this summary covers (e.g. [1, 2, 3])."
+    "</context_abstract>\n\n"
+    "Timeline provenance is assigned by the caller; do not emit timeline "
+    "metadata."
 )
 
 _COMPACTION_OUTPUT_MAX_TOKENS = 8192
@@ -82,8 +81,10 @@ class ContextHandlerLinear(ContextHandler):
     """A simple context handler that stores messages in a flat list.
 
     History is kept verbatim until compaction is triggered (by exceeding
-    *max_context_threshold*), at which point older messages are replaced
-    with a single compacted abstract (``LLMContextCompacted``).
+    *max_context_threshold*), at which point active messages are replaced
+    with a single compacted abstract (``LLMContextCompacted``).  The raw
+    messages are retained in ``archive`` as an append-only persistence
+    record; they are deliberately not sent on normal model requests.
 
     Timeline (round counter) is managed internally as ``_round``,
     monotonically increasing on every ``add_user_message`` /
@@ -124,6 +125,10 @@ class ContextHandlerLinear(ContextHandler):
 
         self.abstract: Optional[LLMContextCompacted] = None
         self.messages: List[LLMContext] = []
+        # Raw messages which have left the active model context through a
+        # successful compaction.  This is a durable source record for future
+        # retrieval / re-compaction, not another prompt buffer.
+        self.archive: List[LLMContext] = []
 
         # Internal round counter — timeline for every added message.
         self._round: int = 0
@@ -140,6 +145,7 @@ class ContextHandlerLinear(ContextHandler):
         """
         self.abstract = None
         self.messages = []
+        self.archive = []
         self._round = 0
         return True
 
@@ -221,8 +227,13 @@ class ContextHandlerLinear(ContextHandler):
         if not self.messages:
             return False
 
-        # Collect the timelines of messages being compacted.
-        source_timelines: List[int] = [m.timeline for m in self.messages]
+        # Provenance is owned by the context handler, never by the model.
+        # The next abstract includes the preceding abstract in its prompt, so
+        # retain its full source range as well as the active raw messages.
+        source_timelines: List[int] = []
+        if self.abstract is not None:
+            source_timelines.extend(self.abstract.source_timeline)
+        source_timelines.extend(m.timeline for m in self.messages)
 
         compaction_input = self._build_compaction_input()
         result: LLMOutput = self.llm_handler.fetch(
@@ -243,14 +254,13 @@ class ContextHandlerLinear(ContextHandler):
         if not abstract_msg:
             return False
 
-        parsed_timelines = self._parse_compacted_timelines(compacted_raw)
-        if parsed_timelines:
-            source_timelines = parsed_timelines
-
         self.abstract = LLMContextCompacted(
             abstract_msg=abstract_msg,
             source_timeline=source_timelines,
         )
+        # Only archive after the compactor response has been parsed.  A
+        # failed compaction must leave the active context wholly intact.
+        self.archive.extend(self.messages)
         self.messages.clear()
         return True
 
@@ -384,34 +394,6 @@ class ContextHandlerLinear(ContextHandler):
         )
         return m.group(1).strip() if m else None
 
-    @staticmethod
-    def _parse_compacted_timelines(raw: str) -> Optional[List[int]]:
-        """Parse the ``<source_timelines>`` tag as a JSON list of ints.
-
-        Args:
-            raw: The LLM response text containing XML tags.
-
-        Returns:
-            A list of integer timeline values, or ``None`` if the tag
-            is missing or unparseable.
-        """
-        m = re.search(
-            r"<source_timelines>\s*(.*?)\s*</source_timelines>",
-            raw,
-            re.DOTALL,
-        )
-        if not m:
-            return None
-        try:
-            parsed = json.loads(m.group(1))
-            if isinstance(parsed, list) and all(
-                isinstance(v, int) for v in parsed
-            ):
-                return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return None
-
     # -- persistence -------------------------------------------------------
 
     @override
@@ -433,11 +415,32 @@ class ContextHandlerLinear(ContextHandler):
                 "round": self._round,
                 "abstract": self._compacted_to_dict(self.abstract),
                 "messages": [self._context_to_dict(m) for m in self.messages],
+                "archive": [self._context_to_dict(m) for m in self.archive],
             }
-            Path(path).write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            target = Path(path)
+            serialized = json.dumps(data, ensure_ascii=False, indent=2)
+            temp_path: Optional[Path] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=target.parent,
+                    prefix=f".{target.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temp_file:
+                    temp_path = Path(temp_file.name)
+                    temp_file.write(serialized)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                os.replace(temp_path, target)
+            except OSError:
+                if temp_path is not None:
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
             return True
         except (OSError, TypeError, ValueError):
             return False
@@ -468,6 +471,13 @@ class ContextHandlerLinear(ContextHandler):
             self.messages = [
                 self._context_from_dict(m) for m in raw.get("messages", [])
             ]
+            # ``archive`` was introduced after the original linear format.
+            # Missing it is a valid legacy file, whose already-discarded raw
+            # history unfortunately cannot be reconstructed.
+            archive_raw = raw.get("archive", [])
+            if not isinstance(archive_raw, list):
+                raise ValueError("archive must be a list")
+            self.archive = [self._context_from_dict(m) for m in archive_raw]
             # Old context files do not contain ``round``. Recover their next
             # timeline boundary from both retained and compacted history.
             restored_timelines = [message.timeline for message in self.messages]
@@ -480,6 +490,7 @@ class ContextHandlerLinear(ContextHandler):
             return True
         except (TypeError, KeyError, ValueError):
             self.messages = []
+            self.archive = []
             self.abstract = None
             self._round = 0
             return False

@@ -219,6 +219,7 @@ class GraphContextHandler(ContextHandler):
             ``True`` only when both the linear context and the graph were
             persisted successfully.
         """
+        self._flush_pending()
         saved = self.linear.save(path)
         graph_saved = self.store.save(f"{path}{self.graph_save_suffix}")
         return saved and graph_saved

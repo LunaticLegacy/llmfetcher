@@ -507,6 +507,12 @@ class Agent:
                 tool_results=tool_results,
             )
 
+            # A completed model response and its complete tool batch form the
+            # smallest safe resume boundary.  Checkpoint it immediately so a
+            # process crash, force-stop, or later model failure cannot erase
+            # every turn produced by a long-running Agent invocation.
+            self._save_context()
+
             if self._completion_requested.is_set():
                 self._emit(
                     "agent", name, "agent:completion_requested",
