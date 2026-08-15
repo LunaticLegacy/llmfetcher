@@ -23,6 +23,7 @@ from .extraction_prompts import (
     extract_regex,
 )
 from .graph_store import GraphStore
+from ..usage_ledger import UsageRecord, copy_usage, drain_records
 
 
 class ExtractionFetcher(Protocol):
@@ -95,6 +96,11 @@ class GraphBuilder:
         self.max_entities_per_batch = max_entities_per_batch
         from ..llm_types import TokenUsage
         self.extra_usage: TokenUsage = TokenUsage()
+        self._usage_records: list[UsageRecord] = []
+
+    def drain_usage_records(self) -> list[UsageRecord]:
+        """Return completed graph-extraction calls exactly once."""
+        return drain_records(self._usage_records)
 
     # -- public API --------------------------------------------------------
 
@@ -139,6 +145,7 @@ class GraphBuilder:
                     self.extra_usage.total_tokens += usage.total_tokens or 0
                     self.extra_usage.cached_tokens += usage.cached_tokens or 0
                     self.extra_usage.reasoning_tokens += usage.reasoning_tokens or 0
+                self._usage_records.append(UsageRecord("graph_extraction", copy_usage(usage)))
                 content = getattr(result, "content", "")
                 parsed = _extract_json_object(content) if content else None
                 if parsed and parsed.get("entities"):

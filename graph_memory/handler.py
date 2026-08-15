@@ -31,6 +31,7 @@ from ..llm_types import LLMContext, LLMOutput
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
 from .retriever import GraphRetriever, GraphRetrievalResult, RetrievalConfig
+from ..usage_ledger import UsageRecord
 
 
 class GraphContextHandler(ContextHandler):
@@ -150,6 +151,18 @@ class GraphContextHandler(ContextHandler):
     def record_usage(self, usage: Optional[Any]) -> None:
         """Forward one internal LLM call's usage to the inner linear handler."""
         self.linear.record_usage(usage)
+
+    def drain_usage_records(self) -> list[UsageRecord]:
+        """Drain child internal-call records in the order their components run."""
+        records: list[UsageRecord] = []
+        # Linear compaction occurs before pending graph ingestion; retrieval
+        # occurs before a primary round.  Component order preserves that
+        # lifecycle ordering for a single Agent boundary.
+        for component in (self.linear, self.builder, self.retriever):
+            drain = getattr(component, "drain_usage_records", None)
+            if drain is not None:
+                records.extend(drain())
+        return records
 
     # -- public API --------------------------------------------------------
 

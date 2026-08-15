@@ -16,6 +16,7 @@ from ..llm_types import (
     LLMToolCall,
     ToolInfo,
 )
+from ..usage_ledger import UsageRecord, copy_usage, drain_records
 
 class CompactionFetcher(Protocol):
     """Describe the minimal LLM interface used for context compaction."""
@@ -129,6 +130,7 @@ class ContextHandlerLinear(ContextHandler):
         # successful compaction.  This is a durable source record for future
         # retrieval / re-compaction, not another prompt buffer.
         self.archive: List[LLMContext] = []
+        self._usage_records: list[UsageRecord] = []
 
         # Internal round counter — timeline for every added message.
         self._round: int = 0
@@ -147,7 +149,12 @@ class ContextHandlerLinear(ContextHandler):
         self.messages = []
         self.archive = []
         self._round = 0
+        self._usage_records.clear()
         return True
+
+    def drain_usage_records(self) -> list[UsageRecord]:
+        """Return completed internal-call usage records exactly once."""
+        return drain_records(self._usage_records)
 
 
     @override
@@ -245,6 +252,7 @@ class ContextHandlerLinear(ContextHandler):
         )
         # Account for the compaction LLM call in the reported usage.
         self.record_usage(result.usage)
+        self._usage_records.append(UsageRecord("compaction", copy_usage(result.usage)))
         compacted_raw: str = result.content
 
         if not compacted_raw.strip():
