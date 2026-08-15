@@ -159,6 +159,26 @@ class LLMBackendHandler(ABC):
         """
         return {}
 
+    def abort_active_request(self) -> bool:
+        """Close this handler's client to interrupt an in-flight request.
+
+        Returns:
+            ``True`` when the handler exposed a callable ``close`` method and
+            it was invoked.  ``False`` means the backend has no synchronous
+            transport that can be cancelled by closing a client.
+
+        Side Effects:
+            Closes the handler-owned client.  The handler must not be reused
+            after a successful abort; callers use this only for terminal
+            force-stop paths.
+        """
+        client = getattr(self, "client", None)
+        close = getattr(client, "close", None)
+        if not callable(close):
+            return False
+        close()
+        return True
+
     def result_text(self, result) -> str:
         return str(result)
     

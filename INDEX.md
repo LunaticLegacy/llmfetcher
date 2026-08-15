@@ -11,9 +11,9 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 
 | Area | Paths | Current responsibility |
 |---|---|---|
-| Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, and token-usage types. |
-| Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; lifecycle events; one-call primary and internal-LLM usage ledger. |
-| LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, retry/fallback, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
+| Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, token-usage, and terminal request-cancellation types. |
+| Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; lifecycle events; one-call primary and internal-LLM usage ledger; optional force-stop observation during provider I/O. |
+| LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, ordinary retry/fallback, terminal request cancellation, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
 | Context | `context_handlers/` | Base contract; durable linear history with compaction and raw archive; provider-backed retrieval composition; TLB adapter. `context_less_context/` is an experimental local worktree directory, not part of the indexed API. |
 | Graph memory | `graph_memory/` | Persistent entity/relation store, incremental extraction, hybrid graph retrieval, archive evidence, and stateless semantic extraction/reranking workers. |
 | Swarm | `swarm_module/` | Dependency graph, concurrent scheduler, TaskBus, and bounded report handoff between workers. |
@@ -26,8 +26,8 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 
 | Component | Import / path | Why Angelus uses it |
 |---|---|---|
-| Fetching | `LLMFetcher`, `LLMBackendConfig` | Configures a primary connector and fallback-compatible backend calls. |
-| Agent execution | `Agent`, `AgentRunControl` | Runs a session, accepts stop/steer controls, checkpoints context, and emits lifecycle events. |
+| Fetching | `LLMFetcher`, `LLMBackendConfig`, `LLMRequestCancelled` | Configures primary/fallback backend calls; ordinary failures can retry, while `abort_active_requests()` is terminal and never retries or falls back. |
+| Agent execution | `Agent`, `AgentRunControl` | Runs a session, accepts cooperative stop/steer controls, observes an optional `force_stopped` event during provider I/O, checkpoints completed context, and emits lifecycle events. |
 | Durable context | `ContextHandlerLinear` | Active transcript, LLM compaction, and append-only archived pre-compaction turns. |
 | Long-term graph | `GraphContextHandler`, `SemanticGraphWorker` | Graph/archive retrieval; extraction and reranking calls are isolated from the primary Agent's tools and transcript. |
 | Observability | `ExecutionEvent`, `agent:usage`, `agent:internal_usage` | Supplies SSE/event-log evidence and non-duplicated five-dimension token accounting. |

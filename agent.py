@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import queue
 from typing import List, Any, Optional, Dict, Protocol
 from pathlib import Path
 
@@ -290,6 +291,70 @@ class Agent:
             return False
         return self.context_handler.save(self.context_path)
 
+    def _fetch_model_with_force_stop(
+        self,
+        *,
+        control: AgentRunControl | None,
+        **fetch_kwargs: Any,
+    ) -> LLMOutput:
+        """Fetch one model response, allowing a terminal browser force-stop.
+
+        Args:
+            control: Optional cooperative controller.  A controller may also
+                expose a ``force_stopped`` ``threading.Event`` for immediate
+                cancellation; that optional extension is intentionally not
+                required for library-only controllers.
+            **fetch_kwargs: Keyword arguments forwarded unchanged to
+                ``LLMFetcher.fetch``.
+
+        Returns:
+            The completed normalized model response.
+
+        Raises:
+            AgentRunStopped: If ``force_stopped`` is set before the provider
+                call completes.  No incomplete model response is persisted.
+            Exception: Any provider exception raised by ``LLMFetcher.fetch``.
+
+        Side Effects:
+            Uses a daemon worker while a force-stop event is available.  On a
+            force-stop it asks the fetcher to close provider transports before
+            ending the Agent thread; the worker cannot mutate Agent context.
+        """
+        force_event = getattr(control, "force_stopped", None)
+        if force_event is None:
+            return self.llm_fetcher.fetch(**fetch_kwargs)
+
+        result_queue: queue.Queue[tuple[bool, LLMOutput | BaseException]] = queue.Queue(maxsize=1)
+
+        def fetch_in_background() -> None:
+            """Keep blocking provider I/O isolated from the Agent worker."""
+            try:
+                result_queue.put((True, self.llm_fetcher.fetch(**fetch_kwargs)))
+            except BaseException as exc:
+                result_queue.put((False, exc))
+
+        threading.Thread(
+            target=fetch_in_background,
+            name="llmfetcher-model-request",
+            daemon=True,
+        ).start()
+        while True:
+            if force_event.wait(timeout=0.05):
+                # Closing SDK transports interrupts providers such as OpenAI
+                # and Anthropic.  Regardless of SDK support, do not let the
+                # detached request resume this terminal Agent invocation.
+                abort_requests = getattr(self.llm_fetcher, "abort_active_requests", None)
+                if callable(abort_requests):
+                    abort_requests()
+                raise AgentRunStopped("Agent force-stopped during model request")
+            try:
+                completed, value = result_queue.get_nowait()
+            except queue.Empty:
+                continue
+            if completed:
+                return value  # type: ignore[return-value]
+            raise value  # type: ignore[misc]
+
     # -- run ------------------------------------------------------------
 
     def run(
@@ -414,7 +479,8 @@ class Agent:
                 },
             )
 
-            result = self.llm_fetcher.fetch(
+            result = self._fetch_model_with_force_stop(
+                control=control,
                 msg=message_input,
                 system_prompt=prompt,
                 temperature=temperature,
