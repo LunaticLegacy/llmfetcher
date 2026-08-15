@@ -29,6 +29,10 @@ class LLMBackendError(LLMError):
     """Raised when all candidate backends fail."""
 
 
+class LLMRequestCancelled(LLMError):
+    """Raised when a terminal force-stop cancels an in-flight LLM request."""
+
+
 # --------------------------
 # LLM API-level objects
 # --------------------------

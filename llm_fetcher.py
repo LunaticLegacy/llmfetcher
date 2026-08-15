@@ -14,6 +14,7 @@ lists via the ``context`` parameter.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import (
     Any,
@@ -31,6 +32,7 @@ from .llm_types import (
     LLMError,
     LLMTimeoutError,
     LLMBackendError,
+    LLMRequestCancelled,
 )
 
 from .fetcher_handlers import (
@@ -107,6 +109,9 @@ class LLMFetcher:
         self.backends: Dict[str, LLMBackendConfig] = {}
         self.backend_order: List[str] = []
         self.handlers: Dict[str, LLMBackendHandler] = {}
+        # This one-shot latch distinguishes terminal cancellation from an
+        # ordinary transport failure, which remains eligible for retry.
+        self._force_stopped = threading.Event()
 
         for backend in backends:
             self._register_backend(backend)
@@ -263,6 +268,45 @@ class LLMFetcher:
 
     # -- public API -------------------------------------------------------------
 
+    def _raise_if_force_stopped(self) -> None:
+        """Raise the terminal cancellation error without retrying providers.
+
+        Raises:
+            LLMRequestCancelled: When ``abort_active_requests`` was called
+            for this fetcher.  Workbench fetchers belong to one Agent run, so
+            the latch is intentionally never reset.
+        """
+        if self._force_stopped.is_set():
+            raise LLMRequestCancelled("LLM request cancelled by force-stop")
+
+    def abort_active_requests(self) -> int:
+        """Close provider transports for this terminal force-stop.
+
+        Returns:
+            Number of registered backend handlers whose client transport was
+            asked to close.
+
+        Side Effects:
+            Calls :meth:`LLMBackendHandler.abort_active_request` for every
+            registered handler.  A closed handler is intentionally not reused:
+            the owning Agent is ending after a force-stop.  Individual
+            handler-close failures are ignored so one provider cannot prevent
+            cancellation attempts against another.
+        """
+        # Set the latch before closing transports: a close commonly raises a
+        # timeout-like provider exception, which must never enter retry or
+        # fallback after terminal user cancellation.
+        self._force_stopped.set()
+        aborted = 0
+        for handler in self.handlers.values():
+            try:
+                aborted += int(handler.abort_active_request())
+            except Exception:
+                # Force-stop is best effort across provider SDKs.  The Agent
+                # still exits even if a provider refuses to close its client.
+                continue
+        return aborted
+
     def fetch(
         self,
         msg: str,
@@ -323,10 +367,12 @@ class LLMFetcher:
         backend_errors: List[str] = []
 
         for backend in self._resolve_backends(backend_name, self.fallback_order):
+            self._raise_if_force_stopped()
             handler = self._handler_for_backend(backend)
 
             for _ in range(self._max_attempts(backend)):
                 try:
+                    self._raise_if_force_stopped()
                     provider_tools = handler.prepare_tools(tools)
                     raw = handler.create_completion(
                         messages=messages,
@@ -335,8 +381,10 @@ class LLMFetcher:
                         stream=False,
                         tools=provider_tools,
                     )
+                    self._raise_if_force_stopped()
                     return handler.normalize_completion_response(raw)
                 except Exception as exc:
+                    self._raise_if_force_stopped()
                     error = self._normalize_exception(backend, exc)
                     if isinstance(error, LLMTimeoutError):
                         self._sleep_before_retry()
@@ -404,11 +452,13 @@ class LLMFetcher:
         backend_errors: List[str] = []
 
         for backend in self._resolve_backends(backend_name, self.fallback_order):
+            self._raise_if_force_stopped()
             handler = self._handler_for_backend(backend)
             yielded_any = False
 
             for _ in range(self._max_attempts(backend)):
                 try:
+                    self._raise_if_force_stopped()
                     provider_tools = handler.prepare_tools(tools)
                     raw = handler.create_completion(
                         messages=messages,
@@ -420,10 +470,12 @@ class LLMFetcher:
                     for text in handler.iter_stream_text(
                         raw, output_reasoning=output_reasoning,
                     ):
+                        self._raise_if_force_stopped()
                         yielded_any = True
                         yield text
                     return
                 except Exception as exc:
+                    self._raise_if_force_stopped()
                     error = self._normalize_exception(backend, exc)
                     if (
                         isinstance(error, LLMTimeoutError)
