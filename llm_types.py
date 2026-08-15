@@ -47,6 +47,8 @@ class LLMBackendConfig:
     api_key: str = ""
     api_url: Optional[str] = None
     timeout: float = 60.0
+    # Additional attempts after the initial request. A value of ``3`` allows
+    # at most four total requests when the failure is retryable.
     max_retries: int = 0
     # Selects provider-specific behaviour for an otherwise compatible API.
     # For example, an OpenAI-compatible DeepSeek gateway can set this to

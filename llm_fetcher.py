@@ -211,7 +211,13 @@ class LLMFetcher:
         else:
             names = [self.default_backend]
             if fallback_order:
-                names.extend(fallback_order)
+                # ``fallback_order`` commonly includes the default backend.
+                # Keep each backend to one retry budget per request so a
+                # timeout cannot silently obtain a second full retry cycle.
+                names.extend(
+                    name for name in fallback_order
+                    if name in self.backends and name not in names
+                )
             names.extend(
                 name for name in self.backend_order if name not in names
             )
@@ -261,10 +267,20 @@ class LLMFetcher:
             return LLMTimeoutError(message)
         return LLMError(message)
 
-    @staticmethod
-    async def _sleep_before_retry() -> None:
-        """Short fixed-duration sleep before retrying a timed-out request."""
-        await time.sleep(1)
+    def _sleep_before_retry(self, retry_index: int) -> None:
+        """Wait with cancellation-aware exponential backoff before retrying.
+
+        Args:
+            retry_index: Zero-based index of the retry about to occur.  It
+                selects delays of 1, 2, 4, then at most 8 seconds.
+
+        Side Effects:
+            Blocks the current request worker until the delay elapses or a
+            terminal force-stop sets ``_force_stopped``.  The next loop check
+            raises ``LLMRequestCancelled`` rather than issuing another call.
+        """
+        delay_seconds = min(8.0, float(2 ** max(0, retry_index)))
+        self._force_stopped.wait(timeout=delay_seconds)
 
     # -- public API -------------------------------------------------------------
 
@@ -370,7 +386,8 @@ class LLMFetcher:
             self._raise_if_force_stopped()
             handler = self._handler_for_backend(backend)
 
-            for _ in range(self._max_attempts(backend)):
+            attempts = self._max_attempts(backend)
+            for attempt_index in range(attempts):
                 try:
                     self._raise_if_force_stopped()
                     provider_tools = handler.prepare_tools(tools)
@@ -387,8 +404,9 @@ class LLMFetcher:
                     self._raise_if_force_stopped()
                     error = self._normalize_exception(backend, exc)
                     if isinstance(error, LLMTimeoutError):
-                        self._sleep_before_retry()
-                        continue
+                        if attempt_index + 1 < attempts:
+                            self._sleep_before_retry(attempt_index)
+                            continue
                     backend_errors.append(str(error))
                     break
 
@@ -456,7 +474,8 @@ class LLMFetcher:
             handler = self._handler_for_backend(backend)
             yielded_any = False
 
-            for _ in range(self._max_attempts(backend)):
+            attempts = self._max_attempts(backend)
+            for attempt_index in range(attempts):
                 try:
                     self._raise_if_force_stopped()
                     provider_tools = handler.prepare_tools(tools)
@@ -481,8 +500,9 @@ class LLMFetcher:
                         isinstance(error, LLMTimeoutError)
                         and not yielded_any
                     ):
-                        self._sleep_before_retry()
-                        continue
+                        if attempt_index + 1 < attempts:
+                            self._sleep_before_retry(attempt_index)
+                            continue
                     if yielded_any:
                         raise error
                     backend_errors.append(str(error))
@@ -505,7 +525,7 @@ class LLMFetcher:
         Returns:
             The total number of attempts (1 + retries).
         """
-        return max(1, int(backend.max_retries))
+        return 1 + max(0, int(backend.max_retries))
 
     @staticmethod
     def _build_messages(
