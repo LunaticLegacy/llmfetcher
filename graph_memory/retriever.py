@@ -42,6 +42,7 @@ from .models import (
     GraphMemoryState,
     RelationEdge,
 )
+from ..usage_ledger import UsageRecord, copy_usage, drain_records
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +351,11 @@ class GraphRetriever:
         self.query_prompt = query_prompt
         from ..llm_types import TokenUsage
         self.extra_usage: TokenUsage = TokenUsage()
+        self._usage_records: list[UsageRecord] = []
+
+    def drain_usage_records(self) -> list[UsageRecord]:
+        """Return completed graph-query calls exactly once."""
+        return drain_records(self._usage_records)
 
     # -- public API --------------------------------------------------------
 
@@ -384,6 +390,7 @@ class GraphRetriever:
             )
 
         top = hits[: self.config.top_k]
+        top = self._semantic_rerank(query, top)
         expanded = self._expand(top)
         relations = self._collect_relations(expanded)
         communities = self._select_communities(top)
@@ -406,6 +413,44 @@ class GraphRetriever:
             current_timeline=current_timeline,
         )
 
+    def _semantic_rerank(
+        self, query: str, hits: list[GraphHit]
+    ) -> list[GraphHit]:
+        """Optionally let a stateless semantic worker reorder fused hits.
+
+        The deterministic fusion score remains the source of truth whenever
+        the worker is absent, fails, or returns no valid candidate IDs.
+        """
+        rerank = getattr(self.query_fetcher, "rerank", None)
+        if not callable(rerank) or not hits:
+            return hits
+        candidates = [
+            {
+                "id": hit.entity.id,
+                "name": hit.entity.name,
+                "type": hit.entity.entity_type,
+                "summary": hit.entity.summary[:400],
+                "relations": [
+                    edge.relation for edge in self.store.neighbors(hit.entity.id)
+                ][:6],
+            }
+            for hit in hits
+        ]
+        try:
+            ranked_ids = rerank(query, candidates)
+        except Exception:  # pragma: no cover - remote retrieval is optional
+            return hits
+        finally:
+            drain = getattr(self.query_fetcher, "drain_rerank_usage_records", None)
+            if callable(drain):
+                self._usage_records.extend(drain())
+        if not ranked_ids:
+            return hits
+        by_id = {hit.entity.id: hit for hit in hits}
+        ordered = [by_id.pop(entity_id) for entity_id in ranked_ids if entity_id in by_id]
+        # Keep candidates omitted by the model in stable fused-score order.
+        return ordered + [hit for hit in hits if hit.entity.id in by_id]
+
     # -- seed extraction ---------------------------------------------------
 
     def _extract_seed_entities(self, query: str) -> list[EntityNode]:
@@ -427,6 +472,7 @@ class GraphRetriever:
                     self.extra_usage.total_tokens += usage.total_tokens or 0
                     self.extra_usage.cached_tokens += usage.cached_tokens or 0
                     self.extra_usage.reasoning_tokens += usage.reasoning_tokens or 0
+                self._usage_records.append(UsageRecord("graph_query", copy_usage(usage)))
                 content = getattr(result, "content", "")
                 parsed = _extract_json_object(content) if content else None
                 if parsed:

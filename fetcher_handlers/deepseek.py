@@ -40,8 +40,9 @@ from __future__ import annotations
 
 import re
 from typing import Any, List, Mapping, Optional, Sequence
+from urllib.parse import urlparse
 
-from ..llm_types import LLMOutput, TokenUsage
+from ..llm_types import LLMOutput, TokenUsage, LLMBackendConfig
 from .openai import OpenAIHandler
 
 _THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -51,6 +52,34 @@ class DeepSeekHandler(OpenAIHandler):
     """OpenAI-compatible chat-completions handler specialised for DeepSeek."""
 
     provider_names = frozenset({"deepseek"})
+    selection_priority = 100
+
+    @classmethod
+    def supports_backend(cls, backend: LLMBackendConfig) -> bool:
+        """Recognise DeepSeek behind an OpenAI-compatible configuration.
+
+        ``provider="openai"`` describes the request wire format, not
+        necessarily the model platform.  The explicit compatibility profile
+        is preferred; the official DeepSeek hostname and DeepSeek model
+        family are safe automatic signals for existing configurations.
+        Other OpenAI-compatible endpoints retain the generic handler.
+        """
+        if backend.provider == "deepseek":
+            return True
+        if backend.provider != "openai":
+            return False
+
+        profile = (backend.compatibility_profile or "").strip().lower()
+        if profile:
+            return profile == "deepseek"
+
+        model = (backend.model or "").strip().lower()
+        if model.startswith("deepseek"):
+            return True
+
+        api_url = (backend.api_url or "").strip()
+        hostname = (urlparse(api_url).hostname or "").lower()
+        return hostname == "deepseek.com" or hostname.endswith(".deepseek.com")
 
     # -- reasoning extraction (native channel only) -----------------------
 

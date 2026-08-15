@@ -15,6 +15,7 @@ from .retriever import (
     render_graph_memory,
 )
 from .handler import GraphContextHandler
+from .semantic import SemanticGraphWorker
 
 __all__ = [
     "CommunitySummary",
@@ -29,4 +30,5 @@ __all__ = [
     "RetrievalConfig",
     "render_graph_memory",
     "GraphContextHandler",
+    "SemanticGraphWorker",
 ]

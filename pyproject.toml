@@ -31,6 +31,7 @@ packages = [
     "llmfetcher",
     "llmfetcher.context_handlers",
     "llmfetcher.fetcher_handlers",
+    "llmfetcher.graph_memory",
     "llmfetcher.memory",
     "llmfetcher.rag_module",
     "llmfetcher.rag_module.knowledge",

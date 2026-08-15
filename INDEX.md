@@ -1,26 +1,54 @@
-# llmfetcher/ — LLMFetcher Submodule INDEX
+# llmfetcher/ — Submodule INDEX
 
-Git submodule. LLM abstraction layer: backend providers, context management, tool execution, event system.
+Git submodule containing the synchronous Python framework Angelus builds on.
+It provides provider-neutral LLM dispatch, tool-using agents, durable context
+handlers, graph/archive memory, and dependency-driven multi-agent execution.
 
-> ⚠️ This is a submodule. Its INDEX.md lives inside the submodule repo.
-> For LLMFetcher's own code structure, see `llmfetcher/` directory contents directly.
+> This file describes the checked-out submodule. Run submodule commands from
+> the superproject only when deliberately updating its recorded revision.
 
-## What Angelus uses from LLMFetcher
+## Package Map
 
-| Component | Path | Purpose |
-|-----------|------|---------|
-| `LLMFetcher` | `llm_fetcher.py` | Main fetch/stream interface to LLM backends with fallback |
-| `LLMBackendConfig` | `llm_types.py` | Backend configuration (provider, model, API key) |
-| `LLMOutput` | `llm_types.py` | Normalized LLM response with token usage |
-| `ExecutionEvent` | `events.py` | Observable event type for hooks/SSE |
-| `ContextHandler` | `context_handlers/base.py` | Abstract conversation history interface |
-| `ContextHandlerLinear` | `context_handlers/linear.py` | Linear history with LLM-based compaction |
-| `RetrievedContextHandler` | `context_handlers/retrieved.py` | Linear + TLB-RAG retrieved memory injection |
-| Backend Handlers | `fetcher_handlers/` | OpenAI, Anthropic, LiteLLM, ONNX, OpenVINO provider implementations |
-| Tool Framework | `tool_handler.py`, `tool_executor.py` | Tool registry + parallel execution |
+| Area | Paths | Current responsibility |
+|---|---|---|
+| Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, and token-usage types. |
+| Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; lifecycle events; one-call primary and internal-LLM usage ledger. |
+| LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, retry/fallback, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
+| Context | `context_handlers/` | Base contract; durable linear history with compaction and raw archive; provider-backed retrieval composition; TLB adapter. `context_less_context/` is an experimental local worktree directory, not part of the indexed API. |
+| Graph memory | `graph_memory/` | Persistent entity/relation store, incremental extraction, hybrid graph retrieval, archive evidence, and stateless semantic extraction/reranking workers. |
+| Swarm | `swarm_module/` | Dependency graph, concurrent scheduler, TaskBus, and bounded report handoff between workers. |
+| Tools | `tool_handler.py`, `tool_executor.py`, `tools/` | Tool schemas/registry, parallel execution, and built-in shell, knowledge, web, and dynamic-spawn factories. |
+| Retrieval modules | `rag_module/`, `rag_module_tlb/` | Legacy/knowledge-base RAG and auditable `INDEX.md` tree traversal. See [`rag_module_tlb/INDEX.md`](rag_module_tlb/INDEX.md). |
+| Interfaces | `cli.py`, `webapp.py`, `web/`, `demo/` | Local CLI, standalone web console, and example entry point. |
+| Verification | `tests/` | Unit and regression coverage for public API, context, DeepSeek routing, execution graph, TaskBus, and usage ledger. |
 
-## Submodule Update
+## Angelus Integration Points
+
+| Component | Import / path | Why Angelus uses it |
+|---|---|---|
+| Fetching | `LLMFetcher`, `LLMBackendConfig` | Configures a primary connector and fallback-compatible backend calls. |
+| Agent execution | `Agent`, `AgentRunControl` | Runs a session, accepts stop/steer controls, checkpoints context, and emits lifecycle events. |
+| Durable context | `ContextHandlerLinear` | Active transcript, LLM compaction, and append-only archived pre-compaction turns. |
+| Long-term graph | `GraphContextHandler`, `SemanticGraphWorker` | Graph/archive retrieval; extraction and reranking calls are isolated from the primary Agent's tools and transcript. |
+| Observability | `ExecutionEvent`, `agent:usage`, `agent:internal_usage` | Supplies SSE/event-log evidence and non-duplicated five-dimension token accounting. |
+| Swarms | `AgentSwarm`, `ExecutionGraph`, `TaskBus` | Schedules dependent agents and passes bounded reports rather than raw worker transcripts. |
+
+## Persistence Boundaries
+
+- Linear context persists active messages, compaction abstracts, and an
+  append-only raw-message archive in its context JSON.
+- `GraphContextHandler` persists its graph in a companion
+  `<context-path>.graph.json` file and flushes pending graph updates on save.
+- Execution-graph persistence is owned by `swarm_module`; runtime events are
+  emitted by the caller's hook rather than written by this package globally.
+- API-key storage is an application concern; `LLMBackendConfig` receives a key
+  only for the process making the request.
+
+## Local Checks
 
 ```bash
-git submodule update --remote llmfetcher
+../.venv/bin/python -m unittest discover -s llmfetcher/tests -p 'test_*.py'
 ```
+
+The full project may also have root-level integration tests; run those from the
+Angelus superproject rather than treating them as submodule tests.

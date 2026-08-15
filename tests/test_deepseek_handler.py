@@ -41,6 +41,55 @@ class DeepSeekHandlerTests(unittest.TestCase):
         self.assertIsInstance(handler, DeepSeekHandler)
         self.assertIsInstance(handler, OpenAIHandler)  # shares OpenAI machinery
 
+    def test_openai_compatible_deepseek_model_uses_specialised_handler(self) -> None:
+        """A DeepSeek model must not lose native reasoning behaviour at a proxy."""
+        backend = LLMBackendConfig(
+            name="ds-proxy",
+            provider="openai",
+            model="deepseek-v4-flash",
+            api_key="k",
+            api_url="https://gateway.example.test/v1",
+        )
+        handler = LLMBackendHandler.create_for_backend(None, backend)
+        self.assertIsInstance(handler, DeepSeekHandler)
+
+    def test_openai_compatible_deepseek_profile_uses_specialised_handler(self) -> None:
+        """An explicit profile supports gateways with provider-neutral models."""
+        backend = LLMBackendConfig(
+            name="ds-proxy",
+            provider="openai",
+            model="reasoner-v1",
+            api_key="k",
+            api_url="https://gateway.example.test/v1",
+            compatibility_profile="deepseek",
+        )
+        handler = LLMBackendHandler.create_for_backend(None, backend)
+        self.assertIsInstance(handler, DeepSeekHandler)
+
+    def test_openai_compatible_deepseek_url_uses_specialised_handler(self) -> None:
+        """The official DeepSeek endpoint is recognised without a model prefix."""
+        backend = LLMBackendConfig(
+            name="ds-api",
+            provider="openai",
+            model="reasoner-v1",
+            api_key="k",
+            api_url="https://api.deepseek.com/v1",
+        )
+        handler = LLMBackendHandler.create_for_backend(None, backend)
+        self.assertIsInstance(handler, DeepSeekHandler)
+
+    def test_openai_compatible_generic_endpoint_stays_generic(self) -> None:
+        """Unrelated OpenAI-compatible configurations keep their old handler."""
+        backend = LLMBackendConfig(
+            name="generic",
+            provider="openai",
+            model="gpt-compatible-model",
+            api_key="k",
+            api_url="https://gateway.example.test/v1",
+        )
+        handler = LLMBackendHandler.create_for_backend(None, backend)
+        self.assertIs(type(handler), OpenAIHandler)
+
     def test_normalize_completion_response_reasoning(self) -> None:
         """reasoning_content is captured from a non-streamed message."""
         handler = _make_handler()
@@ -210,6 +259,44 @@ class DeepSeekThinkLeakTests(unittest.TestCase):
         # Other roles are untouched.
         self.assertEqual(sent[0]["content"], "sys")
         self.assertEqual(sent[2]["content"], "go")
+
+    def test_openai_compatible_deepseek_strips_and_normalizes_think_blocks(self) -> None:
+        """The compatibility route applies the same loop protection end-to-end."""
+        backend = LLMBackendConfig(
+            name="ds-proxy",
+            provider="openai",
+            model="deepseek-v4-flash",
+            api_key="k",
+        )
+        handler = LLMBackendHandler.create_for_backend(None, backend)
+        self.assertIsInstance(handler, DeepSeekHandler)
+        recorded: dict = {}
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                recorded["messages"] = kwargs["messages"]
+                return object()
+
+        class _FakeChat:
+            completions = _FakeCompletions()
+
+        class _FakeClient:
+            chat = _FakeChat()
+
+        handler.client = _FakeClient()  # type: ignore[attr-defined]
+        handler.create_completion(
+            messages=[{"role": "assistant", "content": "<think>old</think> reply"}],
+            temperature=0.4,
+            max_tokens=10,
+            stream=False,
+        )
+        self.assertEqual(recorded["messages"][0]["content"].strip(), "reply")
+
+        out = handler.normalize_completion_response({
+            "choices": [{"message": {"role": "assistant", "content": "<think>new</think> final"}}],
+        })
+        self.assertEqual(out.content, "final")
+        self.assertEqual(out.reasoning_content, "new")
 
     def test_create_completion_leaves_clean_messages_untouched(self) -> None:
         """Messages without think markers pass through byte-for-byte."""

@@ -11,6 +11,7 @@ from .tool_handler import ToolHandler
 from .tool_executor import ToolExecutor
 from .context_handlers import ContextHandlerLinear, ContextHandler
 from .events import ExecutionEvent, ExecutionHook
+from .usage_ledger import UsageRecord, add_usage, copy_usage
 
 
 class AgentRunControl(Protocol):
@@ -202,6 +203,32 @@ class Agent:
             except Exception:
                 pass
 
+    @staticmethod
+    def _usage_data(usage: TokenUsage) -> dict[str, int]:
+        """Serialize every normalized usage dimension for durable events."""
+        return {
+            "input": usage.input_tokens or 0,
+            "output": usage.output_tokens or 0,
+            "total": usage.total_tokens or 0,
+            "cached": usage.cached_tokens or 0,
+            "reasoning": usage.reasoning_tokens or 0,
+        }
+
+    def _drain_internal_usage(self, name: str) -> None:
+        """Publish and aggregate each hidden LLM call once, if supported."""
+        drain = getattr(self.context_handler, "drain_usage_records", None)
+        if drain is None:
+            return
+        for record in drain():
+            if not isinstance(record, UsageRecord):
+                continue
+            add_usage(self.usage, record.usage)
+            self._emit(
+                "agent", name, "agent:internal_usage",
+                f"Internal {record.kind} LLM call",
+                data={"kind": record.kind, "usage": self._usage_data(record.usage)},
+            )
+
     # -- tool registration ----------------------------------------------
 
     def add_tool(self, tool: Tool) -> bool:
@@ -348,6 +375,7 @@ class Agent:
 
         self.context_handler.add_user_message(message=message)
         self.usage = TokenUsage()
+        self._drain_internal_usage(name)
 
         result: LLMOutput | None = None
         round_idx = 0
@@ -396,13 +424,19 @@ class Agent:
             )
 
             # Accumulate token usage across rounds.
-            if result.usage:
-                u = result.usage
-                self.usage.input_tokens += u.input_tokens
-                self.usage.output_tokens += u.output_tokens
-                self.usage.total_tokens += u.total_tokens
-                self.usage.cached_tokens += u.cached_tokens
-                self.usage.reasoning_tokens += u.reasoning_tokens
+            add_usage(self.usage, copy_usage(result.usage))
+            # ``agent:round`` remains the lifecycle/transcript event.  This
+            # separate record is the canonical per-call usage ledger entry,
+            # so consumers need not infer hidden calls from round payloads.
+            self._emit(
+                "agent", name, "agent:usage",
+                f"Primary LLM usage for round {round_idx}",
+                data={
+                    "kind": "primary",
+                    "round": round_idx,
+                    "usage": self._usage_data(copy_usage(result.usage)),
+                },
+            )
 
             if verbose:
                 print(str(result))
@@ -481,18 +515,8 @@ class Agent:
                         {"name": tc.name, "args": tc.arguments}
                         for tc in result.tool_calls
                     ],
-                    "usage": {
-                        "input": self.usage.input_tokens,
-                        "output": self.usage.output_tokens,
-                        "total": self.usage.total_tokens,
-                    },
-                    "round_usage": {
-                        "input": result.usage.input_tokens if result.usage else 0,
-                        "output": result.usage.output_tokens if result.usage else 0,
-                        "total": result.usage.total_tokens if result.usage else 0,
-                        "cached": result.usage.cached_tokens if result.usage else 0,
-                        "reasoning": result.usage.reasoning_tokens if result.usage else 0,
-                    },
+                    "usage": self._usage_data(self.usage),
+                    "round_usage": self._usage_data(copy_usage(result.usage)),
                     "duration_ms": round((time.perf_counter() - round_started_at) * 1000),
                     "assistant_content": result.content,
                     "reasoning_content": result.reasoning_content,
@@ -506,6 +530,13 @@ class Agent:
                 message=result,
                 tool_results=tool_results,
             )
+            self._drain_internal_usage(name)
+
+            # A completed model response and its complete tool batch form the
+            # smallest safe resume boundary.  Checkpoint it immediately so a
+            # process crash, force-stop, or later model failure cannot erase
+            # every turn produced by a long-running Agent invocation.
+            self._save_context()
 
             if self._completion_requested.is_set():
                 self._emit(
@@ -535,6 +566,7 @@ class Agent:
             if steers:
                 for steer in steers:
                     self.context_handler.add_user_message(message=steer)
+                self._drain_internal_usage(name)
                 message = steers[-1]
                 self._emit(
                     "agent", name, "agent:steer_applied",
@@ -552,15 +584,7 @@ class Agent:
             else:
                 print("Context saved at: ", self.context_path)
 
-        # Merge internal (non-round) LLM usage — compaction, graph
-        # extraction, retrieval seed extraction — into the reported totals.
-        extra = getattr(self.context_handler, "extra_usage", None)
-        if extra is not None:
-            self.usage.input_tokens += extra.input_tokens or 0
-            self.usage.output_tokens += extra.output_tokens or 0
-            self.usage.total_tokens += extra.total_tokens or 0
-            self.usage.cached_tokens += extra.cached_tokens or 0
-            self.usage.reasoning_tokens += extra.reasoning_tokens or 0
+        self._drain_internal_usage(name)
 
         self._emit(
             "agent", name, "agent:complete",
@@ -568,11 +592,7 @@ class Agent:
             f"{self.usage.total_tokens} total tokens",
             data={
                 "rounds": round_idx,
-                "usage": {
-                    "input": self.usage.input_tokens,
-                    "output": self.usage.output_tokens,
-                    "total": self.usage.total_tokens,
-                },
+                "usage": self._usage_data(self.usage),
                 "output_len": len(result.content) if result else 0,
             },
         )

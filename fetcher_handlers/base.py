@@ -35,6 +35,9 @@ class LLMBackendHandler(ABC):
 
     # Names of providers handled by this handler
     provider_names: ClassVar[frozenset[str]] = frozenset()
+    # A specialised handler can win over a generic wire-protocol handler
+    # when both support the same configuration.
+    selection_priority: ClassVar[int] = 0
 
     def __init__(
         self, 
@@ -91,9 +94,17 @@ class LLMBackendHandler(ABC):
         fetcher: "LLMFetcher",
         backend: LLMBackendConfig,
     ) -> "LLMBackendHandler":
-        for handler_cls in cls._iter_descendants():
-            if handler_cls.supports_backend(backend):
-                return handler_cls.from_backend(fetcher, backend)
+        matches = [
+            handler_cls
+            for handler_cls in cls._iter_descendants()
+            if handler_cls.supports_backend(backend)
+        ]
+        if matches:
+            # Preserve the historic subclass discovery order when priorities
+            # tie, while allowing a platform-specialised handler to supersede
+            # a generic OpenAI-compatible wire handler.
+            handler_cls = max(matches, key=lambda candidate: candidate.selection_priority)
+            return handler_cls.from_backend(fetcher, backend)
         raise ValueError(f"Unsupported provider: {backend.provider}")
 
     @abstractmethod

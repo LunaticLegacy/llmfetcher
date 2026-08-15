@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
 from llmfetcher.context_handlers.linear import (
     _COMPACTION_INPUT_CHAR_LIMIT,
@@ -21,6 +22,10 @@ class _RecordingCompactor:
     def __init__(self) -> None:
         """Initialize storage for the latest compaction keyword arguments."""
         self.request: dict[str, Any] = {}
+        self.response = (
+            "<context_abstract>bounded summary</context_abstract>\n"
+            "<source_timelines>[1, 2]</source_timelines>"
+        )
 
     def fetch(
         self,
@@ -56,10 +61,7 @@ class _RecordingCompactor:
             "tools": tools,
         }
         return LLMOutput(
-            content=(
-                "<context_abstract>bounded summary</context_abstract>\n"
-                "<source_timelines>[1, 2]</source_timelines>"
-            ),
+            content=self.response,
             provider="test",
             backend_name="test",
             model="test",
@@ -135,8 +137,10 @@ class ContextCompactionTests(unittest.TestCase):
             restored.add_user_message("third")
             self.assertEqual([message.timeline for message in restored.messages], [1, 2, 3])
 
-            # Removing the new field simulates files written before this fix.
-            payload = path.read_text(encoding="utf-8").replace('  "round": 2,\n', "")
+            # Removing fields added by newer formats simulates an old file.
+            payload = path.read_text(encoding="utf-8")
+            payload = payload.replace('  "round": 2,\n', "")
+            payload = payload.replace('  "archive": [],\n', "")
             path.write_text(payload, encoding="utf-8")
             legacy = ContextHandlerLinear(compactor, max_context_threshold=10**9)
             self.assertTrue(legacy.load(path))
@@ -163,6 +167,53 @@ class ContextCompactionTests(unittest.TestCase):
             restored.add_user_message("third")
             self.assertEqual(restored.messages[-1].timeline, 3)
 
+    def test_compaction_archives_raw_messages_and_owns_provenance(self) -> None:
+        """Never trust model timeline tags or discard raw compacted turns."""
+        compactor = _RecordingCompactor()
+        compactor.response = (
+            "<context_abstract>first summary</context_abstract>\n"
+            "<source_timelines>[999]</source_timelines>"
+        )
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("one")
+        handler.add_assistant_message(LLMOutput(
+            content="two", provider="test", backend_name="test", model="test",
+        ))
+
+        self.assertTrue(handler.compact())
+        self.assertEqual([message.timeline for message in handler.archive], [1, 2])
+        self.assertEqual(handler.messages, [])
+        assert handler.abstract is not None
+        self.assertEqual(handler.abstract.source_timeline, [1, 2])
+
+        compactor.response = "<context_abstract>second summary</context_abstract>"
+        handler.add_user_message("three")
+        self.assertTrue(handler.compact())
+        self.assertEqual([message.timeline for message in handler.archive], [1, 2, 3])
+        assert handler.abstract is not None
+        self.assertEqual(handler.abstract.source_timeline, [1, 2, 3])
+
+    def test_save_load_preserves_raw_compaction_archive(self) -> None:
+        """Archived raw entries survive restart while staying out of prompts."""
+        compactor = _RecordingCompactor()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "context.json"
+            original = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+            original.add_user_message("retrieve this raw evidence")
+            self.assertTrue(original.compact())
+            self.assertTrue(original.save(path))
+
+            restored = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+            self.assertTrue(restored.load(path))
+            self.assertEqual(
+                [message.content for message in restored.archive],
+                ["retrieve this raw evidence"],
+            )
+            self.assertNotIn(
+                "retrieve this raw evidence",
+                str(restored.build_messages()),
+            )
+
     def test_clear_context_restarts_timeline(self) -> None:
         """Assign timeline one to the first message after an explicit clear."""
         handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
@@ -172,6 +223,22 @@ class ContextCompactionTests(unittest.TestCase):
         handler.add_user_message("new")
 
         self.assertEqual(handler.messages[-1].timeline, 1)
+
+    def test_save_failure_keeps_previous_file_and_removes_temporary_file(self) -> None:
+        """A failed replacement must not corrupt the last committed context."""
+        handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
+        handler.add_user_message("new context")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "context.json"
+            path.write_text("old context", encoding="utf-8")
+            with patch(
+                "llmfetcher.context_handlers.linear.os.replace",
+                side_effect=OSError("replace failed"),
+            ):
+                self.assertFalse(handler.save(path))
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "old context")
+            self.assertEqual(list(Path(directory).glob(".context.json.*.tmp")), [])
 
 
 if __name__ == "__main__":

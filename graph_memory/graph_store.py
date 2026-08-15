@@ -13,7 +13,9 @@ Design notes (see docs/graph_context_design.md):
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import threading
 import unicodedata
 from pathlib import Path
@@ -478,10 +480,30 @@ class GraphStore:
         if not path:
             return False
         try:
-            Path(path).write_text(
-                json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            target = Path(path)
+            serialized = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+            temp_path: Optional[Path] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=target.parent,
+                    prefix=f".{target.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temp_file:
+                    temp_path = Path(temp_file.name)
+                    temp_file.write(serialized)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                os.replace(temp_path, target)
+            except OSError:
+                if temp_path is not None:
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
             return True
         except (OSError, TypeError, ValueError):
             return False

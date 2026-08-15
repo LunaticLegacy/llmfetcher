@@ -44,6 +44,12 @@ class LLMBackendConfig:
     api_url: Optional[str] = None
     timeout: float = 60.0
     max_retries: int = 0
+    # Selects provider-specific behaviour for an otherwise compatible API.
+    # For example, an OpenAI-compatible DeepSeek gateway can set this to
+    # ``"deepseek"`` while keeping ``provider="openai"`` for its wire API.
+    # When omitted, handlers may still identify well-known provider URLs or
+    # model families.
+    compatibility_profile: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def __str__(self) -> str:
@@ -57,6 +63,7 @@ class LLMBackendConfig:
             API URL: {self.api_url},
             Timeout: {self.timeout} secs,
             Max retries: {self.max_retries},
+            Compatibility profile: {self.compatibility_profile},
             Extra args: {self.extra}
         )
         """
