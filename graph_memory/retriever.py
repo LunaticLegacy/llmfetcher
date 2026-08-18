@@ -431,7 +431,7 @@ class GraphRetriever:
                 "type": hit.entity.entity_type,
                 "summary": hit.entity.summary[:400],
                 "relations": [
-                    edge.relation for edge in self.store.neighbors(hit.entity.id)
+                    edge.relation for edge in self.store.edges_for(hit.entity.id)
                 ][:6],
             }
             for hit in hits
