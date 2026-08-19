@@ -11,6 +11,7 @@ from unittest.mock import patch
 from llmfetcher.context_handlers.linear import (
     _COMPACTION_INPUT_CHAR_LIMIT,
     _COMPACTION_OUTPUT_MAX_TOKENS,
+    _COMPACTING_SYSTEM_PROMPT,
     ContextHandlerLinear,
 )
 from llmfetcher.llm_types import LLMOutput, LLMToolCall
@@ -90,6 +91,7 @@ class ContextCompactionTests(unittest.TestCase):
         )
 
         self.assertIsNone(compactor.request["context_handler"])
+        self.assertEqual(compactor.request["temperature"], 0.0)
         self.assertEqual(compactor.request["max_tokens"], _COMPACTION_OUTPUT_MAX_TOKENS)
         self.assertLessEqual(
             len(compactor.request["msg"]),
@@ -98,6 +100,24 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertIsNotNone(handler.abstract)
         assert handler.abstract is not None
         self.assertEqual(handler.abstract.abstract_msg, "bounded summary")
+
+    def test_compaction_prompt_bounds_working_summary_and_treats_history_as_data(self) -> None:
+        """Keep compaction instructions bounded and resistant to transcript prompts."""
+        self.assertIn("untrusted reference data", _COMPACTING_SYSTEM_PROMPT)
+        self.assertIn("at most 6,000 characters", _COMPACTING_SYSTEM_PROMPT)
+        self.assertIn("drop low-priority detail", _COMPACTING_SYSTEM_PROMPT)
+        self.assertIn("closing tag", _COMPACTING_SYSTEM_PROMPT)
+
+    def test_compaction_accepts_truncated_tagged_summary(self) -> None:
+        """Retain a usable summary when a provider omits only the closing tag."""
+        compactor = _RecordingCompactor()
+        compactor.response = "<context_abstract>goal: finish the migration"
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("finish the migration")
+
+        self.assertTrue(handler.compact())
+        assert handler.abstract is not None
+        self.assertEqual(handler.abstract.abstract_msg, "goal: finish the migration")
 
     def test_tool_result_is_complete_in_history_storage(self) -> None:
         """Retain the complete tool result for lossless persistence/export."""

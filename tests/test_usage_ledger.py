@@ -28,7 +28,7 @@ class _AgentFetcher(_Fetcher):
     default_backend_config = LLMBackendConfig("test", "test", "test")
 
     def fetch(self, **kwargs):
-        if "context compactor" in (kwargs.get("system_prompt") or ""):
+        if "untrusted reference data" in (kwargs.get("system_prompt") or ""):
             return LLMOutput(
                 content="<context_abstract>kept</context_abstract>",
                 provider="test", backend_name="test", model="test",

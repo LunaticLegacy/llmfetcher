@@ -1,5 +1,25 @@
 # Semantic map
 
+## `llmfetcher.context_handlers.linear.ContextHandlerLinear`
+
+Owns one durable linear Agent transcript, a bounded working abstract, and an
+append-only archive of raw compacted turns. It implements the context-handler
+contract and is owned by application-level `Agent` instances.
+
+### `ContextHandlerLinear.compact()`
+
+Builds a stateless, bounded transcript request and calls the configured
+compaction fetcher at deterministic temperature `0.0`. The compaction prompt
+treats transcript contents as untrusted reference data and asks for a 6,000
+character working summary, prioritizing goals, decisions, actionable state,
+and blockers over verbatim tool output. It parses one `context_abstract` XML
+element, accepting a non-empty opening-tagged partial summary when a provider
+truncates only the closing tag; on success it archives raw messages and
+replaces active history with the abstract. Called automatically after
+`add_assistant_message()` crosses the configured threshold and by
+application-owned manual compaction routes. It returns `False` for empty input
+or a response without usable tagged summary, and lets fetcher failures raise.
+
 ## `llmfetcher.swarm_module.execution_graph.ExecutionGraph`
 
 Owns a dependency DAG of `Agent` nodes, routing-only nodes, callbacks and a
