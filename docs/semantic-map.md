@@ -23,6 +23,23 @@ Its transient `last_compaction_error` and `last_compaction_raw` fields expose
 the failed request reason and an unparseable model `content` response to an
 application UI; neither is written into the durable context file.
 
+## `llmfetcher.context_handlers.retrieved.RetrievedContextHandler`
+
+Composes durable linear context with bounded TLB-RAG retrieval. Its
+`_should_retrieve()` method is called by `add_user_message()` after the new
+turn is stored: `manual` does not retrieve automatically, `first_message`
+retrieves once, `every_message` retrieves for every user turn, and `auto`
+retrieves again after a new compaction generation.
+
+## `llmfetcher.graph_memory.handler.GraphContextHandler`
+
+Owns graph-backed long-term memory alongside the active linear transcript.
+`add_user_message()` stores a pending turn and calls `_should_retrieve()`;
+the trigger supports `manual`, one-time `first_message`, per-turn
+`every_message`, and compaction-generation-aware `auto` retrieval. Successful
+`retrieve()` replaces the injected graph and archive-evidence blocks used by
+`build_messages()`.
+
 ## `llmfetcher.swarm_module.execution_graph.ExecutionGraph`
 
 Owns a dependency DAG of `Agent` nodes, routing-only nodes, callbacks and a

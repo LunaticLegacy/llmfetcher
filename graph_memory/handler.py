@@ -52,9 +52,10 @@ class GraphContextHandler(ContextHandler):
             omitted.
         retriever_config: Optional :class:`RetrievalConfig` for the hybrid
             retrieval weights / limits.
-        retrieval_trigger: ``"first_message"`` (default), ``"auto"``
-            (re-retrieve after compaction), or ``"manual"`` (explicit
-            :meth:`retrieve` calls only).
+        retrieval_trigger: ``"first_message"`` (default), ``"every_message"``
+            (refresh for every user turn), ``"auto"`` (re-retrieve after
+            compaction), or ``"manual"`` (explicit :meth:`retrieve` calls
+            only).
         graph_update_every: Flush the pending messages into the graph after
             this many user/assistant messages (default 3).
         max_context_threshold: Character threshold that triggers linear
@@ -306,9 +307,16 @@ class GraphContextHandler(ContextHandler):
         )
 
     def _should_retrieve(self) -> bool:
-        """Decide whether this user message should trigger retrieval."""
+        """Decide whether this newly stored user message should retrieve.
+
+        ``manual`` never retrieves automatically. ``every_message`` refreshes
+        graph and archive memory for every user turn; ``first_message`` runs
+        once, while ``auto`` runs again only after compaction.
+        """
         if self.retrieval_trigger == "manual":
             return False
+        if self.retrieval_trigger == "every_message":
+            return True
         if self._has_retrieved:
             if self.retrieval_trigger == "auto":
                 return self._compaction_generation > self._last_retrieved_gen
