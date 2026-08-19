@@ -6,8 +6,9 @@ Composes :class:`ContextHandlerLinear` for the current session with a
 - Every ``graph_update_every`` user/assistant messages (or whenever
   compaction happens) the newest turns are flushed into the graph via
   ``builder.ingest`` — incremental, low-overhead entity extraction.
-- On the first user message (or again after compaction when
-  ``retrieval_trigger="auto"``) :class:`GraphRetriever` runs the hybrid
+- On the first user message, on every user message when
+  ``retrieval_trigger="every_message"``, or again after compaction when
+  ``retrieval_trigger="auto"``, :class:`GraphRetriever` runs the hybrid
   four-channel retrieval and injects a ``<graph_memory>`` block as a
   **user-role** message at the front of ``build_messages`` (low-trust
   historical data never overrides system instructions).
@@ -52,9 +53,10 @@ class GraphContextHandler(ContextHandler):
             omitted.
         retriever_config: Optional :class:`RetrievalConfig` for the hybrid
             retrieval weights / limits.
-        retrieval_trigger: ``"first_message"`` (default), ``"auto"``
-            (re-retrieve after compaction), or ``"manual"`` (explicit
-            :meth:`retrieve` calls only).
+        retrieval_trigger: ``"first_message"`` (default), ``"every_message"``
+            (retrieve for each user message), ``"auto"`` (re-retrieve after
+            compaction), or ``"manual"`` (explicit :meth:`retrieve` calls
+            only).
         graph_update_every: Flush the pending messages into the graph after
             this many user/assistant messages (default 3).
         max_context_threshold: Character threshold that triggers linear
@@ -309,6 +311,8 @@ class GraphContextHandler(ContextHandler):
         """Decide whether this user message should trigger retrieval."""
         if self.retrieval_trigger == "manual":
             return False
+        if self.retrieval_trigger == "every_message":
+            return True
         if self._has_retrieved:
             if self.retrieval_trigger == "auto":
                 return self._compaction_generation > self._last_retrieved_gen
