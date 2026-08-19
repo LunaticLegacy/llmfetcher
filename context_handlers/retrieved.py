@@ -101,7 +101,8 @@ class RetrievedContextHandler(ContextHandler):
         compacting_fetcher: LLMFetcher for context compaction.
         classify_fetcher: Optional separate fetcher for classification.
         max_retrieved_sessions: Maximum past sessions to inject.
-        retrieval_trigger: ``"first_message"``, ``"auto"``, or ``"manual"``.
+        retrieval_trigger: ``"first_message"``, ``"every_message"``,
+            ``"auto"``, or ``"manual"``.
         archive_scope: ``"project"``, ``"user"``, ``"both"``, ``"none"``,
             or ``"auto"`` (default: ``"auto"``).
         max_context_threshold: Character threshold for linear compaction.
@@ -268,8 +269,16 @@ class RetrievedContextHandler(ContextHandler):
     # -- internal: retrieval (P0-H, P0-L) -----------------------------------
 
     def _should_retrieve(self) -> bool:
+        """Return whether the newly added user message requires retrieval.
+
+        ``manual`` leaves retrieval to callers. ``every_message`` refreshes
+        memory for every user turn, while ``first_message`` retrieves once and
+        ``auto`` retrieves once per compaction generation.
+        """
         if self.retrieval_trigger == "manual":
             return False
+        if self.retrieval_trigger == "every_message":
+            return True
         if self._has_retrieved:
             # "auto" allows re-retrieval after compaction.
             if self.retrieval_trigger == "auto":
