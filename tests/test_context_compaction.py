@@ -119,6 +119,17 @@ class ContextCompactionTests(unittest.TestCase):
         assert handler.abstract is not None
         self.assertEqual(handler.abstract.abstract_msg, "goal: finish the migration")
 
+    def test_compaction_exposes_unparseable_model_response_for_diagnostics(self) -> None:
+        """Keep failure details transient while allowing applications to show them."""
+        compactor = _RecordingCompactor()
+        compactor.response = "I cannot compact this transcript."
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("continue the migration")
+
+        self.assertFalse(handler.compact())
+        self.assertIn("<context_abstract>", handler.last_compaction_error or "")
+        self.assertEqual(handler.last_compaction_raw, compactor.response)
+
     def test_tool_result_is_complete_in_history_storage(self) -> None:
         """Retain the complete tool result for lossless persistence/export."""
         compactor = _RecordingCompactor()

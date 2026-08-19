@@ -19,6 +19,9 @@ replaces active history with the abstract. Called automatically after
 `add_assistant_message()` crosses the configured threshold and by
 application-owned manual compaction routes. It returns `False` for empty input
 or a response without usable tagged summary, and lets fetcher failures raise.
+Its transient `last_compaction_error` and `last_compaction_raw` fields expose
+the failed request reason and an unparseable model `content` response to an
+application UI; neither is written into the durable context file.
 
 ## `llmfetcher.swarm_module.execution_graph.ExecutionGraph`
 

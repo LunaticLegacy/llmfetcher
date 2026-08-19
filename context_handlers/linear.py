@@ -138,6 +138,11 @@ class ContextHandlerLinear(ContextHandler):
         # retrieval / re-compaction, not another prompt buffer.
         self.archive: List[LLMContext] = []
         self._usage_records: list[UsageRecord] = []
+        # These diagnostics are intentionally transient: applications can
+        # report the failed compaction attempt without persisting raw model
+        # output in the durable conversation file.
+        self.last_compaction_error: Optional[str] = None
+        self.last_compaction_raw: Optional[str] = None
 
         # Internal round counter — timeline for every added message.
         self._round: int = 0
@@ -236,10 +241,18 @@ class ContextHandlerLinear(ContextHandler):
         Returns:
             ``True`` on successful compaction, ``False`` otherwise
             (e.g. no messages to compact, or the LLM call / parsing
-            failed).
+            failed). On failure, ``last_compaction_error`` describes the
+            reason and ``last_compaction_raw`` retains an unparseable model
+            content response for the current process only.
         """
         if not self.messages:
+            self.last_compaction_error = "No active messages are available to compact."
+            self.last_compaction_raw = None
             return False
+
+        # Clear stale diagnostics before every independent compaction attempt.
+        self.last_compaction_error = None
+        self.last_compaction_raw = None
 
         # Provenance is owned by the context handler, never by the model.
         # The next abstract includes the preceding abstract in its prompt, so
@@ -250,23 +263,33 @@ class ContextHandlerLinear(ContextHandler):
         source_timelines.extend(m.timeline for m in self.messages)
 
         compaction_input = self._build_compaction_input()
-        result: LLMOutput = self.llm_handler.fetch(
-            msg=compaction_input,
-            system_prompt=_COMPACTING_SYSTEM_PROMPT,
-            temperature=0.0,
-            max_tokens=self.compaction_output_max_tokens,
-            context_handler=None,
-        )
+        try:
+            result: LLMOutput = self.llm_handler.fetch(
+                msg=compaction_input,
+                system_prompt=_COMPACTING_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=self.compaction_output_max_tokens,
+                context_handler=None,
+            )
+        except Exception as exc:
+            self.last_compaction_error = f"Compaction model request failed: {exc}"
+            raise
         # Account for the compaction LLM call in the reported usage.
         self.record_usage(result.usage)
         self._usage_records.append(UsageRecord("compaction", copy_usage(result.usage)))
         compacted_raw: str = result.content
 
         if not compacted_raw.strip():
+            self.last_compaction_error = "Compaction model returned an empty content field."
             return False
 
         abstract_msg = self._parse_compacted_abstract(compacted_raw)
         if not abstract_msg:
+            self.last_compaction_error = (
+                "Compaction model response did not contain a usable "
+                "<context_abstract> element."
+            )
+            self.last_compaction_raw = compacted_raw
             return False
 
         self.abstract = LLMContextCompacted(
