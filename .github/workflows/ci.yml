@@ -76,5 +76,5 @@ jobs:
     - name: Verify wheel installation
       run: |
         python -m venv /tmp/llmfetcher-wheel-check
-        /tmp/llmfetcher-wheel-check/bin/python -m pip install --no-deps dist/*.whl
-        /tmp/llmfetcher-wheel-check/bin/python -c "import llmfetcher; from llmfetcher.swarm_module import ExecutionGraph; assert 'Current agents:' in str(ExecutionGraph())"
+        /tmp/llmfetcher-wheel-check/bin/python -m pip install dist/*.whl
+        /tmp/llmfetcher-wheel-check/bin/python scripts/check_packaged_imports.py

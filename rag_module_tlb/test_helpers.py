@@ -21,7 +21,7 @@ def _extract_json(text):
     raise ValueError("Unterminated JSON")
 
 
-from type import TLBResult, NormalizedIntent, LeafFile, CacheCandidate
+from .type import TLBResult, NormalizedIntent, LeafFile, CacheCandidate
 
 
 def _dict_to_tlb_result(data):
