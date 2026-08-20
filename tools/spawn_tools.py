@@ -35,6 +35,7 @@ def create_swarm_tools(
     swarm: AgentSwarm,
     llm_fetcher: LLMFetcher,
     worker_tool_pool: list[Tool],
+    worker_tool_factory: Callable[[str], list[Tool]] | None = None,
     coordinator_name: str = "main_agent",
     worker_max_rounds: int = 30,
     worker_max_tokens: int = 32768,
@@ -53,6 +54,10 @@ def create_swarm_tools(
         worker_tool_pool:
             Tools that are registered on every worker created by the
             coordinator.
+        worker_tool_factory:
+            Optional per-worker tool builder. When supplied it receives the
+            worker name and replaces ``worker_tool_pool`` for that worker;
+            use it when a tool closes over worker-local state.
         coordinator_name:
             Logical coordinator name used as the default structured-report
             recipient for ``dispatch_subagent``.
@@ -81,6 +86,10 @@ def create_swarm_tools(
         raise ValueError("worker_max_tokens must be greater than zero")
     if worker_max_context_threshold < 1024:
         raise ValueError("worker_max_context_threshold must be at least 1024")
+
+    def _tools_for_worker(name: str) -> list[Tool]:
+        """Return a fresh, worker-scoped tool list when the host supplies one."""
+        return worker_tool_factory(name) if worker_tool_factory is not None else list(worker_tool_pool)
 
     def _dynamic_add_agent(**kwargs: Any) -> str:
         """Create and register a new worker agent in the swarm.
@@ -112,7 +121,7 @@ def create_swarm_tools(
                 max_context_threshold=worker_max_context_threshold,
             ),
         )
-        agent.add_tools(worker_tool_pool)
+        agent.add_tools(_tools_for_worker(name))
 
         return swarm.dynamic_add_agent(name, agent)
 
@@ -250,7 +259,7 @@ def create_swarm_tools(
             ),
         )
         worker.add_tools(
-            worker_tool_pool + [_report_task_tool(task_id, name, worker.request_completion)]
+            _tools_for_worker(name) + [_report_task_tool(task_id, name, worker.request_completion)]
         )
         return swarm.dispatch_task(
             agent_name=name,
