@@ -12,8 +12,8 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 | Area | Paths | Current responsibility |
 |---|---|---|
 | Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, token-usage, and terminal request-cancellation types. |
-| Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; lifecycle events retain typed tool outcomes for UI consumers while the next model round receives text; one-call primary and internal-LLM usage ledger; optional force-stop observation during provider I/O. |
-| LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, ordinary retry/fallback, terminal request cancellation, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
+| Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; lifecycle events retain typed tool outcomes and credential-free preflight remote-request snapshots for UI consumers while the next model round receives text; one-call primary and internal-LLM usage ledger; optional force-stop observation during provider I/O. |
+| LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, ordinary retry/fallback, terminal request cancellation, credential-free preflight request observation, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
 | Context | `context_handlers/` | Base contract; durable linear history with compaction and raw archive; provider-backed retrieval composition; TLB adapter. `context_less_context/` is an experimental local worktree directory, not part of the indexed API. |
 | Graph memory | `graph_memory/` | Persistent entity/relation store, incremental extraction, hybrid graph retrieval, archive evidence, and stateless semantic extraction/reranking workers. |
 | Swarm | `swarm_module/` | Dependency graph, concurrent scheduler, TaskBus, and bounded report handoff between workers. |

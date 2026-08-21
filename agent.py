@@ -492,6 +492,11 @@ class Agent:
                 context_handler=self.context_handler,
                 max_tokens=resolved_max_tokens,
                 tools=self.tool_handler.get_all_tools(),
+                on_request=lambda request: self._emit(
+                    "agent", name, "agent:remote_request",
+                    f"Remote request prepared for round {round_idx}",
+                    data={"round": round_idx, "request": request},
+                ),
             )
 
             # Accumulate token usage across rounds.
