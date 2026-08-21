@@ -238,9 +238,15 @@ class ToolSchema:
 
     type: str = "object"
     properties: List[ToolParameter] = field(default_factory=list)
+    # External tool protocols such as MCP can provide nested JSON Schema that
+    # cannot be represented by the compact ToolParameter model alone.  When
+    # supplied, preserve that validated object verbatim for the LLM backend.
+    raw_schema: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to plain JSON Schema dict for LLM API payloads."""
+        if self.raw_schema is not None:
+            return dict(self.raw_schema)
         required: List[str] = []
         props: Dict[str, Any] = {}
         for p in self.properties:
