@@ -524,12 +524,17 @@ class ExecutionGraph:
             agents = dict(self._task_by_id)
         for task_id, state in changed.items():
             agent_name = agents.get(task_id, "")
+            assignment = self.task_bus.get_assignment(task_id)
             self._emit(
                 "graph",
                 agent_name,
                 "task:finalized",
                 f"Task {task_id} finalized as {state}",
-                data={"task_id": task_id, "state": state},
+                data={
+                    "task_id": task_id,
+                    "state": state,
+                    "plan_task_id": assignment.plan_task_id,
+                },
             )
         return changed
 
@@ -643,7 +648,20 @@ class ExecutionGraph:
         """
         def forward(event: ExecutionEvent) -> None:
             """Relay one Agent event through the graph's hook collection."""
-            self._emit(event.source, event.agent_name, event.event_type, event.message, event.data)
+            # Preserve Agent payloads, while correlating every worker lifecycle
+            # record with its TaskBus assignment and optional browser plan leaf.
+            # This makes plan supervision an observer of real execution rather
+            # than a second scheduler.
+            data = dict(event.data) if isinstance(event.data, Mapping) else event.data
+            with self._topology_lock:
+                task_id = self._task_by_agent.get(event.agent_name, "")
+            if task_id:
+                assignment = self.task_bus.get_assignment(task_id)
+                if not isinstance(data, dict):
+                    data = {"agent_data": data}
+                data.setdefault("task_id", task_id)
+                data.setdefault("plan_task_id", assignment.plan_task_id)
+            self._emit(event.source, event.agent_name, event.event_type, event.message, data)
 
         add_hook = getattr(agent, "add_hook", None)
         if callable(add_hook):
@@ -958,6 +976,7 @@ class ExecutionGraph:
         reply_to: str,
         expected_artifacts: Iterable[str] = (),
         task_id: str = "",
+        plan_task_id: str = "",
     ) -> TaskAssignment:
         """Create a worker, deliver an explicit task, and queue it to run.
 
@@ -974,6 +993,8 @@ class ExecutionGraph:
             reply_to: Coordinator Agent that receives the structured report.
             expected_artifacts: Optional paths or names expected at close.
             task_id: Optional caller-provided durable task identifier.
+            plan_task_id: Optional external leaf-plan identifier kept only for
+                lifecycle correlation and browser supervision.
 
         Returns:
             Immutable task assignment accepted by the task bus.
@@ -991,6 +1012,7 @@ class ExecutionGraph:
                 handoff=handoff,
                 expected_artifacts=expected_artifacts,
                 task_id=task_id,
+                plan_task_id=plan_task_id,
             )
             self.agent_dict[agent_name] = agent_instance
             self._successors[agent_name] = set()
@@ -1015,6 +1037,7 @@ class ExecutionGraph:
                 "task_id": assignment.id,
                 "reply_to": assignment.reply_to,
                 "objective": assignment.objective,
+                "plan_task_id": assignment.plan_task_id,
             },
         )
         return assignment
@@ -1046,6 +1069,7 @@ class ExecutionGraph:
         reply_to: str,
         expected_artifacts: Iterable[str] = (),
         task_id: str = "",
+        plan_task_id: str = "",
     ) -> TaskAssignment:
         """Assign a fresh task to an existing terminal dispatched worker.
 
@@ -1056,6 +1080,8 @@ class ExecutionGraph:
             reply_to: Coordinator receiving the new structured report.
             expected_artifacts: Optional output references expected for this run.
             task_id: Optional new task identity; generated when empty.
+            plan_task_id: Optional external leaf-plan identifier for the new
+                assignment. Earlier assignment bindings remain immutable.
 
         Returns:
             Newly queued assignment. Earlier task records remain immutable.
@@ -1088,6 +1114,7 @@ class ExecutionGraph:
                 handoff=handoff,
                 expected_artifacts=expected_artifacts,
                 task_id=task_id,
+                plan_task_id=plan_task_id,
             )
             # Keep the old task-id mapping for audit/history while making
             # report_task and the scheduler resolve this new assignment.
@@ -1110,6 +1137,7 @@ class ExecutionGraph:
                 "previous_task_id": previous_task_id,
                 "reply_to": assignment.reply_to,
                 "objective": assignment.objective,
+                "plan_task_id": assignment.plan_task_id,
             },
         )
         return assignment
@@ -1159,7 +1187,10 @@ class ExecutionGraph:
             reporter,
             "task:reported",
             f"Task {task_id} reported to {report.recipient}",
-            data=report.as_dict(),
+            data={
+                **report.as_dict(),
+                "plan_task_id": self.task_bus.get_assignment(task_id).plan_task_id,
+            },
         )
         return report
 
@@ -1614,7 +1645,10 @@ class ExecutionGraph:
                                     agent_name,
                                     "task:report_missing",
                                     f"Task {task_id} finished without report_task",
-                                    data=missing_report.as_dict(),
+                                    data={
+                                        **missing_report.as_dict(),
+                                        "plan_task_id": self.task_bus.get_assignment(task_id).plan_task_id,
+                                    },
                                 )
                     except Exception as exc:
                         if isinstance(exc, AgentRunStopped):

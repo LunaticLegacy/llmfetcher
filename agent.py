@@ -3,11 +3,14 @@ from __future__ import annotations
 import threading
 import time
 import queue
+import json
+from dataclasses import dataclass
+from enum import Enum
 from typing import List, Any, Optional, Dict, Protocol
 from pathlib import Path
 
 from .llm_fetcher import LLMBackendConfig, LLMFetcher, LLMBackendHandler
-from .llm_types import Tool, LLMOutput, TokenUsage
+from .llm_types import Tool, ToolParameter, ToolSchema, LLMOutput, LLMToolCall, TokenUsage
 from .tool_handler import ToolHandler
 from .tool_executor import ToolExecutor
 from .context_handlers import ContextHandlerLinear, ContextHandler
@@ -50,6 +53,54 @@ class AgentRunStopped(RuntimeError):
         self.last_output = last_output
 
 
+class AgentRunLimitReached(RuntimeError):
+    """Signal that an Agent exhausted its round budget before a terminal result.
+
+    The last response requested tools, so returning it as a user-facing answer
+    would silently discard the required next model step.
+    """
+
+
+class AgentRunTermination(str, Enum):
+    """Explicit terminal classifications for one completed Agent invocation."""
+
+    FINAL_RESPONSE = "final_response"
+    STOP_TURN = "stop_turn"
+    WORKFLOW_COMPLETION = "workflow_completion"
+    USER_STOPPED = "user_stopped"
+    EMPTY_RESPONSE = "empty_response"
+    ROUND_LIMIT = "round_limit"
+
+
+@dataclass(frozen=True)
+class AgentRunOutcome:
+    """Inspectable terminal state for an Agent run.
+
+    Args:
+        termination: Explicit reason the run stopped progressing.
+        rounds: Number of completed model rounds.
+        detail: Optional model- or control-provided terminal explanation.
+        output: Last completed model response, if one exists.
+
+    ``output`` is retained in-process for hosts that need the exact response;
+    lifecycle events use :meth:`to_dict` and therefore never serialize it.
+    """
+
+    termination: AgentRunTermination
+    rounds: int
+    detail: str = ""
+    output: LLMOutput | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the credential-free terminal fields for lifecycle events."""
+        return {
+            "termination": self.termination.value,
+            "rounds": self.rounds,
+            "detail": self.detail,
+            "has_output": self.output is not None,
+        }
+
+
 def _tool_result_text(value: Any) -> str:
     """Return the complete tool-result string supplied back to the model.
 
@@ -78,6 +129,8 @@ class Agent:
         context_handler: Optional[ContextHandler] = None,
         default_max_rounds: int = 30,
         default_max_tokens: int = 32768,
+        enable_stop_turn: bool = False,
+        default_stream: bool = False,
     ):
         """Initialize one tool-using Agent.
 
@@ -93,6 +146,11 @@ class Agent:
                 ``run`` call that omits ``max_rounds``. ``0`` means unlimited.
             default_max_tokens: Default maximum generated tokens per model
                 step for a ``run`` call that omits ``max_tokens``.
+            enable_stop_turn: Whether to register the reserved native
+                ``stop_turn`` control tool. Hosts enable it when their user
+                workflow needs a model-visible non-text terminal boundary.
+            default_stream: Whether calls omitting ``stream`` should emit
+                incremental lifecycle events while preserving final results.
 
         Returns:
             None.
@@ -112,6 +170,7 @@ class Agent:
         self.context_path = Path(context_path) if context_path else None
         self.default_max_rounds = default_max_rounds
         self.default_max_tokens = default_max_tokens
+        self.default_stream = default_stream
 
         self.tool_handler: ToolHandler = ToolHandler()
         self.tool_executor: ToolExecutor = ToolExecutor(
@@ -134,6 +193,16 @@ class Agent:
         # Terminal workflow tools request this event after persisting their
         # result. ``run`` observes it only at a complete step boundary.
         self._completion_requested = threading.Event()
+        self._stop_turn_requested = threading.Event()
+        self._stop_turn_reason = ""
+        self._termination_lock = threading.Lock()
+        self.last_outcome: AgentRunOutcome | None = None
+
+        if enable_stop_turn:
+            # This reserved tool is a control signal, not a business
+            # capability. It travels through the native tool channel and
+            # never enters system text.
+            self.add_stop_turn_tool()
 
     # -- hooks ----------------------------------------------------------
 
@@ -175,6 +244,85 @@ class Agent:
             None.
         """
         self._completion_requested.set()
+
+    def request_turn_stop(self, reason: str = "") -> None:
+        """Request a normal boundary from the reserved ``stop_turn`` tool.
+
+        Args:
+            reason: Optional model-provided explanation retained in the
+                outcome and lifecycle event, not as a final user answer.
+
+        Side Effects:
+            Marks the current model-and-tool batch terminal. The Agent waits
+            for every concurrently requested tool to finish first.
+        """
+        with self._termination_lock:
+            self._stop_turn_reason = reason.strip()
+        self._stop_turn_requested.set()
+
+    def add_stop_turn_tool(self) -> bool:
+        """Register the reserved model-visible control tool for ending a turn.
+
+        Returns:
+            ``True`` when ``stop_turn`` was newly registered. ``False`` means
+            this Agent already has a tool with that reserved name.
+        """
+        return self.add_tool(self._create_stop_turn_tool())
+
+    def _create_stop_turn_tool(self) -> Tool:
+        """Create the reserved model-visible control tool for ending a turn.
+
+        Returns:
+            A native ``stop_turn`` tool. Its handler records a request and
+            :meth:`run` applies the result at the completed batch boundary.
+        """
+        def stop_turn(reason: str = "") -> str:
+            """Record a requested turn stop without interrupting sibling tools."""
+            self.request_turn_stop(reason)
+            return "Turn completion requested."
+
+        return Tool(
+            name="stop_turn",
+            description=(
+                "End the current Agent turn after this complete tool batch. "
+                "Use only when no final user-facing answer should be emitted."
+            ),
+            schemas=ToolSchema(properties=[
+                ToolParameter(
+                    name="reason",
+                    required=False,
+                    description="Optional concise reason for ending this turn.",
+                ),
+            ]),
+            handler=stop_turn,
+        )
+
+    def _set_outcome(
+        self,
+        termination: AgentRunTermination,
+        rounds: int,
+        *,
+        detail: str = "",
+        output: LLMOutput | None = None,
+    ) -> AgentRunOutcome:
+        """Record and publish the single explicit terminal result of this run.
+
+        Args:
+            termination: Classification selected at a safe Agent boundary.
+            rounds: Number of model rounds completed before the boundary.
+            detail: Optional concise explanation of that boundary.
+            output: Last completed model response, if available.
+
+        Returns:
+            The stored outcome for in-process hosts.
+        """
+        outcome = AgentRunOutcome(termination, rounds, detail, output)
+        self.last_outcome = outcome
+        self._emit(
+            "agent", self._agent_name_in_graph, "agent:termination",
+            f"Terminated as {termination.value}", data=outcome.to_dict(),
+        )
+        return outcome
 
     def set_context_threshold(
         self,
@@ -402,6 +550,84 @@ class Agent:
                 return value  # type: ignore[return-value]
             raise value  # type: ignore[misc]
 
+    def _stream_model_response(
+        self,
+        *,
+        name: str,
+        round_idx: int,
+        control: AgentRunControl | None,
+        **fetch_kwargs: Any,
+    ) -> LLMOutput:
+        """Stream one provider response, emit deltas, and rebuild its final form.
+
+        Args:
+            name: Stable emitting Agent identity.
+            round_idx: Current model round for SSE correlation.
+            control: Optional control whose force-stop event is checked between
+                received chunks.
+            **fetch_kwargs: Arguments forwarded to ``LLMFetcher.fetch_stream``.
+
+        Returns:
+            A complete backend-neutral output suitable for the normal tool and
+            context pipeline.
+        """
+        content: list[str] = []
+        reasoning: list[str] = []
+        calls: list[LLMToolCall] = []
+        channel = "content"
+        tool_payload: list[str] = []
+        force_event = getattr(control, "force_stopped", None)
+        backend = self.llm_fetcher.default_backend_config
+
+        for chunk in self.llm_fetcher.fetch_stream(**fetch_kwargs):
+            if force_event is not None and force_event.is_set():
+                abort = getattr(self.llm_fetcher, "abort_active_requests", None)
+                if callable(abort):
+                    abort()
+                raise AgentRunStopped("Agent force-stopped during streamed model request")
+            if chunk == "\n<think>\n":
+                channel = "reasoning"
+                continue
+            if chunk == "\n</think>\n":
+                channel = "content"
+                continue
+            if chunk == "\n<tool_call>\n":
+                channel = "tool_call"
+                tool_payload = []
+                continue
+            if chunk == "\n</tool_call>\n":
+                channel = "content"
+                try:
+                    payload = json.loads("".join(tool_payload))
+                except json.JSONDecodeError:
+                    payload = {}
+                if isinstance(payload, dict) and isinstance(payload.get("name"), str):
+                    arguments = payload.get("arguments", {})
+                    calls.append(LLMToolCall(
+                        name=payload["name"],
+                        arguments=arguments if isinstance(arguments, dict) else {},
+                        call_id=str(payload["call_id"]) if payload.get("call_id") else None,
+                    ))
+                continue
+            if channel == "tool_call":
+                tool_payload.append(chunk)
+                continue
+            target = reasoning if channel == "reasoning" else content
+            target.append(chunk)
+            self._emit(
+                "agent", name, "agent:stream_delta", "Streamed model delta",
+                data={"round": round_idx, "channel": channel, "delta": chunk},
+            )
+
+        return LLMOutput(
+            content="".join(content),
+            provider=backend.provider,
+            backend_name=backend.name,
+            model=backend.model,
+            reasoning_content="".join(reasoning),
+            tool_calls=calls,
+        )
+
     # -- run ------------------------------------------------------------
 
     def run(
@@ -412,8 +638,9 @@ class Agent:
         max_tokens: int | None = None,
         verbose: bool = False,
         control: AgentRunControl | None = None,
+        stream: bool | None = None,
     ) -> LLMOutput:
-        """Run the Agent until it responds, reaches a budget, or completes.
+        """Run the Agent until one explicit terminal outcome is reached.
 
         Args:
             message: User request or explicit task package for this run.
@@ -425,6 +652,8 @@ class Agent:
             verbose: Whether to print per-round diagnostic output.
             control: Optional cooperative stop and steering source. It is read
                 after each completed model-and-tool step, never mid-step.
+            stream: Whether to emit provider text/thinking deltas. ``None``
+                uses ``default_stream``.
 
         Returns:
             Last model output produced by the Agent.
@@ -435,17 +664,26 @@ class Agent:
             AgentRunStopped: If ``control`` requests a stop after a completed
                 model-and-tool boundary. That boundary is persisted before
                 the exception is raised.
-            RuntimeError: If execution completes without a model response.
+            AgentRunLimitReached: If the last permitted response still
+                requests tools and therefore cannot be a final answer.
+            RuntimeError: If a model returns neither tool calls nor formal
+                answer content; this is an invalid empty response rather than
+                a successful completion.
         """
         resolved_max_rounds = self.default_max_rounds if max_rounds is None else max_rounds
         resolved_max_tokens = (
             self.default_max_tokens if max_tokens is None else max_tokens
         )
+        resolved_stream = self.default_stream if stream is None else stream
         if resolved_max_rounds < 0:
             raise ValueError("max_rounds must be zero or greater")
         if resolved_max_tokens <= 0:
             raise ValueError("max_tokens must be greater than zero")
         self._completion_requested.clear()
+        self._stop_turn_requested.clear()
+        with self._termination_lock:
+            self._stop_turn_reason = ""
+        self.last_outcome = None
         name = self._agent_name_in_graph
 
         backend = self.llm_fetcher.default_backend_config
@@ -526,20 +764,28 @@ class Agent:
                 },
             )
 
-            result = self._fetch_model_with_force_stop(
-                control=control,
-                msg=message_input,
-                system_prompt=prompt,
-                temperature=temperature,
-                context_handler=self.context_handler,
-                max_tokens=resolved_max_tokens,
-                tools=self.tool_handler.get_all_tools(),
-                on_request=lambda request: self._emit(
-                    "agent", name, "agent:remote_request",
-                    f"Remote request prepared for round {round_idx}",
-                    data={"round": round_idx, "request": request.to_dict()},
-                ),
-            )
+            try:
+                fetch_kwargs = dict(
+                    control=control,
+                    msg=message_input,
+                    system_prompt=prompt,
+                    temperature=temperature,
+                    context_handler=self.context_handler,
+                    max_tokens=resolved_max_tokens,
+                    tools=self.tool_handler.get_all_tools(),
+                    on_request=lambda request: self._emit(
+                        "agent", name, "agent:remote_request",
+                        f"Remote request prepared for round {round_idx}",
+                        data={"round": round_idx, "request": request.to_dict()},
+                    ),
+                )
+                result = (
+                    self._stream_model_response(name=name, round_idx=round_idx, **fetch_kwargs)
+                    if resolved_stream else self._fetch_model_with_force_stop(**fetch_kwargs)
+                )
+            except AgentRunStopped:
+                self._set_outcome(AgentRunTermination.USER_STOPPED, round_idx)
+                raise
 
             # Accumulate token usage across rounds.
             add_usage(self.usage, copy_usage(result.usage))
@@ -624,6 +870,22 @@ class Agent:
                 tool_results = None
                 have_tool_call = False
 
+            if not have_tool_call and not result.content.strip():
+                # Empty provider turns are neither a final answer nor an
+                # action. Do not checkpoint an unusable blank assistant turn.
+                outcome = self._set_outcome(
+                    AgentRunTermination.EMPTY_RESPONSE,
+                    round_idx,
+                    detail="Model returned no tool calls and no formal content.",
+                    output=result,
+                )
+                self._emit(
+                    "agent", name, "agent:invalid_response",
+                    "Model returned an empty response without tool calls",
+                    data=outcome.to_dict(),
+                )
+                raise RuntimeError(outcome.detail)
+
             self._emit(
                 "agent", name, "agent:round",
                 f"Round {round_idx}, {len(result.tool_calls)} tool call(s)",
@@ -658,10 +920,31 @@ class Agent:
             self._save_context()
 
             if self._completion_requested.is_set():
+                outcome = self._set_outcome(
+                    AgentRunTermination.WORKFLOW_COMPLETION,
+                    round_idx,
+                    output=result,
+                )
                 self._emit(
                     "agent", name, "agent:completion_requested",
                     f"Completed after terminal tool in round {round_idx}",
-                    data={"round": round_idx},
+                    data=outcome.to_dict(),
+                )
+                break
+
+            if self._stop_turn_requested.is_set():
+                with self._termination_lock:
+                    stop_reason = self._stop_turn_reason
+                outcome = self._set_outcome(
+                    AgentRunTermination.STOP_TURN,
+                    round_idx,
+                    detail=stop_reason,
+                    output=result,
+                )
+                self._emit(
+                    "agent", name, "agent:stop_turn",
+                    "Stopped after reserved stop_turn tool",
+                    data=outcome.to_dict(),
                 )
                 break
 
@@ -669,10 +952,15 @@ class Agent:
             # after a completed response and its complete tool batch.
             if control is not None and control.should_stop():
                 self._save_context()
+                outcome = self._set_outcome(
+                    AgentRunTermination.USER_STOPPED,
+                    round_idx,
+                    output=result,
+                )
                 self._emit(
                     "agent", name, "agent:stopped",
                     f"Stopped after round {round_idx}",
-                    data={"round": round_idx},
+                    data=outcome.to_dict(),
                 )
                 raise AgentRunStopped(
                     "Agent stopped after the current step",
@@ -694,7 +982,22 @@ class Agent:
                 )
 
             if not have_tool_call and not steers:
+                self._set_outcome(
+                    AgentRunTermination.FINAL_RESPONSE,
+                    round_idx,
+                    output=result,
+                )
                 break
+
+        if result is not None and self.last_outcome is None:
+            outcome = self._set_outcome(
+                AgentRunTermination.ROUND_LIMIT,
+                round_idx,
+                detail="Maximum model-and-tool rounds reached before a terminal response.",
+                output=result,
+            )
+            self._save_context()
+            raise AgentRunLimitReached(outcome.detail)
 
         save_result = self._save_context()
         if verbose:
@@ -713,6 +1016,7 @@ class Agent:
                 "rounds": round_idx,
                 "usage": self._usage_data(self.usage),
                 "output_len": len(result.content) if result else 0,
+                "outcome": self.last_outcome.to_dict() if self.last_outcome else None,
             },
         )
 

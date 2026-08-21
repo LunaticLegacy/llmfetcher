@@ -440,6 +440,7 @@ class LLMFetcher:
         context_handler: Optional[ContextHandler] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
+        on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
     ) -> Generator[str, None]:
         """Execute a streaming completion with backend fallback and retry.
 
@@ -471,6 +472,9 @@ class LLMFetcher:
                 Explicit backend to use.  ``None`` means the default.
             tools:
                 Optional tool definitions.  See ``fetch`` for details.
+            on_request:
+                Optional observer invoked immediately before provider I/O with
+                the credential-free, provider-prepared streaming request.
 
         Yields:
             Normalised text chunks from the LLM response.  Chunks are
@@ -497,6 +501,15 @@ class LLMFetcher:
                 try:
                     self._raise_if_force_stopped()
                     provider_tools = handler.prepare_tools(tools)
+                    if on_request is not None:
+                        on_request(RemoteRequestSnapshot(
+                            model=backend.model,
+                            messages=list(messages),
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            stream=True,
+                            tools=list(provider_tools or []),
+                        ))
                     raw = handler.create_completion(
                         messages=messages,
                         temperature=temperature,
