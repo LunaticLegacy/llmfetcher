@@ -181,6 +181,15 @@ class Agent:
             max_context_threshold=self.max_context_threshold,
         )
 
+        # Route compaction lifecycle events from the inner linear handler into
+        # this Agent's event stream (source="context"), so they persist into
+        # events.ndjson and reach the SSE stream. Custom handlers (e.g. the
+        # retrieval wrapper) expose the linear handler through ``.linear``.
+        linear = getattr(self.context_handler, "linear", self.context_handler)
+        set_hook = getattr(linear, "set_compaction_event_hook", None)
+        if set_hook is not None:
+            set_hook(self._compaction_event_hook)
+
         # This attribute will be assigned by ExecutionGraph so Agent-level events retain their node.
         self._agent_name_in_graph: str = ""
 
@@ -396,6 +405,30 @@ class Agent:
                 hook(event)
             except Exception:
                 pass
+
+
+    def _compaction_event_hook(
+        self,
+        event_type: str,
+        message: str,
+        data: dict,
+    ) -> None:
+        """Publish a context-handler compaction lifecycle event.
+
+        Attached to the inner :class:`ContextHandlerLinear` compaction
+        observer. Invoked synchronously for each compaction stage
+        (started / success / failed / skipped); any observer failure is
+        isolated inside the handler, so a broken stream can never break
+        compaction. ``_agent_name_in_graph`` is read at call time so the
+        ExecutionGraph-assigned node name is always used.
+        """
+        self._emit(
+            "context",
+            self._agent_name_in_graph,
+            event_type,
+            message,
+            data=data,
+        )
 
     @staticmethod
     def _usage_data(usage: TokenUsage) -> dict[str, int]:
@@ -786,10 +819,12 @@ class Agent:
                         data={"round": round_idx, "request": request.to_dict()},
                     ),
                 )
+                model_started_at = time.perf_counter()
                 result = (
                     self._stream_model_response(name=name, round_idx=round_idx, **fetch_kwargs)
                     if resolved_stream else self._fetch_model_with_force_stop(**fetch_kwargs)
                 )
+                model_duration_ms = round((time.perf_counter() - model_started_at) * 1000)
             except AgentRunStopped:
                 self._set_outcome(AgentRunTermination.USER_STOPPED, round_idx)
                 raise
@@ -805,6 +840,7 @@ class Agent:
                 data={
                     "kind": "primary",
                     "round": round_idx,
+                    "duration_ms": model_duration_ms,
                     "usage": self._usage_data(copy_usage(result.usage)),
                 },
             )
@@ -906,6 +942,7 @@ class Agent:
                     "usage": self._usage_data(self.usage),
                     "round_usage": self._usage_data(copy_usage(result.usage)),
                     "duration_ms": round((time.perf_counter() - round_started_at) * 1000),
+                    "model_duration_ms": model_duration_ms,
                     "assistant_content": result.content,
                     "reasoning_content": result.reasoning_content,
                 },
