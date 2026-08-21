@@ -269,16 +269,18 @@ class Agent:
     # -- internal --------------------------------------------------------
 
     def _build_prompt(self) -> str:
-        """Combine the system prompt and current tool descriptions.
+        """Return the system prompt without serializing registered tools into it.
+
+        Tool definitions travel only through ``LLMFetcher.fetch(..., tools=)``.
+        The provider handler converts that collection to its native wire schema.
+        Keeping the textual ``Tool.__str__`` fallback out of this message avoids
+        sending the same schemas both in ``messages`` and in the provider's
+        top-level ``tools`` field.
 
         Returns:
-            Complete model-facing system prompt text.
+            Exact system-role instruction text for the next model request.
         """
-        return (
-            self.system_prompt
-            + "\n"
-            + self.tool_handler.get_all_tool_description()
-        )
+        return self.system_prompt
 
     def _save_context(self) -> bool:
         """Persist the current context when this Agent has a storage path.
