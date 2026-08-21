@@ -51,12 +51,17 @@ class AgentRunStopped(RuntimeError):
 
 
 def _tool_result_text(value: Any) -> str:
-    """Return the complete tool-result string for persistence and events.
+    """Return the complete tool-result string supplied back to the model.
 
     Args:
         value: Raw value returned by a tool handler.
     Returns:
         Complete string form of ``value`` without a display or persistence limit.
+
+    Notes:
+        This model-facing conversion is intentionally separate from lifecycle
+        events, which retain their raw value so JSON results reach the UI as
+        structured data rather than Python's escaped representation.
     """
     return str(value)
 
@@ -545,7 +550,8 @@ class Agent:
                 ])
                 have_tool_call = True
 
-                # Publish complete outcomes so persistence and export never lose tool evidence.
+                # Preserve typed outcomes for event consumers while the model
+                # receives the string map above on its next round.
                 completed_calls = []
                 for call, raw_result in zip(requested_calls, results_list):
                     result_ok = not isinstance(raw_result, Exception)
@@ -554,7 +560,7 @@ class Agent:
                     completed_calls.append({
                         **call,
                         "ok": result_ok,
-                        "result": _tool_result_text(raw_result),
+                        "result": raw_result,
                     })
                 self._emit(
                     "agent",
