@@ -12,6 +12,8 @@ from llmfetcher.context_handlers.linear import (
     _COMPACTION_INPUT_CHAR_LIMIT,
     _COMPACTION_OUTPUT_MAX_TOKENS,
     _COMPACTING_SYSTEM_PROMPT,
+    _TOOL_RESULT_MAX_CHARS,
+    _TOOL_RESULT_TOTAL_MAX_CHARS,
     ContextHandlerLinear,
 )
 from llmfetcher.llm_types import LLMOutput, LLMToolCall
@@ -270,6 +272,105 @@ class ContextCompactionTests(unittest.TestCase):
 
             self.assertEqual(path.read_text(encoding="utf-8"), "old context")
             self.assertEqual(list(Path(directory).glob(".context.json.*.tmp")), [])
+
+    def test_request_bounds_oversized_tool_result_but_keeps_history(self) -> None:
+        """A huge tool result is trimmed on the request, never in storage."""
+        handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
+        handler.add_user_message("inspect")
+        oversized = "A" * 100_000 + "TAIL-EVIDENCE"
+        handler.add_assistant_message(
+            LLMOutput(
+                content="called",
+                provider="test",
+                backend_name="test",
+                model="test",
+                tool_calls=[LLMToolCall(name="shell", call_id="call-1")],
+            ),
+            tool_results={"call-1": oversized},
+        )
+
+        # Storage stays lossless: the full value is persisted for archive and
+        # audit, mirroring the durable agent:tools_completed ledger.
+        stored = handler.messages[-1].tool_calls[0].result
+        self.assertEqual(stored, oversized)
+
+        # The model request is bounded: one oversized result never inflates
+        # every later prompt, and the tail evidence survives trimming.
+        tool_messages = [
+            m for m in handler.build_messages() if m.get("role") == "tool"
+        ]
+        self.assertEqual(len(tool_messages), 1)
+        content = tool_messages[0]["content"]
+        self.assertLessEqual(len(content), _TOOL_RESULT_MAX_CHARS)
+        self.assertIn("omitted", content)
+        self.assertIn("TAIL-EVIDENCE", content[-200:])
+
+    def test_request_enforces_cumulative_tool_output_budget(self) -> None:
+        """The shared request budget omits results beyond the cumulative cap."""
+        handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
+        handler.add_user_message("inspect")
+        oversized = "B" * 100_000
+        handler.add_assistant_message(
+            LLMOutput(
+                content="called",
+                provider="test",
+                backend_name="test",
+                model="test",
+                tool_calls=[
+                    LLMToolCall(name="shell", call_id=f"call-{i}")
+                    for i in range(5)
+                ],
+            ),
+            tool_results={f"call-{i}": oversized for i in range(5)},
+        )
+
+        tool_messages = [
+            m for m in handler.build_messages() if m.get("role") == "tool"
+        ]
+        retained = [
+            m for m in tool_messages
+            if not m["content"].startswith("[tool result omitted")
+        ]
+        omitted = [
+            m for m in tool_messages
+            if m["content"].startswith("[tool result omitted")
+        ]
+
+        # 4 results at the per-result cap fill the cumulative budget; the
+        # fifth is replaced by an explicit omission note.
+        self.assertEqual(len(retained), 4)
+        self.assertTrue(
+            all(len(m["content"]) <= _TOOL_RESULT_MAX_CHARS for m in retained)
+        )
+        self.assertLessEqual(
+            sum(len(m["content"]) for m in retained),
+            _TOOL_RESULT_TOTAL_MAX_CHARS,
+        )
+        self.assertEqual(len(omitted), 1)
+
+        # Persisted history is untouched.
+        for message in handler.messages:
+            if message.role == "assistant":
+                for tool_info in message.tool_calls:
+                    self.assertEqual(tool_info.result, oversized)
+
+    def test_context_size_estimate_reflects_trimmed_request(self) -> None:
+        """Oversized results must not inflate the compaction estimate."""
+        handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
+        handler.add_user_message("inspect")
+        handler.add_assistant_message(
+            LLMOutput(
+                content="called",
+                provider="test",
+                backend_name="test",
+                model="test",
+                tool_calls=[LLMToolCall(name="shell", call_id="call-1")],
+            ),
+            tool_results={"call-1": "Z" * 500_000},
+        )
+
+        estimate = handler._estimate_context_size()
+        self.assertLess(estimate, 100_000)
 
 
 if __name__ == "__main__":

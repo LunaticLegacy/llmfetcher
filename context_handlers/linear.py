@@ -330,9 +330,16 @@ class ContextHandlerLinear(ContextHandler):
         """
         messages: List[Dict[str, Any]] = []
 
+        # Cumulative tool-output budget across the whole request, shared by
+        # every assistant entry so parallel tool batches cannot sum to an
+        # unbounded prompt.  Mirrors ``_TOOL_RESULT_TOTAL_MAX_CHARS``.
+        remaining_budget: List[int] = [_TOOL_RESULT_TOTAL_MAX_CHARS]
+
         for item in self.get_prev_messages():
             if isinstance(item, LLMContext):
-                self._append_context_messages(messages, item)
+                self._append_context_messages(
+                    messages, item, remaining_budget=remaining_budget
+                )
             elif isinstance(item, LLMContextCompacted):
                 messages.append({
                     "role": "system",
@@ -344,18 +351,52 @@ class ContextHandlerLinear(ContextHandler):
     # -- compaction helpers ------------------------------------------------
 
     def _estimate_context_size(self) -> int:
-        """Rough estimate of the current context size in characters.
+        """Estimate the size of the context that would reach the model.
 
         Used as a cheap proxy for token count to decide when compaction
-        is needed.  Sums the JSON length of all messages plus the
-        abstract (if any).
+        is needed.  Measures the serialized length of the request built by
+        :meth:`build_messages` — the same trimmed messages the model would
+        actually receive — so one oversized tool result cannot inflate the
+        estimate beyond what trimming will actually send, and the transcript's
+        real growth is what drives compaction.
         """
         total = 0
-        for m in self.messages:
-            total += len(asdict(m).__repr__())
-        if self.abstract is not None:
-            total += len(self.abstract.abstract_msg)
+        for message in self.build_messages():
+            total += len(json.dumps(message, ensure_ascii=False, default=str))
         return total
+
+    @staticmethod
+    def _bound_result_text(value: str, limit: int) -> str:
+        """Return a request-safe copy of a tool result bounded to *limit* chars.
+
+        Keeps the head (where command output and early evidence usually land)
+        and the tail (where errors and exit summaries appear) and marks the
+        omitted middle, so one oversized shell/HTML result cannot inflate
+        every later model request.  The durable event ledger
+        (``agent:tools_completed``) retains the full raw value for audit.
+
+        Args:
+            value: Raw tool result text.
+            limit: Maximum characters to retain.
+
+        Returns:
+            The original value when it fits, otherwise a head/tail window
+            around an explicit omission marker.
+        """
+        if len(value) <= limit:
+            return value
+        marker = "\n... [omitted {} characters] ...\n".format(
+            max(0, len(value) - limit)
+        )
+        # Guarantee the bounded copy never exceeds the limit even when the
+        # marker itself would not fit: prefer the head, then the tail, then
+        # shrink to a bare omission note.
+        if limit <= len(marker):
+            return marker[:limit]
+        head = limit - len(marker)
+        tail = head // 2
+        head -= tail
+        return value[:head] + marker + value[-tail:]
 
     def _bounded_tool_results(
         self,
@@ -364,8 +405,11 @@ class ContextHandlerLinear(ContextHandler):
         """Copy complete tool output into the in-memory conversation history.
 
         Tool calls may return complete HTML pages, archives, or command output.
-        The history keeps the complete value for lossless persistence. Context
-        compaction remains the separate mechanism that protects model requests.
+        The history keeps the complete value for lossless persistence and
+        archive retrieval; request-side trimming in
+        :meth:`_append_context_messages` is what protects model requests from
+        oversized results.  The durable ``agent:tools_completed`` event ledger
+        additionally retains full raw evidence.
 
         Args:
             tool_results: Raw tool output keyed by provider tool-call ID.
@@ -594,6 +638,7 @@ class ContextHandlerLinear(ContextHandler):
         self,
         messages: List[Dict[str, Any]],
         item: LLMContext,
+        remaining_budget: Optional[List[int]] = None,
     ) -> None:
         """Append backend-neutral messages for a single context entry.
 
@@ -603,9 +648,17 @@ class ContextHandlerLinear(ContextHandler):
         2. A ``{"role": "tool", ...}`` message per tool call that has
            a result.
 
+        Each tool result is bounded to ``_TOOL_RESULT_MAX_CHARS`` and the
+        shared cumulative budget ``remaining_budget`` caps the total tool
+        output across the whole request; results beyond it are replaced with
+        an explicit omission note.  Persisted history is never modified.
+
         Args:
             messages: The message list being built (mutated in place).
             item: The context entry to convert.
+            remaining_budget: Optional single-element list holding the
+                remaining cumulative tool-output budget, shared across
+                entries of one request.
         """
         role = item.role
         content = item.content
@@ -638,9 +691,35 @@ class ContextHandlerLinear(ContextHandler):
             for ti in item.tool_calls:
                 if ti.result is not None:
                     call_id = ti.call.call_id or f"call_{id(ti)}"
+                    result_text = str(ti.result)
+                    if remaining_budget is not None:
+                        remaining = remaining_budget[0]
+                        if remaining <= 0:
+                            result_text = (
+                                "[tool result omitted: cumulative "
+                                "tool-output budget exceeded]"
+                            )
+                        else:
+                            # Bound to the single-result cap first, then to
+                            # the shared cumulative budget.
+                            if len(result_text) > _TOOL_RESULT_MAX_CHARS:
+                                result_text = self._bound_result_text(
+                                    result_text, _TOOL_RESULT_MAX_CHARS
+                                )
+                            if len(result_text) > remaining:
+                                result_text = self._bound_result_text(
+                                    result_text, remaining
+                                )
+                                remaining_budget[0] = 0
+                            else:
+                                remaining_budget[0] = remaining - len(result_text)
+                    elif len(result_text) > _TOOL_RESULT_MAX_CHARS:
+                        result_text = self._bound_result_text(
+                            result_text, _TOOL_RESULT_MAX_CHARS
+                        )
                     messages.append({
                         "role": "tool",
-                        "content": ti.result,
+                        "content": result_text,
                         "tool_call_id": call_id,
                     })
             return
