@@ -34,6 +34,7 @@ from .llm_types import (
     LLMTimeoutError,
     LLMBackendError,
     LLMRequestCancelled,
+    RemoteRequestSnapshot,
 )
 
 from .fetcher_handlers import (
@@ -333,7 +334,7 @@ class LLMFetcher:
         context_handler: Optional[ContextHandler] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
-        on_request: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
     ) -> LLMOutput:
         """Execute a non-streaming completion with backend fallback and retry.
 
@@ -398,14 +399,16 @@ class LLMFetcher:
                     self._raise_if_force_stopped()
                     provider_tools = handler.prepare_tools(tools)
                     if on_request is not None:
-                        on_request({
-                            "model": backend.model,
-                            "messages": messages,
-                            "temperature": temperature,
-                            "max_tokens": max_tokens,
-                            "stream": False,
-                            "tools": provider_tools or [],
-                        })
+                        # Emit one typed, credential-free snapshot at the
+                        # application boundary before provider I/O begins.
+                        on_request(RemoteRequestSnapshot(
+                            model=backend.model,
+                            messages=list(messages),
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            stream=False,
+                            tools=list(provider_tools or []),
+                        ))
                     raw = handler.create_completion(
                         messages=messages,
                         temperature=temperature,

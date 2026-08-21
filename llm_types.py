@@ -12,6 +12,50 @@ JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 JsonArray: TypeAlias = list[JsonValue]
 
+
+@dataclass(frozen=True)
+class RemoteRequestSnapshot:
+    """Credential-free schema for one dispatch-ready remote model request.
+
+    The dispatcher builds this object after a provider handler has prepared
+    its tool schemas and immediately before it starts provider I/O.  It is a
+    stable observability contract shared with application hosts; provider
+    adapters may still use additional wire-only fields internally.
+
+    Attributes:
+        model: Provider model identifier selected for this attempt.
+        messages: Complete provider-neutral message sequence sent to the
+            handler before any provider-local message normalization.
+        temperature: Sampling temperature for this request.
+        max_tokens: Maximum completion tokens requested from the provider.
+        stream: Whether the request asks for streamed output.
+        tools: Provider-prepared JSON tool schemas exposed for this attempt.
+    """
+
+    model: str
+    messages: list[JsonObject]
+    temperature: float
+    max_tokens: int
+    stream: bool
+    tools: list[JsonObject] = field(default_factory=list)
+
+    def to_dict(self) -> JsonObject:
+        """Return the JSON-safe event payload used by application hosts.
+
+        Returns:
+            A fresh top-level mapping containing only request fields that are
+            safe to persist or render. Credentials and endpoint URLs are not
+            part of this schema.
+        """
+        return {
+            "model": self.model,
+            "messages": self.messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": self.stream,
+            "tools": self.tools,
+        }
+
 # --------------------------
 # Exception hierarchy
 # --------------------------

@@ -495,7 +495,7 @@ class Agent:
                 on_request=lambda request: self._emit(
                     "agent", name, "agent:remote_request",
                     f"Remote request prepared for round {round_idx}",
-                    data={"round": round_idx, "request": request},
+                    data={"round": round_idx, "request": request.to_dict()},
                 ),
             )
 
