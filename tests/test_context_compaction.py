@@ -305,55 +305,6 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertIn("omitted", content)
         self.assertIn("TAIL-EVIDENCE", content[-200:])
 
-    def test_request_enforces_cumulative_tool_output_budget(self) -> None:
-        """The shared request budget omits results beyond the cumulative cap."""
-        handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
-        handler.add_user_message("inspect")
-        oversized = "B" * 100_000
-        handler.add_assistant_message(
-            LLMOutput(
-                content="called",
-                provider="test",
-                backend_name="test",
-                model="test",
-                tool_calls=[
-                    LLMToolCall(name="shell", call_id=f"call-{i}")
-                    for i in range(5)
-                ],
-            ),
-            tool_results={f"call-{i}": oversized for i in range(5)},
-        )
-
-        tool_messages = [
-            m for m in handler.build_messages() if m.get("role") == "tool"
-        ]
-        retained = [
-            m for m in tool_messages
-            if not m["content"].startswith("[tool result omitted")
-        ]
-        omitted = [
-            m for m in tool_messages
-            if m["content"].startswith("[tool result omitted")
-        ]
-
-        # 4 results at the per-result cap fill the cumulative budget; the
-        # fifth is replaced by an explicit omission note.
-        self.assertEqual(len(retained), 4)
-        self.assertTrue(
-            all(len(m["content"]) <= _TOOL_RESULT_MAX_CHARS for m in retained)
-        )
-        self.assertLessEqual(
-            sum(len(m["content"]) for m in retained),
-            _TOOL_RESULT_TOTAL_MAX_CHARS,
-        )
-        self.assertEqual(len(omitted), 1)
-
-        # Persisted history is untouched.
-        for message in handler.messages:
-            if message.role == "assistant":
-                for tool_info in message.tool_calls:
-                    self.assertEqual(tool_info.result, oversized)
-
     def test_context_size_estimate_reflects_trimmed_request(self) -> None:
         """Oversized results must not inflate the compaction estimate."""
         handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)

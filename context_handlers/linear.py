@@ -692,28 +692,8 @@ class ContextHandlerLinear(ContextHandler):
                 if ti.result is not None:
                     call_id = ti.call.call_id or f"call_{id(ti)}"
                     result_text = str(ti.result)
-                    if remaining_budget is not None:
-                        remaining = remaining_budget[0]
-                        if remaining <= 0:
-                            result_text = (
-                                "[tool result omitted: cumulative "
-                                "tool-output budget exceeded]"
-                            )
-                        else:
-                            # Bound to the single-result cap first, then to
-                            # the shared cumulative budget.
-                            if len(result_text) > _TOOL_RESULT_MAX_CHARS:
-                                result_text = self._bound_result_text(
-                                    result_text, _TOOL_RESULT_MAX_CHARS
-                                )
-                            if len(result_text) > remaining:
-                                result_text = self._bound_result_text(
-                                    result_text, remaining
-                                )
-                                remaining_budget[0] = 0
-                            else:
-                                remaining_budget[0] = remaining - len(result_text)
-                    elif len(result_text) > _TOOL_RESULT_MAX_CHARS:
+                    
+                    if len(result_text) > _TOOL_RESULT_MAX_CHARS:
                         result_text = self._bound_result_text(
                             result_text, _TOOL_RESULT_MAX_CHARS
                         )
