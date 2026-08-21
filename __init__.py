@@ -23,8 +23,11 @@ from .llm_fetcher import (
 
 from .agent import (
     Agent,
+    AgentRunLimitReached,
+    AgentRunOutcome,
     AgentRunControl,
     AgentRunStopped,
+    AgentRunTermination,
 )
 
 from .tool_handler import (

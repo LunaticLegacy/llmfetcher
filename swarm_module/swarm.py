@@ -195,6 +195,7 @@ class AgentSwarm:
         reply_to: str,
         expected_artifacts: Iterable[str] = (),
         task_id: str = "",
+        plan_task_id: str = "",
     ) -> TaskAssignment:
         """Create and immediately schedule a task-addressed subagent.
 
@@ -206,6 +207,8 @@ class AgentSwarm:
             reply_to: Coordinator Agent that receives the final report.
             expected_artifacts: Optional detailed-output references expected.
             task_id: Optional stable task identifier.
+            plan_task_id: Optional external leaf-plan ID for browser plan
+                synchronization. It does not alter graph scheduling.
 
         Returns:
             Immutable task assignment accepted by the graph task bus.
@@ -218,6 +221,7 @@ class AgentSwarm:
             reply_to=reply_to,
             expected_artifacts=expected_artifacts,
             task_id=task_id,
+            plan_task_id=plan_task_id,
         )
 
     def task_id_for_agent(self, agent_name: str) -> str:
@@ -260,6 +264,7 @@ class AgentSwarm:
         reply_to: str,
         expected_artifacts: Iterable[str] = (),
         task_id: str = "",
+        plan_task_id: str = "",
     ) -> TaskAssignment:
         """Reactivate one terminal dispatched worker with a new task record.
 
@@ -270,6 +275,7 @@ class AgentSwarm:
             reply_to: Agent receiving the next structured report.
             expected_artifacts: Optional expected detailed outputs.
             task_id: Optional new task identity.
+            plan_task_id: Optional external leaf-plan ID for the new work.
 
         Returns:
             Fresh queued TaskBus assignment; prior assignments remain visible.
@@ -281,6 +287,7 @@ class AgentSwarm:
             reply_to=reply_to,
             expected_artifacts=expected_artifacts,
             task_id=task_id,
+            plan_task_id=plan_task_id,
         )
 
     def report_task(

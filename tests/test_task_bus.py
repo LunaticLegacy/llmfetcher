@@ -507,6 +507,18 @@ class TaskBusGraphTests(unittest.TestCase):
                 summary="late result",
             )
 
+    def test_plan_task_correlation_survives_task_bus_snapshot(self) -> None:
+        """Keep external plan-leaf correlation through durable Swarm recovery."""
+        bus = TaskBus()
+        assignment = bus.create_assignment(
+            recipient="worker",
+            reply_to="coordinator",
+            objective="Inspect source",
+            plan_task_id="plan-leaf",
+        )
+        restored = TaskBus.from_snapshot(bus.to_snapshot())
+        self.assertEqual(restored.get_assignment(assignment.id).plan_task_id, "plan-leaf")
+
 
 if __name__ == "__main__":
     unittest.main()

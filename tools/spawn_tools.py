@@ -99,7 +99,11 @@ def create_swarm_tools(
     worker_max_rounds: int = 30,
     worker_max_tokens: int = 32768,
     worker_max_context_threshold: int = 262144,
+    worker_enable_stop_turn: bool = False,
+    worker_default_stream: bool = False,
     context_path_factory: Callable[[str], Any] | None = None,
+    require_plan_task_id: bool = False,
+    plan_task_validator: Callable[[str], bool] | None = None,
 ) -> list[Tool]:
     """Create tools that let a coordinator LLM manipulate the swarm at runtime.
 
@@ -133,9 +137,21 @@ def create_swarm_tools(
         worker_max_context_threshold:
             Character count at which every dynamically created worker
             compacts its older conversation history.
+        worker_enable_stop_turn:
+            Whether dynamically created workers receive the reserved native
+            ``stop_turn`` control tool.
+        worker_default_stream:
+            Whether dynamically created workers emit incremental lifecycle
+            events for provider text and reasoning.
         context_path_factory:
             Optional callback returning a durable context path for each
             dynamically created worker Agent.
+        require_plan_task_id:
+            Require every dispatched or revived assignment to name an external
+            plan leaf. Generic library users keep the permissive default.
+        plan_task_validator:
+            Optional predicate used with ``require_plan_task_id`` to verify a
+            caller-supplied external task ID before scheduling work.
 
     Returns:
         A list of ``Tool`` instances the coordinator can call.
@@ -201,6 +217,8 @@ def create_swarm_tools(
             context_path=context_path_factory(name) if context_path_factory else None,
             default_max_rounds=worker_max_rounds,
             default_max_tokens=worker_max_tokens,
+            enable_stop_turn=worker_enable_stop_turn,
+            default_stream=worker_default_stream,
             # Graph long-term memory for the dynamically created worker,
             # persisted as ``<context_path>.graph.json`` when a path exists.
             context_handler=GraphContextHandler(
@@ -248,6 +266,7 @@ def create_swarm_tools(
                 the requested worker identity.
         """
         name = str(specification.get("name", "")).strip()
+        plan_task_id = str(specification.get("plan_task_id", "")).strip()
         system_prompt = str(specification.get("system_prompt", "")).strip()
         objective = str(specification.get("objective", "")).strip()
         handoff = str(specification.get("handoff", "")).strip()
@@ -259,6 +278,10 @@ def create_swarm_tools(
             raise ValueError("expected_artifacts must be an array")
         if not name or not system_prompt or not objective:
             raise ValueError("name, system_prompt, and objective are required")
+        if require_plan_task_id and not plan_task_id:
+            raise ValueError("plan_task_id is required for dispatched work")
+        if plan_task_id and plan_task_validator is not None and not plan_task_validator(plan_task_id):
+            raise ValueError("plan_task_id must identify an existing leaf task")
         task_id = uuid.uuid4().hex
         worker = Agent(
             llm_fetcher=llm_fetcher,
@@ -267,6 +290,8 @@ def create_swarm_tools(
             context_path=context_path_factory(name) if context_path_factory else None,
             default_max_rounds=worker_max_rounds,
             default_max_tokens=worker_max_tokens,
+            enable_stop_turn=worker_enable_stop_turn,
+            default_stream=worker_default_stream,
             # Graph long-term memory for the dispatched worker.
             context_handler=GraphContextHandler(
                 compacting_fetcher=llm_fetcher,
@@ -286,6 +311,7 @@ def create_swarm_tools(
             reply_to=reply_to,
             expected_artifacts=[str(item) for item in expected_artifacts],
             task_id=task_id,
+            plan_task_id=plan_task_id,
         )
 
     def _dispatch_subagents(**kwargs: Any) -> str:
@@ -338,6 +364,7 @@ def create_swarm_tools(
             New task ID on success, or a safe validation message on failure.
         """
         name = str(kwargs.get("name", "")).strip()
+        plan_task_id = str(kwargs.get("plan_task_id", "")).strip()
         objective = str(kwargs.get("objective", "")).strip()
         handoff = str(kwargs.get("handoff", "")).strip()
         reply_to = str(kwargs.get("reply_to", coordinator_name)).strip() or coordinator_name
@@ -348,6 +375,10 @@ def create_swarm_tools(
             return "Error: expected_artifacts must be an array."
         if not name or not objective:
             return "Error: name and objective are required."
+        if require_plan_task_id and not plan_task_id:
+            return "Error: plan_task_id is required for revived work."
+        if plan_task_id and plan_task_validator is not None and not plan_task_validator(plan_task_id):
+            return "Error: plan_task_id must identify an existing leaf task."
         try:
             assignment = swarm.redispatch_task(
                 agent_name=name,
@@ -355,6 +386,7 @@ def create_swarm_tools(
                 handoff=handoff,
                 reply_to=reply_to,
                 expected_artifacts=[str(item) for item in expected_artifacts],
+                plan_task_id=plan_task_id,
             )
         except (KeyError, ValueError) as exc:
             return f"Error: {exc}"
@@ -449,7 +481,7 @@ def create_swarm_tools(
                 "ID to wait_for_reports. Do not wait after dispatching only one worker."
             ),
             schemas=ToolSchema(properties=[
-                ToolParameter(name="assignments", type="array", description="Worker task objects: name, system_prompt, objective, handoff, reply_to, expected_artifacts."),
+                ToolParameter(name="assignments", type="array", description="Worker task objects: name, system_prompt, objective, handoff, reply_to, expected_artifacts, and optional plan_task_id for a coordinator-plan leaf."),
                 ToolParameter(name="expected_count", type="integer", default=0, description="Exact required worker count; use it to prevent partial groups."),
             ]),
             handler=_dispatch_subagents,
@@ -468,6 +500,7 @@ def create_swarm_tools(
                 ToolParameter(name="handoff", type="string", description="Compact coordinator state relevant to the task."),
                 ToolParameter(name="reply_to", type="string", default=coordinator_name, description="Coordinator receiving the structured report."),
                 ToolParameter(name="expected_artifacts", type="array", description="Expected detailed-output paths or names."),
+                ToolParameter(name="plan_task_id", type="string", description="Optional coordinator-plan leaf task ID to synchronize with this assignment."),
             ]),
             handler=_dispatch_subagent,
         ),
@@ -484,6 +517,7 @@ def create_swarm_tools(
                 ToolParameter(name="handoff", type="string", description="Bounded coordinator context for the revived task."),
                 ToolParameter(name="reply_to", type="string", default=coordinator_name, description="Agent that receives the new structured report."),
                 ToolParameter(name="expected_artifacts", type="array", description="Expected detailed-output paths or names."),
+                ToolParameter(name="plan_task_id", type="string", description="Optional coordinator-plan leaf task ID to synchronize with this revived assignment."),
             ]),
             handler=_revive_agent,
         ),

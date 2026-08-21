@@ -21,6 +21,8 @@ class TaskAssignment:
         handoff: Bounded coordinator state relevant to the assignment.
         expected_artifacts: Optional artifact names or paths expected at close.
         created_at: Unix timestamp when the task was dispatched.
+        plan_task_id: Optional Angelus-visible leaf-plan identifier. The bus
+            treats it as opaque correlation metadata.
     """
 
     id: str
@@ -30,6 +32,7 @@ class TaskAssignment:
     handoff: str
     expected_artifacts: tuple[str, ...]
     created_at: float
+    plan_task_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,7 @@ class TaskBus:
         handoff: str = "",
         expected_artifacts: Iterable[str] = (),
         task_id: str = "",
+        plan_task_id: str = "",
     ) -> TaskAssignment:
         """Create and enqueue one immutable subagent work package.
 
@@ -114,6 +118,8 @@ class TaskBus:
             handoff: Compact state summary supplied by the coordinator.
             expected_artifacts: Names or paths expected after execution.
             task_id: Optional caller-provided stable task identifier.
+            plan_task_id: Optional external plan-leaf identifier for lifecycle
+                correlation. It does not affect scheduling semantics.
 
         Returns:
             Newly queued task assignment.
@@ -134,6 +140,7 @@ class TaskBus:
             handoff=handoff.strip(),
             expected_artifacts=tuple(str(item).strip() for item in expected_artifacts if str(item).strip()),
             created_at=time.time(),
+            plan_task_id=plan_task_id.strip(),
         )
         with self._condition:
             if assignment.id in self._assignments:
@@ -430,6 +437,7 @@ class TaskBus:
                     handoff=str(item.get("handoff", "")),
                     expected_artifacts=tuple(str(value) for value in item.get("expected_artifacts", [])),
                     created_at=float(item["created_at"]),
+                    plan_task_id=str(item.get("plan_task_id", "")),
                 )
                 for item in assignments
             }
