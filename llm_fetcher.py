@@ -35,7 +35,10 @@ from .llm_types import (
     LLMBackendError,
     LLMRequestCancelled,
     RemoteRequestSnapshot,
+    TokenUsage,
 )
+
+from .usage_ledger import add_usage
 
 from .fetcher_handlers import (
     ToolDefinition,
@@ -43,6 +46,57 @@ from .fetcher_handlers import (
 )
 
 from .context_handlers import ContextHandler
+
+
+
+class StreamUsageCapture:
+    """Per-call mutable capture of raw provider usage from one stream.
+
+    A single provider stream can report token usage across several chunks:
+    OpenAI-compatible endpoints attach it to the final chunk when
+    ``stream_options.include_usage`` is requested, while Anthropic reports
+    ``input_tokens`` in ``message_start`` and ``output_tokens`` in
+    ``message_delta``.  This holder merges the raw numeric fields so the
+    fetcher can normalize them exactly once after the stream completes.
+
+    It is deliberately per-call and never stored on a shared handler, so
+    concurrent Agents sharing one :class:`LLMFetcher` cannot observe each
+    other's streaming usage.
+    """
+
+    __slots__ = ("_fields",)
+
+    def __init__(self) -> None:
+        self._fields: dict[str, Any] = {}
+
+    def merge(self, raw_usage: Any) -> None:
+        """Merge one raw usage payload (dict or provider object)."""
+        if raw_usage is None:
+            return
+        if isinstance(raw_usage, dict):
+            fields = raw_usage
+        elif hasattr(raw_usage, "model_dump"):
+            dumped = raw_usage.model_dump()
+            fields = dumped if isinstance(dumped, dict) else {}
+        else:
+            fields = {
+                name: value
+                for name in (
+                    "input_tokens", "output_tokens", "total_tokens",
+                    "prompt_tokens", "completion_tokens", "cached_tokens",
+                    "cache_read_input_tokens", "cache_creation_input_tokens",
+                    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+                    "reasoning_tokens",
+                )
+                if (value := getattr(raw_usage, name, None)) is not None
+            }
+        for key, value in fields.items():
+            self._fields[key] = value
+
+    @property
+    def raw(self) -> dict[str, Any] | None:
+        """Return the merged raw usage mapping, or ``None`` when absent."""
+        return dict(self._fields) if self._fields else None
 
 
 class LLMFetcher:
@@ -441,6 +495,7 @@ class LLMFetcher:
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
+        usage_sink: Optional[TokenUsage] = None,
     ) -> Generator[str, None]:
         """Execute a streaming completion with backend fallback and retry.
 
@@ -475,6 +530,12 @@ class LLMFetcher:
             on_request:
                 Optional observer invoked immediately before provider I/O with
                 the credential-free, provider-prepared streaming request.
+            usage_sink:
+                Optional mutable ``TokenUsage`` accumulator.  When provided,
+                the normalized provider usage for the completed stream is
+                added to it (input/output/total/cached/reasoning tokens).
+                Providers that do not report streaming usage leave it
+                unchanged.
 
         Yields:
             Normalised text chunks from the LLM response.  Chunks are
@@ -517,12 +578,18 @@ class LLMFetcher:
                         stream=True,
                         tools=provider_tools,
                     )
+                    capture = StreamUsageCapture()
                     for text in handler.iter_stream_text(
                         raw, output_reasoning=output_reasoning,
+                        usage_capture=capture,
                     ):
                         self._raise_if_force_stopped()
                         yielded_any = True
                         yield text
+                    if usage_sink is not None:
+                        raw_usage = capture.raw
+                        if raw_usage:
+                            add_usage(usage_sink, handler.normalize_usage(raw_usage))
                     return
                 except Exception as exc:
                     self._raise_if_force_stopped()

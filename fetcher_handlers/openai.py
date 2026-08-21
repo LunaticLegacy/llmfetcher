@@ -135,7 +135,13 @@ class OpenAIHandler(LLMBackendHandler):
             usage=self.normalize_usage(self._read_field(response, "usage", None)),
         )
 
-    def iter_stream_text(self, response, *, output_reasoning: bool) -> Iterable[str]:
+    def iter_stream_text(
+        self,
+        response,
+        *,
+        output_reasoning: bool,
+        usage_capture=None,
+    ) -> Iterable[str]:
         in_thinking = False
         streamed_tool_calls: dict[int, dict[str, Any]] = {}
 
@@ -145,6 +151,15 @@ class OpenAIHandler(LLMBackendHandler):
             return getattr(raw_call, name, default)
 
         for chunk in response:
+            # OpenAI-compatible streams carry usage on the final chunk (or
+            # any chunk that reports it). Capture it before skipping chunks
+            # that carry no choice delta so it is never discarded.
+            if isinstance(chunk, dict):
+                raw_usage = chunk.get("usage")
+            else:
+                raw_usage = getattr(chunk, "usage", None)
+            if raw_usage is not None and usage_capture is not None:
+                usage_capture.merge(self._usage_to_dict(raw_usage))
             if isinstance(chunk, dict):
                 choices = chunk.get("choices")
             else:
@@ -250,6 +265,10 @@ class OpenAIHandler(LLMBackendHandler):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # Ask the provider for a final usage chunk on the streaming wire so
+        # the Agent can account for real per-call token consumption.
+        if stream and "stream_options" not in kwargs and "stream_options" not in (self.backend.extra or {}):
+            kwargs["stream_options"] = {"include_usage": True}
         kwargs.update(self.backend.extra)
         return self.client.chat.completions.create(**kwargs)
 
