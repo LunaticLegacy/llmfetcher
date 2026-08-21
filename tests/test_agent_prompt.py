@@ -86,3 +86,21 @@ class AgentPromptTests(unittest.TestCase):
         snapshot = next(event.data["request"] for event in events if event.event_type == "agent:remote_request")
         self.assertEqual(snapshot["messages"][0], {"role": "system", "content": "Use native tools."})
         self.assertEqual(snapshot["tools"], [{"type": "function", "function": {"name": "inspect_workspace"}}])
+
+    def test_raw_tool_schema_retains_nested_external_contract(self) -> None:
+        """Keep MCP-style nested schemas outside the flat parameter adapter."""
+        raw_schema = {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {"type": "object", "properties": {"tag": {"type": "string"}}},
+                },
+            },
+            "additionalProperties": False,
+        }
+
+        rendered = ToolSchema(raw_schema=raw_schema).to_dict()
+
+        self.assertEqual(rendered, raw_schema)
+        self.assertIsNot(rendered, raw_schema)

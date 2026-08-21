@@ -11,7 +11,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 
 | Area | Paths | Current responsibility |
 |---|---|---|
-| Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, token-usage, and terminal request-cancellation types. |
+| Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, token-usage, and terminal request-cancellation types. `ToolSchema` supports both compact first-party parameters and lossless external JSON Schema (for example MCP). |
 | Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; the system message contains only system instructions while registered tools travel once through provider-native schemas; lifecycle events retain typed tool outcomes and credential-free preflight remote-request snapshots for UI consumers; one-call primary and internal-LLM usage ledger; optional force-stop observation during provider I/O. |
 | LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, ordinary retry/fallback, terminal request cancellation, credential-free preflight request observation, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
 | Context | `context_handlers/` | Base contract; durable linear history with compaction and raw archive; provider-backed retrieval composition; TLB adapter. `context_less_context/` is an experimental local worktree directory, not part of the indexed API. |
