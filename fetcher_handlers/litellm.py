@@ -35,6 +35,10 @@ class LiteLLMHandler(OpenAIHandler):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # Ask the provider for a final usage chunk so streamed calls are
+        # accounted for the same way as non-streamed calls.
+        if stream and "stream_options" not in kwargs and "stream_options" not in (self.backend.extra or {}):
+            kwargs["stream_options"] = {"include_usage": True}
         kwargs.update(self.backend.extra)
         return litellm_completion(**kwargs)
 

@@ -130,7 +130,13 @@ class AnthropicHandler(LLMBackendHandler):
             usage=self.normalize_usage(self._read_field(response, "usage", None)),
         )
 
-    def iter_stream_text(self, response, *, output_reasoning: bool) -> Iterable[str]:
+    def iter_stream_text(
+        self,
+        response,
+        *,
+        output_reasoning: bool,
+        usage_capture=None,
+    ) -> Iterable[str]:
         in_thinking = False
         streamed_tool_calls: dict[int, dict[str, object | None]] = {}
 
@@ -175,7 +181,18 @@ class AnthropicHandler(LLMBackendHandler):
             else:
                 event_type = getattr(chunk, "type", None)
                 delta = getattr(chunk, "delta", None)
-            
+
+            # Capture Anthropic streaming usage: message_start carries
+            # input_tokens (on chunk.message.usage) and message_delta carries
+            # output_tokens (on chunk.usage). Merging both reproduces the
+            # same usage shape normalize_completion_response would receive.
+            if usage_capture is not None:
+                if event_type == "message_delta":
+                    usage_capture.merge(self._read_field(chunk, "usage", None))
+                elif event_type == "message_start":
+                    message = self._read_field(chunk, "message", None)
+                    usage_capture.merge(self._read_field(message, "usage", None))
+
             match event_type:
 
                 case "content_block_start":

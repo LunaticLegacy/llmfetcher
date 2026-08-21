@@ -578,8 +578,14 @@ class Agent:
         tool_payload: list[str] = []
         force_event = getattr(control, "force_stopped", None)
         backend = self.llm_fetcher.default_backend_config
+        # The fetcher fills this per-call accumulator with the provider's
+        # streamed usage so streamed rounds carry the same token accounting
+        # as non-streamed rounds (agent:usage ledger, round_usage, totals).
+        stream_usage = TokenUsage()
 
-        for chunk in self.llm_fetcher.fetch_stream(**fetch_kwargs):
+        for chunk in self.llm_fetcher.fetch_stream(
+            usage_sink=stream_usage, **fetch_kwargs
+        ):
             if force_event is not None and force_event.is_set():
                 abort = getattr(self.llm_fetcher, "abort_active_requests", None)
                 if callable(abort):
@@ -626,6 +632,7 @@ class Agent:
             model=backend.model,
             reasoning_content="".join(reasoning),
             tool_calls=calls,
+            usage=stream_usage,
         )
 
     # -- run ------------------------------------------------------------

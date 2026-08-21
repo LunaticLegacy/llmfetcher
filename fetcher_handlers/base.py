@@ -124,7 +124,26 @@ class LLMBackendHandler(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def iter_stream_text(self, response, *, output_reasoning: bool) -> Iterable[str]:
+    def iter_stream_text(
+        self,
+        response,
+        *,
+        output_reasoning: bool,
+        usage_capture=None,
+    ) -> Iterable[str]:
+        """Yield normalized text chunks, optionally capturing raw usage.
+
+        Args:
+            response: The provider's raw streamed response object.
+            output_reasoning: Whether reasoning chunks should be emitted
+                wrapped in ``<think>`` markers.
+            usage_capture: Optional per-call ``StreamUsageCapture`` whose
+                ``merge`` method receives raw provider usage payloads as the
+                stream is consumed.  ``None`` keeps legacy callers working.
+
+        Yields:
+            Normalised text chunks from the LLM response.
+        """
         raise NotImplementedError
     
     @abstractmethod
@@ -266,10 +285,18 @@ class LLMBackendHandler(ABC):
                     if isinstance(nested_value, (int, float)):
                         raw[nested_key] = int(nested_value)
 
+        input_tokens = int(raw.get("input_tokens", raw.get("prompt_tokens", 0)) or 0)
+        output_tokens = int(raw.get("output_tokens", raw.get("completion_tokens", 0)) or 0)
+        total_tokens = int(raw.get("total_tokens", 0) or 0)
+        if not total_tokens:
+            # Anthropic and some other providers never send total_tokens;
+            # derive it from the input/output halves so streamed sessions do
+            # not report 0 totals.
+            total_tokens = input_tokens + output_tokens
         return TokenUsage(
-            input_tokens=int(raw.get("input_tokens", raw.get("prompt_tokens", 0)) or 0),
-            output_tokens=int(raw.get("output_tokens", raw.get("completion_tokens", 0)) or 0),
-            total_tokens=int(raw.get("total_tokens", 0) or 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
             cached_tokens=int(
                 raw.get("cached_tokens")
                 if raw.get("cached_tokens") is not None
