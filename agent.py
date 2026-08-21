@@ -51,12 +51,17 @@ class AgentRunStopped(RuntimeError):
 
 
 def _tool_result_text(value: Any) -> str:
-    """Return the complete tool-result string for persistence and events.
+    """Return the complete tool-result string supplied back to the model.
 
     Args:
         value: Raw value returned by a tool handler.
     Returns:
         Complete string form of ``value`` without a display or persistence limit.
+
+    Notes:
+        This model-facing conversion is intentionally separate from lifecycle
+        events, which retain their raw value so JSON results reach the UI as
+        structured data rather than Python's escaped representation.
     """
     return str(value)
 
@@ -171,6 +176,46 @@ class Agent:
         """
         self._completion_requested.set()
 
+    def set_context_threshold(
+        self,
+        max_context_threshold: int,
+        *,
+        persist: bool = False,
+    ) -> bool:
+        """Update the compaction threshold used by this Agent's context.
+
+        Args:
+            max_context_threshold: Character count that triggers context
+                compaction. It must be at least ``1024``.
+            persist: Whether to immediately save the updated handler at
+                ``context_path`` so a following :meth:`run` load observes the
+                new value.
+
+        Returns:
+            ``True`` when the active handler exposes a mutable compression
+            threshold and, when requested, saving succeeds. ``False`` means a
+            custom handler does not support threshold synchronization or its
+            persistence failed.
+
+        Raises:
+            ValueError: If ``max_context_threshold`` is below ``1024``.
+
+        Side Effects:
+            Updates ``self.max_context_threshold``. Graph context handlers are
+            synchronized through their embedded linear handler.
+        """
+        if max_context_threshold < 1024:
+            raise ValueError("max_context_threshold must be at least 1024")
+        self.max_context_threshold = max_context_threshold
+        handler = self.context_handler
+        linear = getattr(handler, "linear", handler)
+        if not hasattr(linear, "compress_threshold"):
+            return False
+        linear.compress_threshold = max_context_threshold
+        if persist and self.context_path is not None:
+            return bool(handler.save(self.context_path))
+        return True
+
     def _emit(
         self,
         source: str,
@@ -264,16 +309,18 @@ class Agent:
     # -- internal --------------------------------------------------------
 
     def _build_prompt(self) -> str:
-        """Combine the system prompt and current tool descriptions.
+        """Return the system prompt without serializing registered tools into it.
+
+        Tool definitions travel only through ``LLMFetcher.fetch(..., tools=)``.
+        The provider handler converts that collection to its native wire schema.
+        Keeping the textual ``Tool.__str__`` fallback out of this message avoids
+        sending the same schemas both in ``messages`` and in the provider's
+        top-level ``tools`` field.
 
         Returns:
-            Complete model-facing system prompt text.
+            Exact system-role instruction text for the next model request.
         """
-        return (
-            self.system_prompt
-            + "\n"
-            + self.tool_handler.get_all_tool_description()
-        )
+        return self.system_prompt
 
     def _save_context(self) -> bool:
         """Persist the current context when this Agent has a storage path.
@@ -487,6 +534,11 @@ class Agent:
                 context_handler=self.context_handler,
                 max_tokens=resolved_max_tokens,
                 tools=self.tool_handler.get_all_tools(),
+                on_request=lambda request: self._emit(
+                    "agent", name, "agent:remote_request",
+                    f"Remote request prepared for round {round_idx}",
+                    data={"round": round_idx, "request": request.to_dict()},
+                ),
             )
 
             # Accumulate token usage across rounds.
@@ -545,7 +597,8 @@ class Agent:
                 ])
                 have_tool_call = True
 
-                # Publish complete outcomes so persistence and export never lose tool evidence.
+                # Preserve typed outcomes for event consumers while the model
+                # receives the string map above on its next round.
                 completed_calls = []
                 for call, raw_result in zip(requested_calls, results_list):
                     result_ok = not isinstance(raw_result, Exception)
@@ -554,7 +607,7 @@ class Agent:
                     completed_calls.append({
                         **call,
                         "ok": result_ok,
-                        "result": _tool_result_text(raw_result),
+                        "result": raw_result,
                     })
                 self._emit(
                     "agent",

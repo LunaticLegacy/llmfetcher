@@ -21,6 +21,7 @@ from typing import (
     AsyncGenerator,
     Generator,
     Dict,
+    Callable,
     List,
     Optional,
     Sequence,
@@ -33,6 +34,7 @@ from .llm_types import (
     LLMTimeoutError,
     LLMBackendError,
     LLMRequestCancelled,
+    RemoteRequestSnapshot,
 )
 
 from .fetcher_handlers import (
@@ -332,6 +334,7 @@ class LLMFetcher:
         context_handler: Optional[ContextHandler] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
+        on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
     ) -> LLMOutput:
         """Execute a non-streaming completion with backend fallback and retry.
 
@@ -369,6 +372,10 @@ class LLMFetcher:
                 Accepts ``Tool`` instances or raw provider-specific schema
                 dicts.  Conversion to provider format is handled by the
                 backend handler.
+            on_request:
+                Optional observer called immediately before each provider
+                attempt with a credential-free request snapshot containing
+                model settings, assembled messages, and prepared tools.
 
         Returns:
             A normalised ``LLMOutput`` with content, reasoning, tool calls,
@@ -391,6 +398,17 @@ class LLMFetcher:
                 try:
                     self._raise_if_force_stopped()
                     provider_tools = handler.prepare_tools(tools)
+                    if on_request is not None:
+                        # Emit one typed, credential-free snapshot at the
+                        # application boundary before provider I/O begins.
+                        on_request(RemoteRequestSnapshot(
+                            model=backend.model,
+                            messages=list(messages),
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            stream=False,
+                            tools=list(provider_tools or []),
+                        ))
                     raw = handler.create_completion(
                         messages=messages,
                         temperature=temperature,

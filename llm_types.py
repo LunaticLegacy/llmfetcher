@@ -12,6 +12,50 @@ JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 JsonArray: TypeAlias = list[JsonValue]
 
+
+@dataclass(frozen=True)
+class RemoteRequestSnapshot:
+    """Credential-free schema for one dispatch-ready remote model request.
+
+    The dispatcher builds this object after a provider handler has prepared
+    its tool schemas and immediately before it starts provider I/O.  It is a
+    stable observability contract shared with application hosts; provider
+    adapters may still use additional wire-only fields internally.
+
+    Attributes:
+        model: Provider model identifier selected for this attempt.
+        messages: Complete provider-neutral message sequence sent to the
+            handler before any provider-local message normalization.
+        temperature: Sampling temperature for this request.
+        max_tokens: Maximum completion tokens requested from the provider.
+        stream: Whether the request asks for streamed output.
+        tools: Provider-prepared JSON tool schemas exposed for this attempt.
+    """
+
+    model: str
+    messages: list[JsonObject]
+    temperature: float
+    max_tokens: int
+    stream: bool
+    tools: list[JsonObject] = field(default_factory=list)
+
+    def to_dict(self) -> JsonObject:
+        """Return the JSON-safe event payload used by application hosts.
+
+        Returns:
+            A fresh top-level mapping containing only request fields that are
+            safe to persist or render. Credentials and endpoint URLs are not
+            part of this schema.
+        """
+        return {
+            "model": self.model,
+            "messages": self.messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": self.stream,
+            "tools": self.tools,
+        }
+
 # --------------------------
 # Exception hierarchy
 # --------------------------
@@ -190,17 +234,29 @@ class ToolParameter:
 
 @dataclass
 class ToolSchema:
-    """Structured JSON Schema for tool parameters, replacing raw dicts."""
+    """Structured JSON Schema for tool parameters and external tool protocols.
+
+    Args:
+        type: Root JSON Schema type used by compact ``ToolParameter`` schemas.
+        properties: Flat first-party parameter declarations.
+        raw_schema: Validated complete JSON Schema from an external protocol
+            such as MCP. When present, it takes precedence so nested objects,
+            arrays, and protocol-specific constraints are retained verbatim.
+    """
 
     type: str = "object"
     properties: List[ToolParameter] = field(default_factory=list)
-    # External tool protocols such as MCP can provide nested JSON Schema that
-    # cannot be represented by the compact ToolParameter model alone.  When
-    # supplied, preserve that validated object verbatim for the LLM backend.
     raw_schema: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to plain JSON Schema dict for LLM API payloads."""
+        """Convert this schema to an isolated JSON-ready mapping.
+
+        Returns:
+            A shallow copy of ``raw_schema`` for external tools, or a JSON
+            Schema generated from the compact first-party parameter model.
+        """
+        # MCP input schemas may contain nested constraints unavailable in the
+        # compact ToolParameter representation, so preserve that contract.
         if self.raw_schema is not None:
             return dict(self.raw_schema)
         required: List[str] = []

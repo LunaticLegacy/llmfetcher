@@ -65,3 +65,19 @@ class ExecutionGraphPersistenceTests(unittest.TestCase):
         graph.set_router("source", lambda _output: [])
         with self.assertRaises(GraphPersistenceError):
             graph.to_snapshot()
+
+    def test_declarative_dynamic_callbacks_restore_without_python_callback_registry(self) -> None:
+        """Built-in mapper/router selections survive a restart as plain data."""
+        graph = ExecutionGraph()
+        graph.add_agent("source", _agent("source"))
+        graph.add_agent("target", _agent("target"))
+        graph.add_connection("source", "target")
+        self.assertIn("set on", graph.dynamic_set_mapper("target", "concat"))
+        self.assertIn("Router set", graph.dynamic_set_router("source", ["target"]))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = graph.save(Path(directory) / "graph.json")
+            restored = ExecutionGraph.load(path)
+
+        self.assertEqual(restored._mappers["target"]({"source": "one", "other": "two"}), "two\n\none")
+        self.assertEqual(restored._routers["source"]("unused"), ["target"])

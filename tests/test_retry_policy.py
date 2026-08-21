@@ -6,7 +6,7 @@ import threading
 import unittest
 
 from llmfetcher.llm_fetcher import LLMFetcher
-from llmfetcher.llm_types import LLMBackendConfig, LLMOutput
+from llmfetcher.llm_types import LLMBackendConfig, LLMOutput, RemoteRequestSnapshot
 
 
 class _TimeoutThenSuccessHandler:
@@ -90,6 +90,23 @@ class RetryPolicyTests(unittest.TestCase):
             fetcher.fetch("do not duplicate primary")
 
         self.assertEqual(handler.calls, 1)
+
+    def test_request_observer_receives_typed_dispatch_snapshot(self) -> None:
+        """The preflight hook exposes a schema, not an untyped payload dict."""
+        handler = _TimeoutThenSuccessHandler(timeouts=0)
+        handler.prepare_tools = lambda _tools: [{"type": "function", "name": "search"}]  # type: ignore[method-assign]
+        fetcher = _fetcher_for(handler, retries=0)
+        snapshots: list[RemoteRequestSnapshot] = []
+
+        fetcher.fetch("inspect", on_request=snapshots.append)
+
+        self.assertEqual(len(snapshots), 1)
+        snapshot = snapshots[0]
+        self.assertIsInstance(snapshot, RemoteRequestSnapshot)
+        self.assertEqual(snapshot.model, "test-model")
+        self.assertEqual(snapshot.messages, [{"role": "user", "content": "inspect"}])
+        self.assertEqual(snapshot.tools, [{"type": "function", "name": "search"}])
+        self.assertNotIn("api_key", snapshot.to_dict())
 
 
 if __name__ == "__main__":
