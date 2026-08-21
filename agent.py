@@ -786,10 +786,12 @@ class Agent:
                         data={"round": round_idx, "request": request.to_dict()},
                     ),
                 )
+                model_started_at = time.perf_counter()
                 result = (
                     self._stream_model_response(name=name, round_idx=round_idx, **fetch_kwargs)
                     if resolved_stream else self._fetch_model_with_force_stop(**fetch_kwargs)
                 )
+                model_duration_ms = round((time.perf_counter() - model_started_at) * 1000)
             except AgentRunStopped:
                 self._set_outcome(AgentRunTermination.USER_STOPPED, round_idx)
                 raise
@@ -805,6 +807,7 @@ class Agent:
                 data={
                     "kind": "primary",
                     "round": round_idx,
+                    "duration_ms": model_duration_ms,
                     "usage": self._usage_data(copy_usage(result.usage)),
                 },
             )
@@ -906,6 +909,7 @@ class Agent:
                     "usage": self._usage_data(self.usage),
                     "round_usage": self._usage_data(copy_usage(result.usage)),
                     "duration_ms": round((time.perf_counter() - round_started_at) * 1000),
+                    "model_duration_ms": model_duration_ms,
                     "assistant_content": result.content,
                     "reasoning_content": result.reasoning_content,
                 },
