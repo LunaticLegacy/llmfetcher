@@ -8,7 +8,8 @@ from typing import Any, cast
 from llmfetcher.agent import Agent
 from llmfetcher.llm_fetcher import LLMBackendConfig
 from llmfetcher.llm_types import LLMOutput, LLMToolCall, Tool, ToolSchema
-from llmfetcher.swarm_module import ExecutionGraph, TaskBus
+from llmfetcher.swarm_module import AgentSwarm, ExecutionGraph, TaskBus
+from llmfetcher.tools.spawn_tools import create_swarm_tools
 
 
 class _CompletionFetcher:
@@ -218,6 +219,54 @@ class TaskBusGraphTests(unittest.TestCase):
 
         self.assertEqual(result.content, "Submitting the completed report.")
         self.assertEqual(fetcher.call_count, 1)
+
+    def test_worker_tool_factory_builds_isolated_tools_for_both_spawn_paths(self) -> None:
+        """Give each dynamically created worker its own name-bound tool set.
+
+        ``dynamic_add_agent`` and ``dispatch_subagent`` must share the same
+        factory path because Angelus tools close over worker-local plans and
+        process control state.
+        """
+        swarm = AgentSwarm()
+        factory_calls: list[str] = []
+
+        def worker_tools(name: str) -> list[Tool]:
+            """Build one worker-local marker tool and record its recipient."""
+            factory_calls.append(name)
+            return [Tool(
+                name=f"worker_marker_{name}",
+                description="Identify this worker's local tool set.",
+                schemas=ToolSchema(),
+                handler=lambda: name,
+            )]
+
+        coordinator_tools = create_swarm_tools(
+            swarm=swarm,
+            llm_fetcher=cast(Any, _CompletionFetcher()),
+            worker_tool_pool=[],
+            worker_tool_factory=worker_tools,
+        )
+        tools_by_name = {tool.name: tool for tool in coordinator_tools}
+
+        created = tools_by_name["dynamic_add_agent"].handler(
+            name="graph_worker", system_prompt="Work independently.",
+        )
+        dispatched = tools_by_name["dispatch_subagent"].handler(
+            name="task_worker",
+            system_prompt="Work independently.",
+            objective="Test worker tools.",
+            handoff="No additional context.",
+        )
+
+        self.assertEqual(created, "Agent 'graph_worker' created")
+        self.assertIn("Dispatched task_worker with task_id=", dispatched)
+        self.assertEqual(factory_calls, ["graph_worker", "task_worker"])
+        graph_worker = swarm._graph.agent_dict["graph_worker"]
+        task_worker = swarm._graph.agent_dict["task_worker"]
+        assert graph_worker is not None and task_worker is not None
+        self.assertIn("worker_marker_graph_worker", graph_worker.tool_handler.tool_dict)
+        self.assertIn("worker_marker_task_worker", task_worker.tool_handler.tool_dict)
+        self.assertIn("report_task", task_worker.tool_handler.tool_dict)
 
     def test_report_outcome_and_unfinished_cleanup_use_precise_terminals(self) -> None:
         """Preserve reports while interrupting running and cancelling queued work."""

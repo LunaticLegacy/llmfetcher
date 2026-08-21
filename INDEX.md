@@ -17,7 +17,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 | Context | `context_handlers/` | Base contract; durable linear history with compaction and raw archive; provider-backed retrieval composition; TLB adapter. `context_less_context/` is an experimental local worktree directory, not part of the indexed API. |
 | Graph memory | `graph_memory/` | Persistent entity/relation store, incremental extraction, hybrid graph retrieval, archive evidence, and stateless semantic extraction/reranking workers. |
 | Swarm | `swarm_module/` | Dependency graph, concurrent scheduler, TaskBus, and bounded report handoff between workers. |
-| Tools | `tool_handler.py`, `tool_executor.py`, `tools/` | Tool schemas/registry, parallel execution, and built-in shell, knowledge, web, and dynamic-spawn factories. |
+| Tools | `tool_handler.py`, `tool_executor.py`, `tools/` | Tool schemas/registry, parallel execution, and built-in shell, knowledge, web, and dynamic-spawn factories; `create_swarm_tools` accepts either a shared worker pool or a name-bound factory for worker-local handlers. |
 | Retrieval modules | `rag_module/`, `rag_module_tlb/` | Legacy/knowledge-base RAG and auditable `INDEX.md` tree traversal. See [`rag_module_tlb/INDEX.md`](rag_module_tlb/INDEX.md). |
 | Interfaces | `cli.py`, `webapp.py`, `web/`, `demo/` | Local CLI, standalone web console, and example entry point. |
 | Verification | `tests/` | Unit and regression coverage for public API, context, DeepSeek routing, execution graph, TaskBus, and usage ledger. |

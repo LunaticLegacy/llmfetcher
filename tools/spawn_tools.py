@@ -35,6 +35,7 @@ def create_swarm_tools(
     swarm: AgentSwarm,
     llm_fetcher: LLMFetcher,
     worker_tool_pool: list[Tool],
+    worker_tool_factory: Callable[[str], list[Tool]] | None = None,
     coordinator_name: str = "main_agent",
     worker_max_rounds: int = 30,
     worker_max_tokens: int = 32768,
@@ -52,7 +53,12 @@ def create_swarm_tools(
             instances.
         worker_tool_pool:
             Tools that are registered on every worker created by the
-            coordinator.
+            coordinator when ``worker_tool_factory`` is not supplied.
+        worker_tool_factory:
+            Optional callback that receives the new worker name and returns
+            its isolated tool collection. When supplied, this takes priority
+            over ``worker_tool_pool``. Use it for tools whose handlers close
+            over worker-specific state, such as plans or process controls.
         coordinator_name:
             Logical coordinator name used as the default structured-report
             recipient for ``dispatch_subagent``.
@@ -82,11 +88,25 @@ def create_swarm_tools(
     if worker_max_context_threshold < 1024:
         raise ValueError("worker_max_context_threshold must be at least 1024")
 
+    def _tools_for_worker(name: str) -> list[Tool]:
+        """Return the static or freshly built tools for one named worker.
+
+        Args:
+            name: Unique identity of the Agent being created.
+
+        Returns:
+            A new list of tools. Factory-created tools supersede the shared
+            fallback pool so handlers can safely retain worker-local state.
+        """
+        if worker_tool_factory is not None:
+            return list(worker_tool_factory(name))
+        return list(worker_tool_pool)
+
     def _dynamic_add_agent(**kwargs: Any) -> str:
         """Create and register a new worker agent in the swarm.
 
-        Each new agent receives the shared *worker_tool_pool* and a
-        customized system *prompt*.
+        Each new agent receives the configured shared pool or a fresh
+        name-specific tool collection, plus a customized system *prompt*.
 
         Required parameters: ``name`` (unique agent name), ``system_prompt``.
         """
@@ -112,7 +132,7 @@ def create_swarm_tools(
                 max_context_threshold=worker_max_context_threshold,
             ),
         )
-        agent.add_tools(worker_tool_pool)
+        agent.add_tools(_tools_for_worker(name))
 
         return swarm.dynamic_add_agent(name, agent)
 
@@ -249,9 +269,9 @@ def create_swarm_tools(
                 max_context_threshold=worker_max_context_threshold,
             ),
         )
-        worker.add_tools(
-            worker_tool_pool + [_report_task_tool(task_id, name, worker.request_completion)]
-        )
+        worker.add_tools(_tools_for_worker(name) + [
+            _report_task_tool(task_id, name, worker.request_completion),
+        ])
         return swarm.dispatch_task(
             agent_name=name,
             agent_instance=worker,
