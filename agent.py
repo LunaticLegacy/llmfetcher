@@ -181,6 +181,15 @@ class Agent:
             max_context_threshold=self.max_context_threshold,
         )
 
+        # Route compaction lifecycle events from the inner linear handler into
+        # this Agent's event stream (source="context"), so they persist into
+        # events.ndjson and reach the SSE stream. Custom handlers (e.g. the
+        # retrieval wrapper) expose the linear handler through ``.linear``.
+        linear = getattr(self.context_handler, "linear", self.context_handler)
+        set_hook = getattr(linear, "set_compaction_event_hook", None)
+        if set_hook is not None:
+            set_hook(self._compaction_event_hook)
+
         # This attribute will be assigned by ExecutionGraph so Agent-level events retain their node.
         self._agent_name_in_graph: str = ""
 
@@ -396,6 +405,30 @@ class Agent:
                 hook(event)
             except Exception:
                 pass
+
+
+    def _compaction_event_hook(
+        self,
+        event_type: str,
+        message: str,
+        data: dict,
+    ) -> None:
+        """Publish a context-handler compaction lifecycle event.
+
+        Attached to the inner :class:`ContextHandlerLinear` compaction
+        observer. Invoked synchronously for each compaction stage
+        (started / success / failed / skipped); any observer failure is
+        isolated inside the handler, so a broken stream can never break
+        compaction. ``_agent_name_in_graph`` is read at call time so the
+        ExecutionGraph-assigned node name is always used.
+        """
+        self._emit(
+            "context",
+            self._agent_name_in_graph,
+            event_type,
+            message,
+            data=data,
+        )
 
     @staticmethod
     def _usage_data(usage: TokenUsage) -> dict[str, int]:

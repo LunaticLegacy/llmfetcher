@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import re
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, override
+from typing import Any, Callable, Dict, List, Optional, Protocol, override
 
 from .base import ContextHandler
 from ..llm_types import (
@@ -105,6 +106,7 @@ class ContextHandlerLinear(ContextHandler):
         max_context_threshold: int = 262144,
         compaction_input_char_limit: int = _COMPACTION_INPUT_CHAR_LIMIT,
         compaction_output_max_tokens: int = _COMPACTION_OUTPUT_MAX_TOKENS,
+        event_hook: Optional[Callable[[str, str, dict], None]] = None,
     ) -> None:
         """
         Initiate the context handler.
@@ -118,6 +120,11 @@ class ContextHandlerLinear(ContextHandler):
                 Maximum transcript size sent to the standalone compactor.
             compaction_output_max_tokens:
                 Maximum generated tokens requested from the compactor.
+            event_hook:
+                Optional observer invoked synchronously with
+                ``(event_type, message, data)`` for each compaction lifecycle
+                stage (started / success / failed / skipped). A raising hook
+                is isolated so a broken observer never breaks compaction.
 
         Raises:
             ValueError: If either compaction budget is not positive.
@@ -144,6 +151,9 @@ class ContextHandlerLinear(ContextHandler):
         self.last_compaction_error: Optional[str] = None
         self.last_compaction_raw: Optional[str] = None
 
+        # Optional compaction lifecycle observer (event_type, message, data).
+        self.event_hook: Optional[Callable[[str, str, dict], None]] = event_hook
+
         # Internal round counter — timeline for every added message.
         self._round: int = 0
 
@@ -167,6 +177,44 @@ class ContextHandlerLinear(ContextHandler):
     def drain_usage_records(self) -> list[UsageRecord]:
         """Return completed internal-call usage records exactly once."""
         return drain_records(self._usage_records)
+
+
+    def set_compaction_event_hook(
+        self,
+        hook: Optional[Callable[[str, str, dict], None]],
+    ) -> None:
+        """Attach or detach the compaction lifecycle event observer.
+
+        The hook receives ``(event_type, message, data)`` synchronously for
+        every compaction stage (:data:`context:compact_started`,
+        ``context:compact_success``, ``context:compact_failed`` or
+        ``context:compact_skipped``). Passing ``None`` detaches it. A raising
+        hook is isolated by :meth:`_emit_compaction_event`, so a broken
+        observer can never corrupt or conceal a compaction attempt.
+        """
+        self.event_hook = hook
+
+    def _emit_compaction_event(
+        self,
+        event_type: str,
+        message: str,
+        data: Dict[str, Any],
+    ) -> None:
+        """Notify the attached observer, isolating any observer failure.
+
+        Args:
+            event_type: Machine-readable compaction lifecycle event name.
+            message: Human-readable compaction status description.
+            data: Structured payload for the browser (round, sizes, ratios).
+        """
+        hook = self.event_hook
+        if hook is None:
+            return
+        try:
+            hook(event_type, message, data)
+        except Exception:
+            # A broken observer must not conceal or corrupt the compaction.
+            pass
 
 
     @override
@@ -248,11 +296,18 @@ class ContextHandlerLinear(ContextHandler):
         if not self.messages:
             self.last_compaction_error = "No active messages are available to compact."
             self.last_compaction_raw = None
+            self._emit_compaction_event(
+                "context:compact_skipped",
+                f"Context compaction skipped (round {self._round}): no active messages",
+                {"round": self._round, "reason": self.last_compaction_error},
+            )
             return False
 
         # Clear stale diagnostics before every independent compaction attempt.
         self.last_compaction_error = None
         self.last_compaction_raw = None
+        started_at = time.time()
+        round_index = self._round
 
         # Provenance is owned by the context handler, never by the model.
         # The next abstract includes the preceding abstract in its prompt, so
@@ -263,6 +318,20 @@ class ContextHandlerLinear(ContextHandler):
         source_timelines.extend(m.timeline for m in self.messages)
 
         compaction_input = self._build_compaction_input()
+        context_size = self._estimate_context_size()
+        self._emit_compaction_event(
+            "context:compact_started",
+            f"Context compaction started (round {round_index})",
+            {
+                "round": round_index,
+                "context_size": context_size,
+                "compaction_input_characters": len(compaction_input),
+                "compress_threshold": self.compress_threshold,
+                "ratio": round(
+                    100.0 * context_size / self.compress_threshold, 1
+                ) if self.compress_threshold else 0.0,
+            },
+        )
         try:
             result: LLMOutput = self.llm_handler.fetch(
                 msg=compaction_input,
@@ -273,6 +342,15 @@ class ContextHandlerLinear(ContextHandler):
             )
         except Exception as exc:
             self.last_compaction_error = f"Compaction model request failed: {exc}"
+            self._emit_compaction_event(
+                "context:compact_failed",
+                f"Context compaction failed (round {round_index}): {self.last_compaction_error}",
+                {
+                    "round": round_index,
+                    "error": self.last_compaction_error,
+                    "duration_ms": round((time.time() - started_at) * 1000),
+                },
+            )
             raise
         # Account for the compaction LLM call in the reported usage.
         self.record_usage(result.usage)
@@ -281,6 +359,15 @@ class ContextHandlerLinear(ContextHandler):
 
         if not compacted_raw.strip():
             self.last_compaction_error = "Compaction model returned an empty content field."
+            self._emit_compaction_event(
+                "context:compact_failed",
+                f"Context compaction failed (round {round_index}): {self.last_compaction_error}",
+                {
+                    "round": round_index,
+                    "error": self.last_compaction_error,
+                    "duration_ms": round((time.time() - started_at) * 1000),
+                },
+            )
             return False
 
         abstract_msg = self._parse_compacted_abstract(compacted_raw)
@@ -290,8 +377,20 @@ class ContextHandlerLinear(ContextHandler):
                 "<context_abstract> element."
             )
             self.last_compaction_raw = compacted_raw
+            self._emit_compaction_event(
+                "context:compact_failed",
+                f"Context compaction failed (round {round_index}): {self.last_compaction_error}",
+                {
+                    "round": round_index,
+                    "error": self.last_compaction_error,
+                    "raw_retained": bool(self.last_compaction_raw),
+                    "duration_ms": round((time.time() - started_at) * 1000),
+                },
+            )
             return False
 
+        # Count archived messages before the active buffer is cleared.
+        archived_count = len(self.messages)
         self.abstract = LLMContextCompacted(
             abstract_msg=abstract_msg,
             source_timeline=source_timelines,
@@ -300,6 +399,18 @@ class ContextHandlerLinear(ContextHandler):
         # failed compaction must leave the active context wholly intact.
         self.archive.extend(self.messages)
         self.messages.clear()
+        self._emit_compaction_event(
+            "context:compact_success",
+            f"Context compaction completed (round {round_index}): "
+            f"{archived_count} message(s) -> 1 abstract",
+            {
+                "round": round_index,
+                "archived_messages": archived_count,
+                "abstract_characters": len(abstract_msg),
+                "source_timeline": source_timelines,
+                "duration_ms": round((time.time() - started_at) * 1000),
+            },
+        )
         return True
 
     @override

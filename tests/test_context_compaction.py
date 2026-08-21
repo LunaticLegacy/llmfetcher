@@ -324,5 +324,138 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertLess(estimate, 100_000)
 
 
+
+
+class CompactionLifecycleEventTests(unittest.TestCase):
+    """Verify compaction lifecycle events reach an optional observer."""
+
+    def _handler(self, compactor, **kwargs) -> ContextHandlerLinear:
+        events: list[tuple[str, str, dict]] = []
+        handler = ContextHandlerLinear(
+            compactor,
+            max_context_threshold=kwargs.pop("threshold", 10**9),
+            **kwargs,
+        )
+        handler.set_compaction_event_hook(
+            lambda event_type, message, data: events.append(
+                (event_type, message, data)
+            )
+        )
+        handler._events = events  # type: ignore[attr-defined]
+        return handler
+
+    def test_success_emits_started_then_success(self) -> None:
+        """A successful compaction reports started -> success in order."""
+        compactor = _RecordingCompactor()
+        handler = self._handler(compactor)
+        handler.add_user_message("one")
+        handler.add_assistant_message(LLMOutput(
+            content="two", provider="test", backend_name="test", model="test",
+        ))
+        self.assertTrue(handler.compact())
+
+        events = handler._events  # type: ignore[attr-defined]
+        self.assertEqual(
+            [event_type for event_type, _, _ in events],
+            ["context:compact_started", "context:compact_success"],
+        )
+        started = events[0][2]
+        success = events[1][2]
+        self.assertEqual(started["round"], 2)
+        self.assertGreater(started["context_size"], 0)
+        self.assertGreater(started["compaction_input_characters"], 0)
+        self.assertEqual(started["compress_threshold"], 10**9)
+        self.assertGreaterEqual(started["ratio"], 0)
+        self.assertEqual(
+            started["ratio"],
+            round(100.0 * started["context_size"] / 10**9, 1),
+        )
+        self.assertGreaterEqual(success["duration_ms"], 0)
+        self.assertEqual(success["archived_messages"], 2)
+        self.assertGreater(success["abstract_characters"], 0)
+        self.assertEqual(success["source_timeline"], [1, 2])
+
+    def test_skipped_emits_only_skipped(self) -> None:
+        """Compacting an empty context reports skipped without a model call."""
+        compactor = _RecordingCompactor()
+        handler = self._handler(compactor)
+
+        self.assertFalse(handler.compact())
+
+        events = handler._events  # type: ignore[attr-defined]
+        self.assertEqual(
+            [event_type for event_type, _, _ in events],
+            ["context:compact_skipped"],
+        )
+        self.assertIn("No active messages", events[0][2]["reason"])
+
+    def test_empty_response_emits_failed_with_error(self) -> None:
+        """An empty model response reports failed with the error message."""
+        compactor = _RecordingCompactor()
+        compactor.response = "   \n  "
+        handler = self._handler(compactor)
+        handler.add_user_message("one")
+
+        self.assertFalse(handler.compact())
+
+        events = handler._events  # type: ignore[attr-defined]
+        self.assertEqual(
+            [event_type for event_type, _, _ in events],
+            ["context:compact_started", "context:compact_failed"],
+        )
+        failed = events[1][2]
+        self.assertIn("empty content", failed["error"])
+        self.assertGreaterEqual(failed["duration_ms"], 0)
+
+    def test_unparseable_response_reports_failed_with_raw_retained(self) -> None:
+        """An unparseable response reports failed while keeping raw content."""
+        compactor = _RecordingCompactor()
+        compactor.response = "I cannot compact this transcript."
+        handler = self._handler(compactor)
+        handler.add_user_message("one")
+
+        self.assertFalse(handler.compact())
+
+        events = handler._events  # type: ignore[attr-defined]
+        self.assertEqual(
+            [event_type for event_type, _, _ in events],
+            ["context:compact_started", "context:compact_failed"],
+        )
+        self.assertTrue(events[1][2]["raw_retained"])
+        self.assertIn("<context_abstract>", events[1][2]["error"])
+
+    def test_model_exception_emits_failed_and_reraises(self) -> None:
+        """A raising fetcher reports failed and still propagates the error."""
+        class _BoomCompactor(_RecordingCompactor):
+            def fetch(self, *args, **kwargs) -> LLMOutput:
+                raise RuntimeError("backend exploded")
+
+        handler = self._handler(_BoomCompactor())
+        handler.add_user_message("one")
+
+        with self.assertRaises(RuntimeError):
+            handler.compact()
+
+        events = handler._events  # type: ignore[attr-defined]
+        self.assertEqual(
+            [event_type for event_type, _, _ in events],
+            ["context:compact_started", "context:compact_failed"],
+        )
+        self.assertIn("backend exploded", events[1][2]["error"])
+
+    def test_raising_hook_never_breaks_compaction(self) -> None:
+        """A broken observer is isolated and compaction semantics stay intact."""
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("one")
+
+        def bad_hook(event_type: str, message: str, data: dict) -> None:
+            raise RuntimeError("observer exploded")
+
+        handler.set_compaction_event_hook(bad_hook)
+        self.assertTrue(handler.compact())
+        self.assertIsNotNone(handler.abstract)
+
+
 if __name__ == "__main__":
     unittest.main()
