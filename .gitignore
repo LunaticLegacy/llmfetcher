@@ -51,3 +51,4 @@ docs/_build/
 # local llm workspace for testing
 worksapce/
 .llmfetcher/
+.dsh-ref/
