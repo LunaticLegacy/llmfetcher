@@ -181,8 +181,14 @@ class ExecutionGraph:
         # agent_name -> node-level mapper (predecessor outputs → input string)
         self._mappers: dict[str, MapperFn] = {}
 
+        # Declarative callbacks created through the dynamic API have a stable
+        # data representation. Keep it beside the executable closures so a
+        # quiescent graph can be restored without serializing Python code.
+        self._declarative_mappers: dict[str, str] = {}
+
         # agent_name -> post-completion router
         self._routers: dict[str, RouterFn] = {}
+        self._declarative_routers: dict[str, list[str]] = {}
 
         # Router selection applies to successors present when the router was
         # configured; later dynamic children remain eligible by default.
@@ -311,17 +317,32 @@ class ExecutionGraph:
                     if agent is None:
                         raise GraphPersistenceError(f"Missing Agent instance for {name!r}")
                     nodes.append({"name": name, "kind": "agent", "spec": serializer(name, agent)})
-            if (self._mappers or self._routers) and callback_serializer is None:
+            custom_mappers = set(self._mappers) - set(self._declarative_mappers)
+            custom_routers = set(self._routers) - set(self._declarative_routers)
+            if (custom_mappers or custom_routers) and callback_serializer is None:
                 raise GraphPersistenceError("Graph callbacks require callback_serializer")
             callbacks = {
-                "mappers": {name: callback_serializer(name, "mapper", fn) for name, fn in self._mappers.items()} if callback_serializer else {},
-                "routers": {name: callback_serializer(name, "router", fn) for name, fn in self._routers.items()} if callback_serializer else {},
+                "mappers": {
+                    name: callback_serializer(name, "mapper", self._mappers[name])
+                    for name in custom_mappers
+                } if callback_serializer else {},
+                "routers": {
+                    name: callback_serializer(name, "router", self._routers[name])
+                    for name in custom_routers
+                } if callback_serializer else {},
             }
             snapshot = {
                 "version": _SNAPSHOT_VERSION, "max_concurrency_agents": self.max_concurrency_agents,
                 "nodes": nodes,
                 "edges": [{"source": source, "target": target} for source in sorted(self._successors) for target in sorted(self._successors[source])],
                 "callbacks": callbacks,
+                "declarative_callbacks": {
+                    "mappers": dict(self._declarative_mappers),
+                    "routers": {
+                        name: list(targets)
+                        for name, targets in self._declarative_routers.items()
+                    },
+                },
                 "router_scopes": {name: sorted(scope) for name, scope in self._router_scopes.items()},
                 "task_bus": self.task_bus.to_snapshot(), "task_by_agent": dict(self._task_by_agent), "task_by_id": dict(self._task_by_id),
             }
@@ -377,7 +398,8 @@ class ExecutionGraph:
             graph = cls(int(snapshot["max_concurrency_agents"]))
             nodes, edges = snapshot["nodes"], snapshot["edges"]
             callbacks = snapshot.get("callbacks", {})
-            if not isinstance(nodes, list) or not isinstance(edges, list) or not isinstance(callbacks, Mapping):
+            declarative = snapshot.get("declarative_callbacks", {})
+            if not isinstance(nodes, list) or not isinstance(edges, list) or not isinstance(callbacks, Mapping) or not isinstance(declarative, Mapping):
                 raise ValueError("nodes, edges, and callbacks are required")
             routers = callbacks.get("routers", {})
             mappers = callbacks.get("mappers", {})
@@ -394,6 +416,16 @@ class ExecutionGraph:
                 else: raise ValueError(f"Unknown node kind {kind!r}")
             for edge in edges:
                 graph.add_connection(str(edge["source"]), str(edge["target"]))
+            declared_mappers = declarative.get("mappers", {})
+            declared_routers = declarative.get("routers", {})
+            if not isinstance(declared_mappers, Mapping) or not isinstance(declared_routers, Mapping):
+                raise ValueError("declarative callback maps must be objects")
+            for name, mode in declared_mappers.items():
+                graph._restore_declarative_mapper(str(name), str(mode))
+            for name, targets in declared_routers.items():
+                if not isinstance(targets, list):
+                    raise ValueError("declarative router targets must be arrays")
+                graph._restore_declarative_router(str(name), [str(target) for target in targets])
             if (mappers or routers) and callback_resolver is None: raise GraphPersistenceError("Graph callbacks require callback_resolver")
             for name, callback_id in mappers.items(): graph.set_mapper(str(name), callback_resolver(str(name), "mapper", str(callback_id)))
             for name, callback_id in routers.items():
@@ -987,6 +1019,101 @@ class ExecutionGraph:
         )
         return assignment
 
+    def task_id_for_agent(self, agent_name: str) -> str:
+        """Return the latest TaskBus assignment owned by one worker.
+
+        Args:
+            agent_name: Existing dispatched worker identity.
+
+        Returns:
+            Current task identifier used by its report handler.
+
+        Raises:
+            KeyError: If the Agent is not a dispatched worker.
+        """
+        with self._topology_lock:
+            task_id = self._task_by_agent.get(agent_name)
+            if not task_id:
+                raise KeyError(f"Agent {agent_name!r} has no task assignment")
+            return task_id
+
+    def redispatch_task(
+        self,
+        *,
+        agent_name: str,
+        objective: str,
+        handoff: str,
+        reply_to: str,
+        expected_artifacts: Iterable[str] = (),
+        task_id: str = "",
+    ) -> TaskAssignment:
+        """Assign a fresh task to an existing terminal dispatched worker.
+
+        Args:
+            agent_name: Existing worker to reactivate without recreating it.
+            objective: New concrete objective delivered in its task package.
+            handoff: Bounded coordinator state relevant to the new objective.
+            reply_to: Coordinator receiving the new structured report.
+            expected_artifacts: Optional output references expected for this run.
+            task_id: Optional new task identity; generated when empty.
+
+        Returns:
+            Newly queued assignment. Earlier task records remain immutable.
+
+        Raises:
+            ValueError: If the worker is unknown, was not dispatched through
+                TaskBus, or its current assignment is not terminal.
+
+        Side Effects:
+            Retains the Agent instance and topology, advances only its current
+            TaskBus pointer, queues it for the active scheduler, and emits a
+            ``task:redispatched`` lifecycle event.
+        """
+        terminal_states = {"completed", "failed", "interrupted", "cancelled"}
+        with self._topology_lock:
+            agent = self.agent_dict.get(agent_name)
+            previous_task_id = self._task_by_agent.get(agent_name)
+            if agent is None or not previous_task_id:
+                raise ValueError(f"Agent {agent_name!r} is not a dispatched worker")
+            previous_state = self.task_bus.task_states().get(previous_task_id)
+            if previous_state not in terminal_states:
+                raise ValueError(
+                    f"Agent {agent_name!r} cannot be revived while task "
+                    f"{previous_task_id!r} is {previous_state or 'unknown'}"
+                )
+            assignment = self.task_bus.create_assignment(
+                recipient=agent_name,
+                reply_to=reply_to,
+                objective=objective,
+                handoff=handoff,
+                expected_artifacts=expected_artifacts,
+                task_id=task_id,
+            )
+            # Keep the old task-id mapping for audit/history while making
+            # report_task and the scheduler resolve this new assignment.
+            self._task_by_agent[agent_name] = assignment.id
+            self._task_by_id[assignment.id] = agent_name
+            self._node_states[agent_name] = {
+                "state": "queued",
+                "message": "已复活，等待新任务调度",
+                "task_id": assignment.id,
+                "updated_at": time.time(),
+            }
+        self._dynamic_ready.put(agent_name)
+        self._emit(
+            "graph",
+            agent_name,
+            "task:redispatched",
+            f"Task {assignment.id} redispatched to {agent_name}",
+            data={
+                "task_id": assignment.id,
+                "previous_task_id": previous_task_id,
+                "reply_to": assignment.reply_to,
+                "objective": assignment.objective,
+            },
+        )
+        return assignment
+
     def report_task(
         self,
         *,
@@ -1164,18 +1291,12 @@ class ExecutionGraph:
         Returns:
             Status text for the coordinator Agent.
         """
-        import json
-        modes = {
-            "labelled": lambda outputs: "\n\n".join(f"[{name}]\n{value}" for name, value in sorted(outputs.items())),
-            "concat": lambda outputs: "\n\n".join(str(value) for _, value in sorted(outputs.items())),
-            "json": lambda outputs: json.dumps(outputs, ensure_ascii=False, indent=2, default=str),
-        }
-        if mode not in modes:
-            return f"Error: mapper mode must be one of {', '.join(sorted(modes))}"
+        if mode not in {"labelled", "concat", "json"}:
+            return "Error: mapper mode must be one of concat, json, labelled"
         with self._topology_lock:
             if agent_name not in self.agent_dict:
                 return f"Error: agent '{agent_name}' does not exist"
-            self._mappers[agent_name] = modes[mode]
+            self._restore_declarative_mapper(agent_name, mode)
         self._emit("graph", agent_name, "dynamic:set_mapper", f"Mapper '{mode}' set on {agent_name}", data={"agent": agent_name, "mode": mode})
         return f"Mapper '{mode}' set on {agent_name}"
 
@@ -1196,9 +1317,68 @@ class ExecutionGraph:
             if unknown:
                 return f"Error: unknown router targets: {', '.join(unknown)}"
             self._routers[agent_name] = lambda _output: list(targets)
+            self._declarative_routers[agent_name] = list(targets)
             self._router_scopes[agent_name] = set(self._successors[agent_name])
         self._emit("graph", agent_name, "dynamic:set_router", f"Router set on {agent_name}", data={"agent": agent_name, "targets": targets})
         return f"Router set on {agent_name}: {', '.join(targets) or '(none)'}"
+
+    @staticmethod
+    def _mapper_for_mode(mode: str) -> MapperFn:
+        """Return the built-in mapper function for one persisted mode.
+
+        Args:
+            mode: Declarative mapper identity: ``labelled``, ``concat``, or
+                ``json``.
+
+        Returns:
+            Pure mapper callable corresponding to ``mode``.
+
+        Raises:
+            ValueError: If the persisted mode is unsupported.
+        """
+        modes = {
+            "labelled": lambda outputs: "\n\n".join(f"[{name}]\n{value}" for name, value in sorted(outputs.items())),
+            "concat": lambda outputs: "\n\n".join(str(value) for _, value in sorted(outputs.items())),
+            "json": lambda outputs: json.dumps(outputs, ensure_ascii=False, indent=2, default=str),
+        }
+        try:
+            return modes[mode]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported declarative mapper mode {mode!r}") from exc
+
+    def _restore_declarative_mapper(self, agent_name: str, mode: str) -> None:
+        """Install one persisted declarative mapper without emitting an event.
+
+        Args:
+            agent_name: Existing target Agent identity.
+            mode: Built-in mapper mode serialized in a graph snapshot.
+
+        Raises:
+            ValueError: If the target or mode is invalid.
+        """
+        if agent_name not in self.agent_dict:
+            raise ValueError(f"Unknown mapper agent {agent_name!r}")
+        self._mappers[agent_name] = self._mapper_for_mode(mode)
+        self._declarative_mappers[agent_name] = mode
+
+    def _restore_declarative_router(self, agent_name: str, targets: list[str]) -> None:
+        """Install one persisted fixed router without emitting an event.
+
+        Args:
+            agent_name: Existing source Agent identity.
+            targets: Existing Agent identities selected after completion.
+
+        Raises:
+            ValueError: If the source or any target is unknown.
+        """
+        if agent_name not in self.agent_dict:
+            raise ValueError(f"Unknown router agent {agent_name!r}")
+        unknown = [target for target in targets if target not in self.agent_dict]
+        if unknown:
+            raise ValueError(f"Unknown router targets: {', '.join(unknown)}")
+        self._routers[agent_name] = lambda _output: list(targets)
+        self._declarative_routers[agent_name] = list(targets)
+        self._router_scopes[agent_name] = set(self._successors[agent_name])
 
     def dynamic_get_info(self) -> str:
         """Return the current graph state as a structured string.
@@ -1299,10 +1479,16 @@ class ExecutionGraph:
                 for name in self.agent_dict
             }
 
+            task_states = self.task_bus.task_states()
+            # Persisted dispatched workers remain graph vertices across
+            # browser turns. Their terminal assignment must not turn them
+            # into implicit roots on every later ``run`` invocation.
             ready = deque(
                 name
                 for name, dependency_count in remaining_dependencies.items()
                 if dependency_count == 0
+                and task_states.get(self._task_by_agent.get(name, ""))
+                not in {"completed", "failed", "interrupted", "cancelled"}
             )
 
             if not ready:

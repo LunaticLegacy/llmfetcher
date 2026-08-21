@@ -31,11 +31,70 @@ from ..swarm_module.swarm import AgentSwarm
 from ..swarm_module.task_bus import TaskAssignment
 
 
+def create_task_report_tool(
+    swarm: AgentSwarm,
+    reporter: str,
+    on_report: Callable[[], None],
+) -> Tool:
+    """Build the terminal report tool for one dispatched or restored worker.
+
+    Args:
+        swarm: Owning Swarm whose TaskBus resolves the worker's current task.
+        reporter: Stable graph identity of the reporting worker.
+        on_report: Callback requesting completion after the report is accepted.
+
+    Returns:
+        A ``report_task`` tool that always resolves the worker's latest task
+        ID, including after an explicit revival or process-restart restore.
+    """
+    def _report_task(**kwargs: Any) -> str:
+        """Submit a bounded structured report to the worker's current task."""
+        def as_list(value: Any) -> list[str]:
+            """Normalize one model-provided scalar or list into string values."""
+            if isinstance(value, list):
+                return [str(item) for item in value]
+            return [str(value)] if value else []
+
+        report = swarm.report_task(
+            task_id=swarm.task_id_for_agent(reporter),
+            reporter=reporter,
+            status=str(kwargs.get("status", "completed")),
+            summary=str(kwargs.get("summary", "")),
+            findings=as_list(kwargs.get("findings", [])),
+            evidence=as_list(kwargs.get("evidence", [])),
+            artifacts=as_list(kwargs.get("artifacts", [])),
+            open_questions=as_list(kwargs.get("open_questions", [])),
+            recommended_next_action=str(kwargs.get("recommended_next_action", "")),
+        )
+        on_report()
+        return f"Report submitted for task {report.task_id} to {report.recipient}."
+
+    return Tool(
+        name="report_task",
+        description=(
+            "Submit the final structured task report. Do not paste raw tool "
+            "output or reasoning; reference detailed files in artifacts. "
+            "This is terminal: the worker stops after this tool batch."
+        ),
+        schemas=ToolSchema(properties=[
+            ToolParameter(name="status", type="string", enum=["completed", "failed", "partial"], default="completed", description="Terminal task status."),
+            ToolParameter(name="summary", type="string", description="Concise conclusion for the coordinator."),
+            ToolParameter(name="findings", type="array", description="Key claims or observations."),
+            ToolParameter(name="evidence", type="array", description="URLs or concise evidence references."),
+            ToolParameter(name="artifacts", type="array", description="Paths or IDs of persisted detailed output."),
+            ToolParameter(name="open_questions", type="array", description="Unresolved follow-up questions."),
+            ToolParameter(name="recommended_next_action", type="string", description="Suggested coordinator follow-up."),
+        ]),
+        handler=_report_task,
+    )
+
+
 def create_swarm_tools(
     swarm: AgentSwarm,
     llm_fetcher: LLMFetcher,
     worker_tool_pool: list[Tool],
     worker_tool_factory: Callable[[str], list[Tool]] | None = None,
+    worker_tool_binder: Callable[[str, Agent, list[Tool]], list[Tool]] | None = None,
     coordinator_name: str = "main_agent",
     worker_max_rounds: int = 30,
     worker_max_tokens: int = 32768,
@@ -59,6 +118,10 @@ def create_swarm_tools(
             its isolated tool collection. When supplied, this takes priority
             over ``worker_tool_pool``. Use it for tools whose handlers close
             over worker-specific state, such as plans or process controls.
+        worker_tool_binder:
+            Optional post-construction adapter receiving the worker name, live
+            ``Agent``, and factory-produced tools. Use it for handlers that
+            must flush or reload the newly created Agent's live context.
         coordinator_name:
             Logical coordinator name used as the default structured-report
             recipient for ``dispatch_subagent``.
@@ -102,6 +165,21 @@ def create_swarm_tools(
             return list(worker_tool_factory(name))
         return list(worker_tool_pool)
 
+    def _bind_tools_for_worker(name: str, agent: Agent) -> list[Tool]:
+        """Bind worker tools after the live Agent exists.
+
+        Args:
+            name: Unique worker identity selected by the coordinator.
+            agent: Fully constructed worker whose live state may be captured.
+
+        Returns:
+            Deterministic tool collection to register on this worker.
+        """
+        tools = _tools_for_worker(name)
+        if worker_tool_binder is not None:
+            return list(worker_tool_binder(name, agent, tools))
+        return tools
+
     def _dynamic_add_agent(**kwargs: Any) -> str:
         """Create and register a new worker agent in the swarm.
 
@@ -132,81 +210,9 @@ def create_swarm_tools(
                 max_context_threshold=worker_max_context_threshold,
             ),
         )
-        agent.add_tools(_tools_for_worker(name))
+        agent.add_tools(_bind_tools_for_worker(name, agent))
 
         return swarm.dynamic_add_agent(name, agent)
-
-    def _report_task_tool(
-        task_id: str,
-        reporter: str,
-        on_report: Callable[[], None],
-    ) -> Tool:
-        """Build the only result-return path available to one dispatched worker.
-
-        Args:
-            task_id: Immutable task identifier assigned to the worker.
-            reporter: Logical worker name attached to the report.
-            on_report: Callback requesting worker completion after the
-                structured report is accepted.
-
-        Returns:
-            Tool definition that submits a bounded structured report.
-        """
-        def _report_task(**kwargs: Any) -> str:
-            """Submit one structured report without exposing raw run output.
-
-            Args:
-                **kwargs: Status, summary, evidence, artifact, and follow-up
-                    fields generated by the worker Agent.
-
-            Returns:
-                Compact report acknowledgement for the worker context.
-            """
-            def as_list(value: Any) -> list[str]:
-                """Normalize one schema field into string list form.
-
-                Args:
-                    value: Model-supplied scalar or sequence value.
-
-                Returns:
-                    List of normalized non-empty strings.
-                """
-                if isinstance(value, list):
-                    return [str(item) for item in value]
-                return [str(value)] if value else []
-
-            report = swarm.report_task(
-                task_id=task_id,
-                reporter=reporter,
-                status=str(kwargs.get("status", "completed")),
-                summary=str(kwargs.get("summary", "")),
-                findings=as_list(kwargs.get("findings", [])),
-                evidence=as_list(kwargs.get("evidence", [])),
-                artifacts=as_list(kwargs.get("artifacts", [])),
-                open_questions=as_list(kwargs.get("open_questions", [])),
-                recommended_next_action=str(kwargs.get("recommended_next_action", "")),
-            )
-            on_report()
-            return f"Report submitted for task {report.task_id} to {report.recipient}."
-
-        return Tool(
-            name="report_task",
-            description=(
-                "Submit the final structured task report. Do not paste raw "
-                "tool output or reasoning; reference detailed files in artifacts. "
-                "This is terminal: the worker stops after this tool batch."
-            ),
-            schemas=ToolSchema(properties=[
-                ToolParameter(name="status", type="string", enum=["completed", "failed", "partial"], default="completed", description="Terminal task status."),
-                ToolParameter(name="summary", type="string", description="Concise conclusion for the coordinator."),
-                ToolParameter(name="findings", type="array", description="Key claims or observations."),
-                ToolParameter(name="evidence", type="array", description="URLs or concise evidence references."),
-                ToolParameter(name="artifacts", type="array", description="Paths or IDs of persisted detailed output."),
-                ToolParameter(name="open_questions", type="array", description="Unresolved follow-up questions."),
-                ToolParameter(name="recommended_next_action", type="string", description="Suggested coordinator follow-up."),
-            ]),
-            handler=_report_task,
-        )
 
     def _dispatch_subagent(**kwargs: Any) -> str:
         """Create, task, and immediately schedule one independent worker.
@@ -269,8 +275,8 @@ def create_swarm_tools(
                 max_context_threshold=worker_max_context_threshold,
             ),
         )
-        worker.add_tools(_tools_for_worker(name) + [
-            _report_task_tool(task_id, name, worker.request_completion),
+        worker.add_tools(_bind_tools_for_worker(name, worker) + [
+            create_task_report_tool(swarm, name, worker.request_completion),
         ])
         return swarm.dispatch_task(
             agent_name=name,
@@ -319,6 +325,42 @@ def create_swarm_tools(
                 ],
             },
             ensure_ascii=False,
+        )
+
+    def _revive_agent(**kwargs: Any) -> str:
+        """Queue a fresh task for an existing terminal dispatched worker.
+
+        Args:
+            **kwargs: Worker name, new objective/handoff, report recipient,
+                and expected artifacts supplied by the coordinator.
+
+        Returns:
+            New task ID on success, or a safe validation message on failure.
+        """
+        name = str(kwargs.get("name", "")).strip()
+        objective = str(kwargs.get("objective", "")).strip()
+        handoff = str(kwargs.get("handoff", "")).strip()
+        reply_to = str(kwargs.get("reply_to", coordinator_name)).strip() or coordinator_name
+        expected_artifacts = kwargs.get("expected_artifacts", [])
+        if isinstance(expected_artifacts, str):
+            expected_artifacts = [expected_artifacts]
+        if not isinstance(expected_artifacts, list):
+            return "Error: expected_artifacts must be an array."
+        if not name or not objective:
+            return "Error: name and objective are required."
+        try:
+            assignment = swarm.redispatch_task(
+                agent_name=name,
+                objective=objective,
+                handoff=handoff,
+                reply_to=reply_to,
+                expected_artifacts=[str(item) for item in expected_artifacts],
+            )
+        except (KeyError, ValueError) as exc:
+            return f"Error: {exc}"
+        return (
+            f"Revived {assignment.recipient} with task_id={assignment.id}. "
+            "Wait for its new report with wait_for_reports."
         )
 
     def _wait_for_reports(**kwargs: Any) -> str:
@@ -428,6 +470,22 @@ def create_swarm_tools(
                 ToolParameter(name="expected_artifacts", type="array", description="Expected detailed-output paths or names."),
             ]),
             handler=_dispatch_subagent,
+        ),
+        Tool(
+            name="revive_agent",
+            description=(
+                "Reuse an existing terminal dispatched worker with a fresh task ID, "
+                "objective, and handoff. Its Agent instance, tools, and persisted "
+                "context are retained; its earlier task report remains immutable."
+            ),
+            schemas=ToolSchema(properties=[
+                ToolParameter(name="name", type="string", description="Existing terminal worker name to reactivate."),
+                ToolParameter(name="objective", type="string", description="New concrete task assigned to that worker."),
+                ToolParameter(name="handoff", type="string", description="Bounded coordinator context for the revived task."),
+                ToolParameter(name="reply_to", type="string", default=coordinator_name, description="Agent that receives the new structured report."),
+                ToolParameter(name="expected_artifacts", type="array", description="Expected detailed-output paths or names."),
+            ]),
+            handler=_revive_agent,
         ),
         Tool(
             name="wait_for_reports",

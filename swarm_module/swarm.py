@@ -7,11 +7,15 @@ for full details on scheduling semantics.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping
 
 from ..agent import Agent, AgentRunControl
 from ..events import ExecutionHook
 from .execution_graph import (
+    AgentResolver,
+    CallbackResolver,
+    CallbackSerializer,
     ExecutionGraph,
     MapperFn,
     RouterFn,
@@ -62,6 +66,64 @@ class AgentSwarm:
     def add_agent(self, agent_name: str, agent_instance: Agent) -> bool:
         """Register an ``Agent`` instance as a graph vertex."""
         return self._graph.add_agent(agent_name, agent_instance)
+
+    def save(
+        self,
+        path: str | Path,
+        *,
+        agent_serializer: Callable[[str, Agent], dict[str, Any]] | None = None,
+        callback_serializer: CallbackSerializer | None = None,
+    ) -> Path:
+        """Persist a quiescent Swarm through its execution-graph snapshot.
+
+        Args:
+            path: Destination JSON file, replaced atomically by the graph.
+            agent_serializer: Application-owned safe Agent blueprint encoder.
+            callback_serializer: Optional stable-ID encoder for custom mapper
+                or router callbacks; declarative dynamic callbacks need none.
+
+        Returns:
+            The written snapshot path.
+
+        Raises:
+            GraphPersistenceError: If an Agent or custom callback cannot be
+                represented safely.
+        """
+        return self._graph.save(
+            path,
+            agent_serializer=agent_serializer,
+            callback_serializer=callback_serializer,
+        )
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        agent_resolver: AgentResolver | None = None,
+        callback_resolver: CallbackResolver | None = None,
+    ) -> "AgentSwarm":
+        """Restore a quiescent Swarm without exposing its private graph field.
+
+        Args:
+            path: Snapshot written by :meth:`save`.
+            agent_resolver: Application-owned Agent blueprint decoder.
+            callback_resolver: Resolver for any custom mapper/router callback.
+
+        Returns:
+            A Swarm with restored topology, task mailbox, and Agent instances.
+
+        Raises:
+            GraphPersistenceError: If the snapshot is invalid or requires a
+                missing resolver.
+        """
+        swarm = cls.__new__(cls)
+        swarm._graph = ExecutionGraph.load(
+            path,
+            agent_resolver=agent_resolver,
+            callback_resolver=callback_resolver,
+        )
+        return swarm
 
     def add_routing_node(self, name: str, router: RouterFn) -> bool:
         """Register a lightweight non-LLM routing node."""
@@ -151,6 +213,69 @@ class AgentSwarm:
         return self._graph.dispatch_task(
             agent_name=agent_name,
             agent_instance=agent_instance,
+            objective=objective,
+            handoff=handoff,
+            reply_to=reply_to,
+            expected_artifacts=expected_artifacts,
+            task_id=task_id,
+        )
+
+    def task_id_for_agent(self, agent_name: str) -> str:
+        """Return the latest TaskBus assignment for a dispatched worker.
+
+        Args:
+            agent_name: Existing worker graph identity.
+
+        Returns:
+            Current assignment ID used when the worker reports completion.
+        """
+        return self._graph.task_id_for_agent(agent_name)
+
+    def get_agent(self, agent_name: str) -> Agent | None:
+        """Return one restored or live Agent without exposing topology maps.
+
+        Args:
+            agent_name: Registered graph identity.
+
+        Returns:
+            The Agent instance, or ``None`` for unknown/routing-only nodes.
+        """
+        return self._graph.agent_dict.get(agent_name)
+
+    def dispatched_agent_names(self) -> tuple[str, ...]:
+        """Return worker identities that own TaskBus assignments.
+
+        Returns:
+            Stable tuple of dispatched worker names, including terminal workers
+            intentionally retained for inspection or later revival.
+        """
+        return tuple(sorted(self._graph._task_by_agent))
+
+    def redispatch_task(
+        self,
+        *,
+        agent_name: str,
+        objective: str,
+        handoff: str,
+        reply_to: str,
+        expected_artifacts: Iterable[str] = (),
+        task_id: str = "",
+    ) -> TaskAssignment:
+        """Reactivate one terminal dispatched worker with a new task record.
+
+        Args:
+            agent_name: Existing terminal worker to reuse.
+            objective: New concrete task objective.
+            handoff: Bounded coordinator state for that task.
+            reply_to: Agent receiving the next structured report.
+            expected_artifacts: Optional expected detailed outputs.
+            task_id: Optional new task identity.
+
+        Returns:
+            Fresh queued TaskBus assignment; prior assignments remain visible.
+        """
+        return self._graph.redispatch_task(
+            agent_name=agent_name,
             objective=objective,
             handoff=handoff,
             reply_to=reply_to,

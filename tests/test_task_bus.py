@@ -81,6 +81,59 @@ class _ReportingWorker:
         return "RAW WORKER TRANSCRIPT MUST NOT BE HANDED OFF"
 
 
+class _CountingAgent:
+    """Lightweight graph member that records executions across graph turns."""
+
+    def __init__(self, result: str = "done") -> None:
+        """Initialize the deterministic result and execution counter.
+
+        Args:
+            result: Text returned each time the graph schedules this member.
+        """
+        self.result = result
+        self.run_count = 0
+
+    def run(self, message: str, control: Any = None) -> str:
+        """Count a graph submission and return the configured value.
+
+        Args:
+            message: Scheduler input; retained only for call compatibility.
+            control: Optional stop controller; unused by this test member.
+
+        Returns:
+            Stable configured result.
+        """
+        del message, control
+        self.run_count += 1
+        return self.result
+
+
+class _ReportingCountingWorker(_CountingAgent):
+    """Counting dispatched worker that records one terminal TaskBus report."""
+
+    def __init__(self, graph: ExecutionGraph, agent_name: str) -> None:
+        """Store the graph/task pair used to submit a completed report.
+
+        Args:
+            graph: Running graph whose TaskBus owns the assignment.
+            agent_name: Worker identity whose current assignment is reported.
+        """
+        super().__init__("worker done")
+        self.graph = graph
+        self.agent_name = agent_name
+
+    def run(self, message: str, control: Any = None) -> str:
+        """Submit task completion, then return the normal counting result."""
+        result = super().run(message, control)
+        self.graph.report_task(
+            task_id=self.graph.task_id_for_agent(self.agent_name),
+            reporter="retained_worker",
+            status="completed",
+            summary="The retained task finished.",
+        )
+        return result
+
+
 class _WaitingCoordinator:
     """Minimal coordinator that dispatches one worker then waits for its report."""
 
@@ -199,6 +252,68 @@ class TaskBusGraphTests(unittest.TestCase):
 
         self.assertEqual(outputs["late_child"], "dynamic child executed")
 
+    def test_next_graph_turn_retains_terminal_worker_without_resubmitting_it(self) -> None:
+        """A retained Swarm reruns its coordinator but not old task workers.
+
+        Browser sessions reuse the in-memory graph on a later user turn. A
+        completed dispatched assignment remains inspectable in its topology,
+        while only new coordinator work is scheduled until explicitly
+        redispatched in a future task lifecycle.
+        """
+        graph = ExecutionGraph(max_concurrency_agents=2)
+        coordinator = _CountingAgent("coordinator done")
+        task_id = "retained-task"
+        worker = _ReportingCountingWorker(graph, "retained_worker")
+        graph.add_agent("coordinator", cast(Agent, coordinator))
+        graph.dispatch_task(
+            agent_name="retained_worker",
+            agent_instance=cast(Agent, worker),
+            objective="Finish once.",
+            handoff="No additional context.",
+            reply_to="coordinator",
+            task_id=task_id,
+        )
+
+        first = graph.run("first browser turn")
+        second = graph.run("second browser turn")
+
+        self.assertIn("retained_worker", first)
+        self.assertNotIn("retained_worker", second)
+        self.assertEqual(coordinator.run_count, 2)
+        self.assertEqual(worker.run_count, 1)
+        self.assertEqual(graph.task_bus.task_states()[task_id], "completed")
+        self.assertIn("retained_worker", graph.agent_dict)
+
+    def test_terminal_worker_can_be_redispatched_with_a_new_task_identity(self) -> None:
+        """Revival preserves the Agent but never mutates its old task record."""
+        graph = ExecutionGraph(max_concurrency_agents=2)
+        graph.add_agent("coordinator", cast(Agent, _CountingAgent()))
+        worker = _ReportingCountingWorker(graph, "retained_worker")
+        original = graph.dispatch_task(
+            agent_name="retained_worker",
+            agent_instance=cast(Agent, worker),
+            objective="Finish the original task.",
+            handoff="Original handoff.",
+            reply_to="coordinator",
+        )
+        graph.run("first browser turn")
+
+        revived = graph.redispatch_task(
+            agent_name="retained_worker",
+            objective="Inspect the follow-up.",
+            handoff="New handoff.",
+            reply_to="coordinator",
+        )
+        outputs = graph.run("second browser turn")
+
+        self.assertNotEqual(revived.id, original.id)
+        self.assertIn("retained_worker", outputs)
+        self.assertEqual(worker.run_count, 2)
+        states = graph.task_bus.task_states()
+        self.assertEqual(states[original.id], "completed")
+        self.assertEqual(states[revived.id], "completed")
+        self.assertEqual(graph.task_id_for_agent("retained_worker"), revived.id)
+
     def test_terminal_tool_stops_agent_before_another_model_round(self) -> None:
         """Stop the Agent after a terminal tool rather than using its full budget."""
         fetcher = _CompletionFetcher()
@@ -267,6 +382,87 @@ class TaskBusGraphTests(unittest.TestCase):
         self.assertIn("worker_marker_graph_worker", graph_worker.tool_handler.tool_dict)
         self.assertIn("worker_marker_task_worker", task_worker.tool_handler.tool_dict)
         self.assertIn("report_task", task_worker.tool_handler.tool_dict)
+
+    def test_worker_tool_binder_receives_live_agents_for_both_spawn_paths(self) -> None:
+        """Post-construction worker binding can safely capture live Agents.
+
+        Context-edit tools need this hook because their persistence/reload
+        callbacks must refer to the actual dynamically created worker.
+        """
+        swarm = AgentSwarm()
+        bound: list[tuple[str, Agent]] = []
+
+        def bind(name: str, agent: Agent, tools: list[Tool]) -> list[Tool]:
+            """Record the live worker and append a post-binding marker."""
+            bound.append((name, agent))
+            return tools + [Tool(
+                name=f"bound_marker_{name}",
+                description="Confirm post-construction worker binding.",
+                schemas=ToolSchema(),
+                handler=lambda: agent.context_handler is not None,
+            )]
+
+        tools_by_name = {tool.name: tool for tool in create_swarm_tools(
+            swarm=swarm,
+            llm_fetcher=cast(Any, _CompletionFetcher()),
+            worker_tool_pool=[],
+            worker_tool_binder=bind,
+        )}
+        tools_by_name["dynamic_add_agent"].handler(
+            name="graph_worker", system_prompt="Work independently.",
+        )
+        tools_by_name["dispatch_subagent"].handler(
+            name="task_worker",
+            system_prompt="Work independently.",
+            objective="Test live worker binding.",
+            handoff="No additional context.",
+        )
+
+        self.assertEqual([name for name, _ in bound], ["graph_worker", "task_worker"])
+        graph_worker = swarm._graph.agent_dict["graph_worker"]
+        task_worker = swarm._graph.agent_dict["task_worker"]
+        assert graph_worker is not None and task_worker is not None
+        self.assertIs(bound[0][1], graph_worker)
+        self.assertIs(bound[1][1], task_worker)
+        self.assertIn("bound_marker_graph_worker", graph_worker.tool_handler.tool_dict)
+        self.assertIn("bound_marker_task_worker", task_worker.tool_handler.tool_dict)
+
+    def test_revive_agent_tool_queues_a_new_assignment_for_terminal_worker(self) -> None:
+        """The public revival tool keeps the worker while advancing task ID."""
+        swarm = AgentSwarm()
+        worker = _CountingAgent("worker")
+        original = swarm.dispatch_task(
+            agent_name="worker",
+            agent_instance=cast(Agent, worker),
+            objective="Original task.",
+            handoff="Original handoff.",
+            reply_to="coordinator",
+        )
+        swarm.report_task(
+            task_id=original.id,
+            reporter="worker",
+            status="completed",
+            summary="Original task complete.",
+        )
+        tools = {tool.name: tool for tool in create_swarm_tools(
+            swarm=swarm,
+            llm_fetcher=cast(Any, _CompletionFetcher()),
+            worker_tool_pool=[],
+        )}
+
+        response = tools["revive_agent"].handler(
+            name="worker",
+            objective="Follow-up task.",
+            handoff="Fresh handoff.",
+            reply_to="coordinator",
+        )
+
+        revived_id = swarm.task_id_for_agent("worker")
+        self.assertIn("Revived worker with task_id=", response)
+        self.assertNotEqual(revived_id, original.id)
+        self.assertEqual(swarm._graph.task_bus.task_states()[original.id], "completed")
+        self.assertEqual(swarm._graph.task_bus.task_states()[revived_id], "queued")
+        self.assertIs(swarm._graph.agent_dict["worker"], worker)
 
     def test_report_outcome_and_unfinished_cleanup_use_precise_terminals(self) -> None:
         """Preserve reports while interrupting running and cancelling queued work."""

@@ -176,6 +176,46 @@ class Agent:
         """
         self._completion_requested.set()
 
+    def set_context_threshold(
+        self,
+        max_context_threshold: int,
+        *,
+        persist: bool = False,
+    ) -> bool:
+        """Update the compaction threshold used by this Agent's context.
+
+        Args:
+            max_context_threshold: Character count that triggers context
+                compaction. It must be at least ``1024``.
+            persist: Whether to immediately save the updated handler at
+                ``context_path`` so a following :meth:`run` load observes the
+                new value.
+
+        Returns:
+            ``True`` when the active handler exposes a mutable compression
+            threshold and, when requested, saving succeeds. ``False`` means a
+            custom handler does not support threshold synchronization or its
+            persistence failed.
+
+        Raises:
+            ValueError: If ``max_context_threshold`` is below ``1024``.
+
+        Side Effects:
+            Updates ``self.max_context_threshold``. Graph context handlers are
+            synchronized through their embedded linear handler.
+        """
+        if max_context_threshold < 1024:
+            raise ValueError("max_context_threshold must be at least 1024")
+        self.max_context_threshold = max_context_threshold
+        handler = self.context_handler
+        linear = getattr(handler, "linear", handler)
+        if not hasattr(linear, "compress_threshold"):
+            return False
+        linear.compress_threshold = max_context_threshold
+        if persist and self.context_path is not None:
+            return bool(handler.save(self.context_path))
+        return True
+
     def _emit(
         self,
         source: str,
