@@ -323,7 +323,107 @@ class ContextCompactionTests(unittest.TestCase):
         estimate = handler._estimate_context_size()
         self.assertLess(estimate, 100_000)
 
+    def test_compaction_reanchors_latest_user_message_for_next_round(self) -> None:
+        """The first post-compaction round still has an explicit user input.
 
+        Compaction archives every active message.  Without re-anchoring, the
+        next request would be system-only (agent prompt + compacted abstract)
+        and some providers return an empty completion for a request with no
+        user turn, which the Agent rejects as ``EMPTY_RESPONSE``.
+        """
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("original goal")
+        handler.add_assistant_message(LLMOutput(
+            content="working", provider="test", backend_name="test", model="test",
+        ))
+
+        self.assertTrue(handler.compact())
+        # The active buffer stays empty after compaction; the resume turn is
+        # derived at request-build time, never stored.
+        self.assertEqual(handler.messages, [])
+        assert handler.abstract is not None
+
+        # The rebuilt request carries the abstract plus a derived resume user
+        # turn so the first post-compaction round has a concrete input.
+        built = handler.build_messages()
+        self.assertEqual([m["role"] for m in built], ["system", "user"])
+        self.assertIn("bounded summary", built[0]["content"])
+        self.assertEqual(
+            built[1]["content"],
+            "Continue user's job from your checkpoint, now.",
+        )
+
+    def test_compaction_reanchors_most_recent_user_message(self) -> None:
+        """The resume turn is derived, so no user message is re-stored."""
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("first goal")
+        handler.add_assistant_message(LLMOutput(
+            content="one", provider="test", backend_name="test", model="test",
+        ))
+        handler.add_user_message("latest goal")
+
+        self.assertTrue(handler.compact())
+
+        # Nothing is re-anchored into the active buffer; the archive keeps
+        # every raw turn exactly once and the request derives the resume turn.
+        self.assertEqual(handler.messages, [])
+        self.assertEqual(
+            [m.content for m in handler.archive],
+            ["first goal", "one", "latest goal"],
+        )
+        built = handler.build_messages()
+        self.assertEqual([m["role"] for m in built], ["system", "user"])
+        self.assertEqual(
+            built[1]["content"],
+            "Continue user's job from your checkpoint, now.",
+        )
+
+    def test_compaction_without_user_message_still_adds_resume_prompt(self) -> None:
+        """A user-less archive still yields a usable next-round request."""
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_assistant_message(LLMOutput(
+            content="only assistant", provider="test", backend_name="test", model="test",
+        ))
+
+        self.assertTrue(handler.compact())
+
+        self.assertEqual(handler.messages, [])
+        built = handler.build_messages()
+        self.assertEqual([m["role"] for m in built], ["system", "user"])
+        self.assertEqual(
+            built[1]["content"],
+            "Continue user's job from your checkpoint, now.",
+        )
+
+    def test_resume_turn_cleared_once_real_user_message_arrives(self) -> None:
+        """A real user turn supersedes the derived resume prompt."""
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("original goal")
+        handler.add_assistant_message(LLMOutput(
+            content="working", provider="test", backend_name="test", model="test",
+        ))
+        self.assertTrue(handler.compact())
+
+        # Before a real user message arrives, the resume turn is present.
+        self.assertIn(
+            "Continue user's job from your checkpoint, now.",
+            str(handler.build_messages()),
+        )
+
+        # A real user message supersedes the derived resume prompt.
+        handler.add_user_message("next real request")
+        self.assertNotIn(
+            "Continue user's job from your checkpoint, now.",
+            str(handler.build_messages()),
+        )
+        self.assertEqual(
+            handler.messages[-1].content,
+            "next real request",
+        )
 
 
 class CompactionLifecycleEventTests(unittest.TestCase):

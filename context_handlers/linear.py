@@ -156,6 +156,9 @@ class ContextHandlerLinear(ContextHandler):
 
         # Internal round counter — timeline for every added message.
         self._round: int = 0
+        # Set by a successful compaction so the next build_messages() appends
+        # a derived resume user turn (never stored, never persisted).
+        self._pending_resume: bool = False
 
     # -- public API ---------------------------------------------------------
     # System prompt should NOT be included in this context manager.
@@ -171,6 +174,7 @@ class ContextHandlerLinear(ContextHandler):
         self.messages = []
         self.archive = []
         self._round = 0
+        self._pending_resume = False
         self._usage_records.clear()
         return True
 
@@ -237,6 +241,9 @@ class ContextHandlerLinear(ContextHandler):
             timeline=self._round,
             content=message,
         ))
+        # A real user turn supersedes any derived resume prompt left by a
+        # previous compaction.
+        self._pending_resume = False
 
     @override
     def add_assistant_message(
@@ -399,6 +406,16 @@ class ContextHandlerLinear(ContextHandler):
         # failed compaction must leave the active context wholly intact.
         self.archive.extend(self.messages)
         self.messages.clear()
+
+        # Compaction archives every active message, which would otherwise
+        # leave the next request as system-only (agent prompt + compacted
+        # abstract) and some providers return an empty completion for a
+        # request with no user turn (rejected as EMPTY_RESPONSE).  Mark the
+        # handler so the next build_messages() appends a derived resume
+        # user turn.  The resume prompt is intentionally NOT stored in
+        # ``messages``: it must not consume a timeline slot, must not be
+        # re-archived by a later compaction, and must not be persisted.
+        self._pending_resume = True
         self._emit_compaction_event(
             "context:compact_success",
             f"Context compaction completed (round {round_index}): "
@@ -456,6 +473,19 @@ class ContextHandlerLinear(ContextHandler):
                     "role": "system",
                     "content": str(item),
                 })
+
+        # After a successful compaction the active buffer is empty, so the
+        # next request would otherwise be system-only (agent prompt +
+        # compacted abstract).  Append a derived resume user turn so the
+        # first post-compaction round still has an explicit user input to
+        # answer.  This is intentionally ephemeral: it is not stored in
+        # ``messages``, does not consume a timeline slot, is not re-archived
+        # by a later compaction, and is not persisted.
+        if self._pending_resume:
+            messages.append({
+                "role": "user",
+                "content": "Continue user's job from your checkpoint, now.",
+            })
 
         return messages
 
@@ -688,12 +718,15 @@ class ContextHandlerLinear(ContextHandler):
             if not isinstance(saved_round, int) or isinstance(saved_round, bool):
                 raise ValueError("round must be an integer")
             self._round = max([saved_round, *restored_timelines], default=0)
+            # The resume prompt is derived state, never persisted.
+            self._pending_resume = False
             return True
         except (TypeError, KeyError, ValueError):
             self.messages = []
             self.archive = []
             self.abstract = None
             self._round = 0
+            self._pending_resume = False
             return False
 
     # -- serialization helpers ---------------------------------------------
