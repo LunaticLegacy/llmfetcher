@@ -215,7 +215,11 @@ class ContextCompactionTests(unittest.TestCase):
 
         self.assertTrue(handler.compact())
         self.assertEqual([message.timeline for message in handler.archive], [1, 2])
-        self.assertEqual(handler.messages, [])
+        # The latest user message is re-anchored for the next round.
+        self.assertEqual(
+            [message.content for message in handler.messages],
+            ["one", "Continue user's job from your checkpoint, now."],
+        )
         assert handler.abstract is not None
         self.assertEqual(handler.abstract.source_timeline, [1, 2])
 
@@ -322,6 +326,86 @@ class ContextCompactionTests(unittest.TestCase):
 
         estimate = handler._estimate_context_size()
         self.assertLess(estimate, 100_000)
+
+    def test_compaction_reanchors_latest_user_message_for_next_round(self) -> None:
+        """The first post-compaction round still has an explicit user input.
+
+        Compaction archives every active message.  Without re-anchoring, the
+        next request would be system-only (agent prompt + compacted abstract)
+        and some providers return an empty completion for a request with no
+        user turn, which the Agent rejects as ``EMPTY_RESPONSE``.
+        """
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("original goal")
+        handler.add_assistant_message(LLMOutput(
+            content="working", provider="test", backend_name="test", model="test",
+        ))
+
+        self.assertTrue(handler.compact())
+        self.assertEqual(handler.messages, [])
+        assert handler.abstract is not None
+
+        # The latest user message is re-anchored into the active buffer so the
+        # next round has a concrete user input to answer.
+        self.assertEqual(
+            [m.role for m in handler.messages],
+            ["user", "user"],
+        )
+        self.assertEqual(
+            handler.messages[0].content,
+            "original goal",
+        )
+        self.assertEqual(
+            handler.messages[1].content,
+            "Continue user's job from your checkpoint, now.",
+        )
+
+        # The rebuilt request carries both the abstract and the user turn.
+        built = handler.build_messages()
+        self.assertEqual([m["role"] for m in built], ["system", "user", "user"])
+        self.assertIn("bounded summary", built[0]["content"])
+        self.assertEqual(built[1]["content"], "original goal")
+        self.assertEqual(
+            built[2]["content"],
+            "Continue user's job from your checkpoint, now.",
+        )
+
+    def test_compaction_reanchors_most_recent_user_message(self) -> None:
+        """Only the newest user message is re-anchored, not older ones."""
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("first goal")
+        handler.add_assistant_message(LLMOutput(
+            content="one", provider="test", backend_name="test", model="test",
+        ))
+        handler.add_user_message("latest goal")
+
+        self.assertTrue(handler.compact())
+
+        self.assertEqual(
+            handler.messages[0].content,
+            "latest goal",
+        )
+
+    def test_compaction_without_user_message_still_adds_resume_prompt(self) -> None:
+        """A user-less archive still yields a usable next-round request."""
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_assistant_message(LLMOutput(
+            content="only assistant", provider="test", backend_name="test", model="test",
+        ))
+
+        self.assertTrue(handler.compact())
+
+        self.assertEqual(
+            [m.role for m in handler.messages],
+            ["user"],
+        )
+        self.assertEqual(
+            handler.messages[0].content,
+            "Continue user's job from your checkpoint, now.",
+        )
 
 
 

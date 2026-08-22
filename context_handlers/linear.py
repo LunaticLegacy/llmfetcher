@@ -399,6 +399,22 @@ class ContextHandlerLinear(ContextHandler):
         # failed compaction must leave the active context wholly intact.
         self.archive.extend(self.messages)
         self.messages.clear()
+
+        # Re-anchor the most recent user message into the active buffer so
+        # the first post-compaction round still has an explicit user input
+        # to answer.  Compaction archives every active message, which would
+        # otherwise leave the next request as system-only (agent prompt +
+        # compacted abstract) and some providers return an empty completion
+        # for a request with no user turn.
+        last_user = next(
+            (m for m in reversed(self.archive) if m.role == "user"),
+            None,
+        )
+        if last_user is not None:
+            self.add_user_message(message=last_user.content)
+        self.add_user_message(
+            message="Continue user's job from your checkpoint, now."
+        )
         self._emit_compaction_event(
             "context:compact_success",
             f"Context compaction completed (round {round_index}): "
