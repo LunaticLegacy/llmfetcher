@@ -215,11 +215,7 @@ class ContextCompactionTests(unittest.TestCase):
 
         self.assertTrue(handler.compact())
         self.assertEqual([message.timeline for message in handler.archive], [1, 2])
-        # The latest user message is re-anchored for the next round.
-        self.assertEqual(
-            [message.content for message in handler.messages],
-            ["one", "Continue user's job from your checkpoint, now."],
-        )
+        self.assertEqual(handler.messages, [])
         assert handler.abstract is not None
         self.assertEqual(handler.abstract.source_timeline, [1, 2])
 
@@ -343,36 +339,23 @@ class ContextCompactionTests(unittest.TestCase):
         ))
 
         self.assertTrue(handler.compact())
+        # The active buffer stays empty after compaction; the resume turn is
+        # derived at request-build time, never stored.
         self.assertEqual(handler.messages, [])
         assert handler.abstract is not None
 
-        # The latest user message is re-anchored into the active buffer so the
-        # next round has a concrete user input to answer.
-        self.assertEqual(
-            [m.role for m in handler.messages],
-            ["user", "user"],
-        )
-        self.assertEqual(
-            handler.messages[0].content,
-            "original goal",
-        )
-        self.assertEqual(
-            handler.messages[1].content,
-            "Continue user's job from your checkpoint, now.",
-        )
-
-        # The rebuilt request carries both the abstract and the user turn.
+        # The rebuilt request carries the abstract plus a derived resume user
+        # turn so the first post-compaction round has a concrete input.
         built = handler.build_messages()
-        self.assertEqual([m["role"] for m in built], ["system", "user", "user"])
+        self.assertEqual([m["role"] for m in built], ["system", "user"])
         self.assertIn("bounded summary", built[0]["content"])
-        self.assertEqual(built[1]["content"], "original goal")
         self.assertEqual(
-            built[2]["content"],
+            built[1]["content"],
             "Continue user's job from your checkpoint, now.",
         )
 
     def test_compaction_reanchors_most_recent_user_message(self) -> None:
-        """Only the newest user message is re-anchored, not older ones."""
+        """The resume turn is derived, so no user message is re-stored."""
         compactor = _RecordingCompactor()
         handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
         handler.add_user_message("first goal")
@@ -383,9 +366,18 @@ class ContextCompactionTests(unittest.TestCase):
 
         self.assertTrue(handler.compact())
 
+        # Nothing is re-anchored into the active buffer; the archive keeps
+        # every raw turn exactly once and the request derives the resume turn.
+        self.assertEqual(handler.messages, [])
         self.assertEqual(
-            handler.messages[0].content,
-            "latest goal",
+            [m.content for m in handler.archive],
+            ["first goal", "one", "latest goal"],
+        )
+        built = handler.build_messages()
+        self.assertEqual([m["role"] for m in built], ["system", "user"])
+        self.assertEqual(
+            built[1]["content"],
+            "Continue user's job from your checkpoint, now.",
         )
 
     def test_compaction_without_user_message_still_adds_resume_prompt(self) -> None:
@@ -398,16 +390,40 @@ class ContextCompactionTests(unittest.TestCase):
 
         self.assertTrue(handler.compact())
 
+        self.assertEqual(handler.messages, [])
+        built = handler.build_messages()
+        self.assertEqual([m["role"] for m in built], ["system", "user"])
         self.assertEqual(
-            [m.role for m in handler.messages],
-            ["user"],
-        )
-        self.assertEqual(
-            handler.messages[0].content,
+            built[1]["content"],
             "Continue user's job from your checkpoint, now.",
         )
 
+    def test_resume_turn_cleared_once_real_user_message_arrives(self) -> None:
+        """A real user turn supersedes the derived resume prompt."""
+        compactor = _RecordingCompactor()
+        handler = ContextHandlerLinear(compactor, max_context_threshold=10**9)
+        handler.add_user_message("original goal")
+        handler.add_assistant_message(LLMOutput(
+            content="working", provider="test", backend_name="test", model="test",
+        ))
+        self.assertTrue(handler.compact())
 
+        # Before a real user message arrives, the resume turn is present.
+        self.assertIn(
+            "Continue user's job from your checkpoint, now.",
+            str(handler.build_messages()),
+        )
+
+        # A real user message supersedes the derived resume prompt.
+        handler.add_user_message("next real request")
+        self.assertNotIn(
+            "Continue user's job from your checkpoint, now.",
+            str(handler.build_messages()),
+        )
+        self.assertEqual(
+            handler.messages[-1].content,
+            "next real request",
+        )
 
 
 class CompactionLifecycleEventTests(unittest.TestCase):
