@@ -875,9 +875,12 @@ class Agent:
                     )
                 )
                 tool_started_at = time.perf_counter()
-                results_list: List[Any] = self.tool_executor.execute_batch(
+                executions = self.tool_executor.execute_batch_timed(
                     handlers, arguments,
                 )
+                results_list: List[Any] = [
+                    execution.result for execution in executions
+                ]
                 tool_results = dict([
                     (tc.call_id or f"call_{i}", str(r))
                     for i, (tc, r) in enumerate(
@@ -887,9 +890,12 @@ class Agent:
                 have_tool_call = True
 
                 # Preserve typed outcomes for event consumers while the model
-                # receives the string map above on its next round.
+                # receives the string map above on its next round.  Each entry
+                # also carries that tool's own wall-clock duration so the chat
+                # can show per-tool timing without inferring it from the batch.
                 completed_calls = []
-                for call, raw_result in zip(requested_calls, results_list):
+                for call, execution in zip(requested_calls, executions):
+                    raw_result = execution.result
                     result_ok = not isinstance(raw_result, Exception)
                     if isinstance(raw_result, dict) and raw_result.get("ok") is False:
                         result_ok = False
@@ -897,6 +903,7 @@ class Agent:
                         **call,
                         "ok": result_ok,
                         "result": raw_result,
+                        "duration_ms": execution.duration_ms,
                     })
                 self._emit(
                     "agent",
