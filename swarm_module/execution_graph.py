@@ -1803,8 +1803,22 @@ class ExecutionGraph:
                 if agent_name not in self.agent_dict:
                     continue
                 if agent_name in remaining_dependencies:
-                    continue
-                remaining_dependencies[agent_name] = 0
+                    # Already a graph vertex this run. Skip it when it is
+                    # already scheduled (initial ready deque or an activated
+                    # successor) or when its current assignment is not queued
+                    # (running or terminal). Only a mid-run revival of a
+                    # previously-terminal worker needs re-scheduling here: it
+                    # has no predecessors and a fresh queued assignment.
+                    if agent_name in ready:
+                        continue
+                    task_id = self._task_by_agent.get(agent_name, "")
+                    if self.task_bus.task_states().get(task_id) != "queued":
+                        continue
+                    if self._predecessors[agent_name]:
+                        continue
+                    remaining_dependencies[agent_name] = 0
+                else:
+                    remaining_dependencies[agent_name] = 0
             ready.append(agent_name)
 
     @staticmethod

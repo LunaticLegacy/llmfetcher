@@ -219,6 +219,42 @@ class _RouterCoordinator:
         return "coordinator complete"
 
 
+class _RevivingCoordinator:
+    """Revives a terminal worker mid-run on its second graph turn."""
+
+    def __init__(self, graph: ExecutionGraph, worker_name: str) -> None:
+        """Store the graph and worker identity used for the mid-run revival.
+
+        Args:
+            graph: Graph whose worker is revived on the second turn.
+            worker_name: Dispatched worker to reactivate mid-run.
+        """
+        self.graph = graph
+        self.worker_name = worker_name
+        self.turn = 0
+
+    def run(self, message: str, control: Any = None) -> str:
+        """Revive the terminal worker only while the second turn is running.
+
+        Args:
+            message: Root input, retained only to verify normal call shape.
+            control: Unused compatibility argument matching ``Agent.run``.
+
+        Returns:
+            Fixed coordinator output proving the turn completed.
+        """
+        del message, control
+        self.turn += 1
+        if self.turn == 2:
+            self.graph.redispatch_task(
+                agent_name=self.worker_name,
+                objective="Follow-up task.",
+                handoff="Fresh handoff.",
+                reply_to="coordinator",
+            )
+        return "coordinator done"
+
+
 class TaskBusGraphTests(unittest.TestCase):
     """Verify report-only feedback loops and dynamic-router compatibility."""
 
@@ -313,6 +349,39 @@ class TaskBusGraphTests(unittest.TestCase):
         self.assertEqual(states[original.id], "completed")
         self.assertEqual(states[revived.id], "completed")
         self.assertEqual(graph.task_id_for_agent("retained_worker"), revived.id)
+
+    def test_revive_mid_run_reschedules_terminal_worker(self) -> None:
+        """A worker revived during a later turn must execute, not go zombie.
+
+        The retained Swarm keeps the worker as a graph vertex across browser
+        turns, so on the second ``run`` it already sits in
+        ``remaining_dependencies``. The scheduler must re-enqueue it when its
+        fresh assignment is queued; otherwise the revived worker is skipped
+        forever and never submits its report.
+        """
+        graph = ExecutionGraph(max_concurrency_agents=2)
+        worker = _ReportingCountingWorker(graph, "retained_worker")
+        coordinator = _RevivingCoordinator(graph, "retained_worker")
+        graph.add_agent("coordinator", cast(Agent, coordinator))
+        graph.dispatch_task(
+            agent_name="retained_worker",
+            agent_instance=cast(Agent, worker),
+            objective="Finish once.",
+            handoff="No additional context.",
+            reply_to="coordinator",
+        )
+
+        first = graph.run("first browser turn")
+        second = graph.run("second browser turn")
+
+        self.assertIn("retained_worker", first)
+        self.assertIn("retained_worker", second)
+        self.assertEqual(worker.run_count, 2)
+        states = graph.task_bus.task_states()
+        self.assertEqual(
+            [state for state in states.values() if state == "completed"].count("completed"),
+            2,
+        )
 
     def test_terminal_tool_stops_agent_before_another_model_round(self) -> None:
         """Stop the Agent after a terminal tool rather than using its full budget."""
