@@ -91,6 +91,42 @@ class RetryPolicyTests(unittest.TestCase):
 
         self.assertEqual(handler.calls, 1)
 
+    def test_on_retry_callback_receives_attempt_index_before_backoff(self) -> None:
+        """The retry observer is called once per scheduled retry with its index."""
+        handler = _TimeoutThenSuccessHandler(timeouts=3)
+        fetcher = _fetcher_for(handler, retries=3)
+        retries: list[int] = []
+        fetcher._sleep_before_retry = lambda _index: None  # type: ignore[method-assign]
+
+        result = fetcher.fetch("retry me", on_retry=retries.append)
+
+        self.assertEqual(result.content, "recovered")
+        self.assertEqual(retries, [0, 1, 2])
+
+    def test_on_retry_not_called_when_no_retry_occurs(self) -> None:
+        """A clean first attempt never invokes the retry observer."""
+        handler = _TimeoutThenSuccessHandler(timeouts=0)
+        fetcher = _fetcher_for(handler, retries=3)
+        retries: list[int] = []
+
+        result = fetcher.fetch("clean", on_retry=retries.append)
+
+        self.assertEqual(result.content, "recovered")
+        self.assertEqual(retries, [])
+
+    def test_on_retry_not_called_after_last_timeout_exhaustion(self) -> None:
+        """Exhaustion reports the final error without a phantom retry callback."""
+        handler = _TimeoutThenSuccessHandler(timeouts=2)
+        fetcher = _fetcher_for(handler, retries=1)
+        retries: list[int] = []
+        fetcher._sleep_before_retry = lambda _index: None  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(Exception, "simulated timeout"):
+            fetcher.fetch("exhaust me", on_retry=retries.append)
+
+        self.assertEqual(handler.calls, 2)
+        self.assertEqual(retries, [0])
+
     def test_request_observer_receives_typed_dispatch_snapshot(self) -> None:
         """The preflight hook exposes a schema, not an untyped payload dict."""
         handler = _TimeoutThenSuccessHandler(timeouts=0)

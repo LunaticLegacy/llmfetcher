@@ -389,6 +389,7 @@ class LLMFetcher:
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
+        on_retry: Optional[Callable[[int], None]] = None,
     ) -> LLMOutput:
         """Execute a non-streaming completion with backend fallback and retry.
 
@@ -430,6 +431,11 @@ class LLMFetcher:
                 Optional observer called immediately before each provider
                 attempt with a credential-free request snapshot containing
                 model settings, assembled messages, and prepared tools.
+            on_retry:
+                Optional observer invoked with the zero-based ``attempt_index``
+                of the retry about to occur, immediately before the backoff
+                sleep.  It is only called when a timeout will actually be
+                retried on the same backend.
 
         Returns:
             A normalised ``LLMOutput`` with content, reasoning, tool calls,
@@ -477,6 +483,8 @@ class LLMFetcher:
                     error = self._normalize_exception(backend, exc)
                     if isinstance(error, LLMTimeoutError):
                         if attempt_index + 1 < attempts:
+                            if on_retry is not None:
+                                on_retry(attempt_index)
                             self._sleep_before_retry(attempt_index)
                             continue
                     backend_errors.append(str(error))
@@ -495,6 +503,7 @@ class LLMFetcher:
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
+        on_retry: Optional[Callable[[int], None]] = None,
         usage_sink: Optional[TokenUsage] = None,
     ) -> Generator[str, None]:
         """Execute a streaming completion with backend fallback and retry.
@@ -530,6 +539,11 @@ class LLMFetcher:
             on_request:
                 Optional observer invoked immediately before provider I/O with
                 the credential-free, provider-prepared streaming request.
+            on_retry:
+                Optional observer invoked with the zero-based ``attempt_index``
+                of the retry about to occur, immediately before the backoff
+                sleep.  It is only called when a timeout will actually be
+                retried on the same backend before any text was yielded.
             usage_sink:
                 Optional mutable ``TokenUsage`` accumulator.  When provided,
                 the normalized provider usage for the completed stream is
@@ -599,6 +613,8 @@ class LLMFetcher:
                         and not yielded_any
                     ):
                         if attempt_index + 1 < attempts:
+                            if on_retry is not None:
+                                on_retry(attempt_index)
                             self._sleep_before_retry(attempt_index)
                             continue
                     if yielded_any:
