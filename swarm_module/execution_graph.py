@@ -1475,8 +1475,9 @@ class ExecutionGraph:
             max_rounds: Maximum rounds passed to every Agent; ``0`` means
                 unlimited and ``None`` uses each Agent's default.
             control:
-                Optional cooperative stop and steering source passed to each
-                scheduled Agent at completed-step boundaries.
+                Optional cooperative control. A registry implementing
+                ``for_agent(name)`` supplies independent Agent-scoped views;
+                legacy controls are still shared unchanged.
 
         Returns:
             Mapping from every executed agent name to its raw output. A failed
@@ -1530,6 +1531,35 @@ class ExecutionGraph:
         running_agents: dict[Future[Any], Agent] = {}
         routed_out: set[str] = set()
 
+        def control_for(agent_name: str) -> AgentRunControl | None:
+            """Resolve an Agent-local view while retaining legacy controls."""
+            resolver = getattr(control, "for_agent", None)
+            return resolver(agent_name) if callable(resolver) else control
+
+        def target_stopped(agent_name: str) -> bool:
+            """Return whether this concrete Agent was stopped before submit."""
+            checker = getattr(control, "should_stop", None)
+            if not callable(checker):
+                return False
+            try:
+                return bool(checker(agent_name))
+            except TypeError:
+                return bool(checker())
+
+        def interrupt_assignment(agent_name: str, task_id: str | None) -> None:
+            """Close a queued/running worker and wake its report recipient."""
+            if task_id:
+                report = self.task_bus.interrupt_task(
+                    task_id, agent_name, "Worker 已按用户请求停止。"
+                )
+                if report is not None:
+                    self._emit(
+                        "graph", agent_name, "task:reported",
+                        f"Task {task_id} interrupted",
+                        data=report.as_dict(),
+                    )
+            self._emit("graph", agent_name, "agent:stopped", "Agent stopped by user")
+
         with ThreadPoolExecutor(
             max_workers=self.max_concurrency_agents
         ) as executor:
@@ -1558,6 +1588,25 @@ class ExecutionGraph:
                         routing_fn = self._routers.get(agent_name)
                         agent_instance = self.agent_dict.get(agent_name)
                         task_id = self._task_by_agent.get(agent_name)
+
+                    # A targeted stop closes queued work without submitting it
+                    # to the executor and immediately informs the coordinator.
+                    if target_stopped(agent_name):
+                        interrupt_assignment(agent_name, task_id)
+                        outputs[agent_name] = AgentFailure(
+                            agent_name=agent_name,
+                            error="Agent stopped by user",
+                            exception=AgentRunStopped("Agent stopped by user"),
+                        )
+                        with self._topology_lock:
+                            stack = list(self._successors.get(agent_name, ()))
+                            while stack:
+                                node = stack.pop()
+                                if node in routed_out:
+                                    continue
+                                routed_out.add(node)
+                                stack.extend(self._successors.get(node, ()))
+                        continue
 
                     if task_id:
                         assignment = self.task_bus.claim_assignment(task_id)
@@ -1590,7 +1639,7 @@ class ExecutionGraph:
                         message,
                     )
 
-                    run_kwargs: dict[str, Any] = {"control": control}
+                    run_kwargs: dict[str, Any] = {"control": control_for(agent_name)}
                     if max_rounds is not None:
                         run_kwargs["max_rounds"] = max_rounds
                     # Agent events reach graph hooks via the permanent
@@ -1652,12 +1701,33 @@ class ExecutionGraph:
                                 )
                     except Exception as exc:
                         if isinstance(exc, AgentRunStopped):
-                            # Cooperative stop — abort the remaining graph.
-                            if task_id:
-                                self.task_bus.set_terminal_state(task_id, "interrupted")
-                            for pending_future in running:
-                                pending_future.cancel()
-                            raise
+                            # A global stop preserves the historical abort
+                            # behavior; a local stop is isolated like a failed
+                            # dependency and delivers an interruption report.
+                            global_stop = target_stopped("all")
+                            if global_stop:
+                                if task_id:
+                                    self.task_bus.interrupt_task(
+                                        task_id, agent_name, "Worker 随整个运行停止。"
+                                    )
+                                for pending_future in running:
+                                    pending_future.cancel()
+                                raise
+                            interrupt_assignment(agent_name, task_id)
+                            outputs[agent_name] = AgentFailure(
+                                agent_name=agent_name,
+                                error=str(exc) or "Agent stopped by user",
+                                exception=exc,
+                            )
+                            with self._topology_lock:
+                                stack = list(self._successors.get(agent_name, ()))
+                                while stack:
+                                    node = stack.pop()
+                                    if node in routed_out:
+                                        continue
+                                    routed_out.add(node)
+                                    stack.extend(self._successors.get(node, ()))
+                            continue
                         # --- Non-fatal agent failure ----------------------
                         # A failed Agent is a data point, not a swarm crash.
                         # The failure is delivered to the coordinator through

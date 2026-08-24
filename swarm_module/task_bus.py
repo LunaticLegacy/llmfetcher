@@ -329,6 +329,31 @@ class TaskBus:
             recommended_next_action="检查任务约束后重新分派。",
         )
 
+    def interrupt_task(self, task_id: str, reporter: str, reason: str) -> TaskReport | None:
+        """Deliver a structured interruption report for an unfinished task.
+
+        Args:
+            task_id: Scheduled task identifier.
+            reporter: Worker Agent stopped by the user.
+            reason: Bounded explanation shown to the coordinator.
+
+        Returns:
+            Accepted interruption report, or ``None`` if already reported.
+
+        Side Effects:
+            Wakes report waiters immediately so they do not wait for timeout.
+        """
+        with self._condition:
+            if task_id in self._reports:
+                return None
+        return self.submit_report(
+            task_id=task_id,
+            reporter=reporter,
+            status="interrupted",
+            summary=reason,
+            recommended_next_action="根据已有结果继续，或在需要时重新分派该任务。",
+        )
+
     def wait_for_reports(self, task_ids: Iterable[str], timeout_seconds: float) -> list[TaskReport]:
         """Wait until every requested task has delivered a structured report.
 
@@ -513,8 +538,15 @@ class TaskBus:
             status: Free-form report status supplied through ``report_task``.
 
         Returns:
-            ``completed`` for recognized success labels, otherwise ``failed``.
+            Canonical ``completed``, ``interrupted``, ``cancelled``, or
+            ``failed`` state.
         """
         normalized = status.strip().lower()
         successful = {"completed", "complete", "success", "succeeded", "done"}
-        return "completed" if normalized in successful else "failed"
+        if normalized in successful:
+            return "completed"
+        if normalized in {"interrupted", "stopped"}:
+            return "interrupted"
+        if normalized in {"cancelled", "canceled"}:
+            return "cancelled"
+        return "failed"
