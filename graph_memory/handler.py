@@ -23,8 +23,10 @@ Composes :class:`ContextHandlerLinear` for the current session with a
 from __future__ import annotations
 
 import json
+import copy
 from pathlib import Path
 from typing import Any, Optional
+import uuid
 
 from ..context_handlers.base import ContextHandler
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
@@ -236,25 +238,106 @@ class GraphContextHandler(ContextHandler):
     def save(self, path: str | Path) -> bool:
         """Save the conversation AND the companion graph file.
 
+        Args:
+            path: Primary context JSON whose atomic replacement commits the
+                immutable graph generation written first.
+
         Returns:
             ``True`` only when both the linear context and the graph were
             persisted successfully.
         """
         self._flush_pending()
-        saved = self.linear.save(path)
-        graph_saved = self.store.save(f"{path}{self.graph_save_suffix}")
-        return saved and graph_saved
+        target = Path(path)
+        generation = uuid.uuid4().hex
+        graph_name = f"{target.name}{self.graph_save_suffix}.{generation}"
+        graph_path = target.with_name(graph_name)
+        # The immutable graph is durable before the primary context commits
+        # its reference, making the primary atomic replacement the pair's
+        # transaction boundary.
+        if not self.store.save(graph_path):
+            return False
+        committed = self.linear.save(
+            target,
+            checkpoint_generation=generation,
+            graph_checkpoint=graph_name,
+        )
+        if not committed:
+            return False
+        # Once the primary file references the new immutable graph, older
+        # generations and crash-orphans are no longer reachable. Bound local
+        # storage without touching the legacy fixed companion filename.
+        for old_graph in target.parent.glob(
+            f"{target.name}{self.graph_save_suffix}.*"
+        ):
+            if old_graph == graph_path:
+                continue
+            try:
+                old_graph.unlink()
+            except OSError:
+                pass
+        return True
 
     def load(self, path: str | Path) -> bool:
         """Restore the conversation and its companion graph.
+
+        Args:
+            path: Primary context JSON containing an optional immutable graph
+                generation reference.
+
+        Returns:
+            ``True`` when a coherent linear/graph checkpoint was restored.
 
         When the graph file is missing (e.g. an old context file written by
         a linear-only handler), the in-memory graph is reset so stale
         long-term data never mixes with the restored session.
         """
+        previous_linear = {
+            "compress_threshold": self.linear.compress_threshold,
+            "abstract": copy.deepcopy(self.linear.abstract),
+            "messages": copy.deepcopy(self.linear.messages),
+            "archive": copy.deepcopy(self.linear.archive),
+            "round": self.linear._round,
+            "pending_resume": self.linear._pending_resume,
+            "checkpoint_generation": self.linear.checkpoint_generation,
+            "graph_checkpoint": self.linear.graph_checkpoint,
+            "context_editing": dict(self.linear.context_editing),
+        }
         loaded = self.linear.load(path)
-        graph_path = f"{path}{self.graph_save_suffix}"
-        if loaded and not self.store.load(graph_path):
+        if not loaded:
+            return False
+        if self.linear.context_editing.get("graph_stale"):
+            self.store.clear()
+            self._init_session_state()
+            return True
+        target = Path(path)
+        graph_path = (
+            target.with_name(self.linear.graph_checkpoint)
+            if self.linear.graph_checkpoint
+            else Path(f"{path}{self.graph_save_suffix}")
+        )
+        graph_reference_valid = not (
+            self.linear.graph_checkpoint
+            and self.linear.checkpoint_generation
+            and not self.linear.graph_checkpoint.endswith(
+                f".{self.linear.checkpoint_generation}"
+            )
+        )
+        graph_exists = graph_reference_valid and graph_path.exists()
+        graph_loaded = self.store.load(graph_path) if graph_exists else False
+        if self.linear.graph_checkpoint and not graph_loaded:
+            # Restore the retained Agent state when a committed companion is
+            # missing or corrupt; callers can safely surface a load failure.
+            self.linear.compress_threshold = previous_linear["compress_threshold"]
+            self.linear.abstract = previous_linear["abstract"]
+            self.linear.messages = previous_linear["messages"]
+            self.linear.archive = previous_linear["archive"]
+            self.linear._round = previous_linear["round"]
+            self.linear._pending_resume = previous_linear["pending_resume"]
+            self.linear.checkpoint_generation = previous_linear["checkpoint_generation"]
+            self.linear.graph_checkpoint = previous_linear["graph_checkpoint"]
+            self.linear.context_editing = previous_linear["context_editing"]
+            return False
+        if not self.linear.graph_checkpoint and not graph_loaded:
             # Old context file written by a linear-only handler: reset the
             # graph so stale long-term data never mixes with this session.
             self.store.clear()
@@ -263,7 +346,7 @@ class GraphContextHandler(ContextHandler):
             # A restored context that was already compacted counts as one
             # generation so ``auto`` re-retrieval behaves consistently.
             self._compaction_generation = 1
-        return loaded
+        return True
 
     def clear_context(self) -> bool:
         """Clear the session but keep the long-term memory graph."""

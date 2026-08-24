@@ -28,6 +28,8 @@ from .agent import (
     AgentRunControl,
     AgentRunStopped,
     AgentRunTermination,
+    ContextLoadError,
+    ContextSaveError,
 )
 
 from .tool_handler import (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -272,6 +273,33 @@ class ContextCompactionTests(unittest.TestCase):
 
             self.assertEqual(path.read_text(encoding="utf-8"), "old context")
             self.assertEqual(list(Path(directory).glob(".context.json.*.tmp")), [])
+
+    def test_failed_load_preserves_live_state(self) -> None:
+        """Malformed checkpoints must not replace a retained handler's memory."""
+        handler = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
+        handler.add_user_message("still live")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "context.json"
+            path.write_text('{"messages": [{"role": 3}]}', encoding="utf-8")
+
+            self.assertFalse(handler.load(path))
+            self.assertEqual([message.content for message in handler.messages], ["still live"])
+
+    def test_editing_metadata_survives_load_save(self) -> None:
+        """Agent checkpoints retain revision and graph-staleness metadata."""
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "context.json"
+            source = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
+            source.context_editing = {"revision_id": "rev-1", "graph_stale": True}
+            self.assertTrue(source.save(path))
+
+            restored = ContextHandlerLinear(_RecordingCompactor(), max_context_threshold=10**9)
+            self.assertTrue(restored.load(path))
+            self.assertTrue(restored.save(path))
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(raw["context_editing"], {
+                "revision_id": "rev-1", "graph_stale": True,
+            })
 
     def test_request_bounds_oversized_tool_result_but_keeps_history(self) -> None:
         """A huge tool result is trimmed on the request, never in storage."""

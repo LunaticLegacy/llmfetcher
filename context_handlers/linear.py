@@ -5,6 +5,7 @@ import os
 import time
 import re
 import tempfile
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, override
@@ -144,6 +145,12 @@ class ContextHandlerLinear(ContextHandler):
         # successful compaction.  This is a durable source record for future
         # retrieval / re-compaction, not another prompt buffer.
         self.archive: List[LLMContext] = []
+        # Forward-compatible checkpoint metadata survives ordinary Agent
+        # load/save cycles so context editing and graph commit state are not
+        # silently discarded by the linear serializer.
+        self.checkpoint_generation: str | None = None
+        self.graph_checkpoint: str | None = None
+        self.context_editing: dict[str, Any] = {}
         self._usage_records: list[UsageRecord] = []
         # These diagnostics are intentionally transient: applications can
         # report the failed compaction attempt without persisting raw model
@@ -628,11 +635,21 @@ class ContextHandlerLinear(ContextHandler):
     # -- persistence -------------------------------------------------------
 
     @override
-    def save(self, path: str | Path) -> bool:
+    def save(
+        self,
+        path: str | Path,
+        *,
+        checkpoint_generation: str | None = None,
+        graph_checkpoint: str | None = None,
+    ) -> bool:
         """Serialize the conversation history to a JSON file.
 
         Args:
             path: Destination file path.
+            checkpoint_generation: Optional generation selected by a composed
+                handler coordinating multiple durable files.
+            graph_checkpoint: Optional immutable graph filename committed by
+                a composed graph handler.
 
         Returns:
             ``True`` on success, ``False`` on write failure.
@@ -641,13 +658,21 @@ class ContextHandlerLinear(ContextHandler):
             return False
             
         try:
+            generation = checkpoint_generation or uuid.uuid4().hex
             data: Dict[str, Any] = {
+                "schema_version": 2,
+                "checkpoint_generation": generation,
                 "compress_threshold": self.compress_threshold,
                 "round": self._round,
                 "abstract": self._compacted_to_dict(self.abstract),
                 "messages": [self._context_to_dict(m) for m in self.messages],
                 "archive": [self._context_to_dict(m) for m in self.archive],
             }
+            if self.context_editing:
+                data["context_editing"] = dict(self.context_editing)
+            committed_graph = graph_checkpoint if graph_checkpoint is not None else self.graph_checkpoint
+            if committed_graph:
+                data["graph_checkpoint"] = committed_graph
             target = Path(path)
             serialized = json.dumps(data, ensure_ascii=False, indent=2)
             temp_path: Optional[Path] = None
@@ -672,6 +697,8 @@ class ContextHandlerLinear(ContextHandler):
                     except OSError:
                         pass
                 raise
+            self.checkpoint_generation = generation
+            self.graph_checkpoint = committed_graph
             return True
         except (OSError, TypeError, ValueError):
             return False
@@ -680,7 +707,8 @@ class ContextHandlerLinear(ContextHandler):
     def load(self, path: Optional[str | Path]) -> bool:
         """Deserialize conversation history from a JSON file.
 
-        Existing in-memory state is **replaced** by the loaded data.
+        Existing in-memory state is replaced only after the complete payload
+        validates; read or parse failures leave retained state untouched.
 
         Args:
             path: Source file path.
@@ -697,9 +725,13 @@ class ContextHandlerLinear(ContextHandler):
             return False
 
         try:
-            self.compress_threshold = raw.get("compress_threshold", 262144)
-            self.abstract = self._compacted_from_dict(raw.get("abstract"))
-            self.messages = [
+            if not isinstance(raw, dict):
+                raise ValueError("checkpoint must be an object")
+            compress_threshold = raw.get("compress_threshold", 262144)
+            if not isinstance(compress_threshold, int) or isinstance(compress_threshold, bool):
+                raise ValueError("compress_threshold must be an integer")
+            abstract = self._compacted_from_dict(raw.get("abstract"))
+            messages = [
                 self._context_from_dict(m) for m in raw.get("messages", [])
             ]
             # ``archive`` was introduced after the original linear format.
@@ -708,25 +740,40 @@ class ContextHandlerLinear(ContextHandler):
             archive_raw = raw.get("archive", [])
             if not isinstance(archive_raw, list):
                 raise ValueError("archive must be a list")
-            self.archive = [self._context_from_dict(m) for m in archive_raw]
+            archive = [self._context_from_dict(m) for m in archive_raw]
             # Old context files do not contain ``round``. Recover their next
             # timeline boundary from both retained and compacted history.
-            restored_timelines = [message.timeline for message in self.messages]
-            if self.abstract is not None:
-                restored_timelines.extend(self.abstract.source_timeline)
+            restored_timelines = [message.timeline for message in messages]
+            if abstract is not None:
+                restored_timelines.extend(abstract.source_timeline)
             saved_round = raw.get("round", 0)
             if not isinstance(saved_round, int) or isinstance(saved_round, bool):
                 raise ValueError("round must be an integer")
-            self._round = max([saved_round, *restored_timelines], default=0)
+            restored_round = max([saved_round, *restored_timelines], default=0)
+            generation = raw.get("checkpoint_generation")
+            if generation is not None and not isinstance(generation, str):
+                raise ValueError("checkpoint_generation must be a string")
+            graph_checkpoint = raw.get("graph_checkpoint")
+            if graph_checkpoint is not None and not isinstance(graph_checkpoint, str):
+                raise ValueError("graph_checkpoint must be a string")
+            editing = raw.get("context_editing", {})
+            if not isinstance(editing, dict):
+                raise ValueError("context_editing must be an object")
+
+            # Commit parsed state only after every field validates. A corrupt
+            # checkpoint therefore cannot erase a retained Agent's memory.
+            self.compress_threshold = compress_threshold
+            self.abstract = abstract
+            self.messages = messages
+            self.archive = archive
+            self._round = restored_round
+            self.checkpoint_generation = generation
+            self.graph_checkpoint = graph_checkpoint
+            self.context_editing = dict(editing)
             # The resume prompt is derived state, never persisted.
             self._pending_resume = False
             return True
         except (TypeError, KeyError, ValueError):
-            self.messages = []
-            self.archive = []
-            self.abstract = None
-            self._round = 0
-            self._pending_resume = False
             return False
 
     # -- serialization helpers ---------------------------------------------

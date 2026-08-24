@@ -61,6 +61,14 @@ class AgentRunLimitReached(RuntimeError):
     """
 
 
+class ContextLoadError(RuntimeError):
+    """Signal that an existing Agent checkpoint could not be restored."""
+
+
+class ContextSaveError(RuntimeError):
+    """Signal that a configured Agent checkpoint could not be committed."""
+
+
 class AgentRunTermination(str, Enum):
     """Explicit terminal classifications for one completed Agent invocation."""
 
@@ -180,6 +188,10 @@ class Agent:
             compacting_llmfetcher_handler=self.llm_fetcher,
             max_context_threshold=self.max_context_threshold,
         )
+        if context_handler is not None:
+            configured_linear = getattr(context_handler, "linear", context_handler)
+            if hasattr(configured_linear, "compress_threshold"):
+                self.max_context_threshold = configured_linear.compress_threshold
 
         # Route compaction lifecycle events from the inner linear handler into
         # this Agent's event stream (source="context"), so they persist into
@@ -507,17 +519,21 @@ class Agent:
         """Persist the current context when this Agent has a storage path.
 
         Returns:
-            ``True`` when a configured context was saved successfully;
-            ``False`` when persistence is disabled or the handler reports a
-            write failure.
+            ``True`` when persistence is disabled or the configured context
+            was saved successfully.
+
+        Raises:
+            ContextSaveError: If the configured handler rejects the commit.
 
         This helper is called for both ordinary completion and cooperative
         stops so a completed model-and-tool boundary is never lost merely
         because execution will not enter another round.
         """
         if self.context_path is None:
-            return False
-        return self.context_handler.save(self.context_path)
+            return True
+        if not self.context_handler.save(self.context_path):
+            raise ContextSaveError(f"Could not save context checkpoint: {self.context_path}")
+        return True
 
     def _fetch_model_with_force_stop(
         self,
@@ -709,6 +725,8 @@ class Agent:
             RuntimeError: If a model returns neither tool calls nor formal
                 answer content; this is an invalid empty response rather than
                 a successful completion.
+            ContextLoadError: If an existing checkpoint cannot be restored.
+            ContextSaveError: If a completed boundary cannot be persisted.
         """
         resolved_max_rounds = self.default_max_rounds if max_rounds is None else max_rounds
         resolved_max_tokens = (
@@ -749,11 +767,18 @@ class Agent:
         tool_results: Optional[Dict[str, str]] = None
         have_tool_call: bool = False
 
-        load_result = (
-            self.context_handler.load(self.context_path)
-            if self.context_path is not None
-            else False
-        )
+        desired_context_threshold = self.max_context_threshold
+        context_file = Path(self.context_path) if self.context_path is not None else None
+        load_result = False
+        if context_file is not None and context_file.exists():
+            load_result = self.context_handler.load(context_file)
+            if not load_result:
+                raise ContextLoadError(f"Could not load context checkpoint: {context_file}")
+        # The run configuration is authoritative for this turn. Apply it
+        # after loading so a prior checkpoint cannot overwrite the UI choice.
+        loaded_linear = getattr(self.context_handler, "linear", self.context_handler)
+        if hasattr(loaded_linear, "compress_threshold"):
+            loaded_linear.compress_threshold = desired_context_threshold
         if verbose:
             if not load_result:
                 print(
@@ -817,6 +842,16 @@ class Agent:
                         "agent", name, "agent:remote_request",
                         f"Remote request prepared for round {round_idx}",
                         data={"round": round_idx, "request": request.to_dict()},
+                    ),
+                    on_retry=lambda retry_index: self._emit(
+                        "agent", name, "agent:retry",
+                        f"Retrying LLM request for round {round_idx} "
+                        f"(retry {retry_index + 1})",
+                        data={
+                            "round": round_idx,
+                            "retry_index": retry_index,
+                            "attempt": retry_index + 1,
+                        },
                     ),
                 )
                 model_started_at = time.perf_counter()
