@@ -47,6 +47,12 @@ from .tool_executor import (
     ToolExecutor,
 )
 
+from .execution import (
+    ExecutionController,
+    StopMode,
+    StopRequest,
+)
+
 from .swarm_module import (
     AgentSwarm,
     ExecutionGraph,

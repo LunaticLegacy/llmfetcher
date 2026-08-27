@@ -14,7 +14,6 @@ lists via the ``context`` parameter.
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from typing import (
     Any,
@@ -46,6 +45,7 @@ from .fetcher_handlers import (
 )
 
 from .context_handlers import ContextHandler
+from .execution import ExecutionController, StopMode
 
 
 
@@ -165,10 +165,6 @@ class LLMFetcher:
         self.backends: Dict[str, LLMBackendConfig] = {}
         self.backend_order: List[str] = []
         self.handlers: Dict[str, LLMBackendHandler] = {}
-        # This one-shot latch distinguishes terminal cancellation from an
-        # ordinary transport failure, which remains eligible for retry.
-        self._force_stopped = threading.Event()
-
         for backend in backends:
             self._register_backend(backend)
 
@@ -323,7 +319,11 @@ class LLMFetcher:
             return LLMTimeoutError(message)
         return LLMError(message)
 
-    def _sleep_before_retry(self, retry_index: int) -> None:
+    def _sleep_before_retry(
+        self,
+        retry_index: int,
+        controller: ExecutionController | None,
+    ) -> None:
         """Wait with cancellation-aware exponential backoff before retrying.
 
         Args:
@@ -332,23 +332,30 @@ class LLMFetcher:
 
         Side Effects:
             Blocks the current request worker until the delay elapses or a
-            terminal force-stop sets ``_force_stopped``.  The next loop check
-            raises ``LLMRequestCancelled`` rather than issuing another call.
+            terminal force-stop wakes it. The next loop check raises
+            ``LLMRequestCancelled`` rather than issuing another call.
         """
         delay_seconds = min(8.0, float(2 ** max(0, retry_index)))
-        self._force_stopped.wait(timeout=delay_seconds)
+        if controller is None:
+            time.sleep(delay_seconds)
+            return
+        controller.force_stopped.wait(timeout=delay_seconds)
 
     # -- public API -------------------------------------------------------------
 
-    def _raise_if_force_stopped(self) -> None:
+    @staticmethod
+    def _raise_if_force_stopped(controller: ExecutionController | None) -> None:
         """Raise the terminal cancellation error without retrying providers.
 
         Raises:
-            LLMRequestCancelled: When ``abort_active_requests`` was called
-            for this fetcher.  Workbench fetchers belong to one Agent run, so
-            the latch is intentionally never reset.
+            LLMRequestCancelled: When the execution controller has received
+            a force-stop request.
         """
-        if self._force_stopped.is_set():
+        if (
+            controller is not None
+            and controller.stop_request is not None
+            and controller.stop_request.mode is StopMode.FORCE
+        ):
             raise LLMRequestCancelled("LLM request cancelled by force-stop")
 
     def abort_active_requests(self) -> int:
@@ -365,10 +372,6 @@ class LLMFetcher:
             handler-close failures are ignored so one provider cannot prevent
             cancellation attempts against another.
         """
-        # Set the latch before closing transports: a close commonly raises a
-        # timeout-like provider exception, which must never enter retry or
-        # fallback after terminal user cancellation.
-        self._force_stopped.set()
         aborted = 0
         for handler in self.handlers.values():
             try:
@@ -390,6 +393,7 @@ class LLMFetcher:
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
         on_retry: Optional[Callable[[int], None]] = None,
+        controller: ExecutionController | None = None,
     ) -> LLMOutput:
         """Execute a non-streaming completion with backend fallback and retry.
 
@@ -446,51 +450,68 @@ class LLMFetcher:
                 All candidate backends have been exhausted without
                 producing a successful response.
         """
-        messages = self._build_messages(msg, system_prompt, context_handler)
-        backend_errors: List[str] = []
+        active_handler: LLMBackendHandler | None = None
 
-        for backend in self._resolve_backends(backend_name, self.fallback_order):
-            self._raise_if_force_stopped()
-            handler = self._handler_for_backend(backend)
+        def abort_active_handler(_request: object) -> None:
+            if active_handler is not None:
+                active_handler.abort_active_request()
 
-            attempts = self._max_attempts(backend)
-            for attempt_index in range(attempts):
-                try:
-                    self._raise_if_force_stopped()
-                    provider_tools = handler.prepare_tools(tools)
-                    if on_request is not None:
-                        # Emit one typed, credential-free snapshot at the
-                        # application boundary before provider I/O begins.
-                        on_request(RemoteRequestSnapshot(
-                            model=backend.model,
-                            messages=list(messages),
+        unregister = (
+            controller.register_force_canceller(abort_active_handler)
+            if controller is not None
+            else None
+        )
+        try:
+            messages = self._build_messages(msg, system_prompt, context_handler)
+            backend_errors: List[str] = []
+
+            for backend in self._resolve_backends(backend_name, self.fallback_order):
+                self._raise_if_force_stopped(controller)
+                handler = self._handler_for_backend(backend)
+                active_handler = handler
+
+                attempts = self._max_attempts(backend)
+                for attempt_index in range(attempts):
+                    try:
+                        self._raise_if_force_stopped(controller)
+                        provider_tools = handler.prepare_tools(tools)
+                        if on_request is not None:
+                            # Emit one typed, credential-free snapshot at the
+                            # application boundary before provider I/O begins.
+                            on_request(RemoteRequestSnapshot(
+                                model=backend.model,
+                                messages=list(messages),
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                stream=False,
+                                tools=list(provider_tools or []),
+                            ))
+                        raw = handler.create_completion(
+                            messages=messages,
                             temperature=temperature,
                             max_tokens=max_tokens,
                             stream=False,
-                            tools=list(provider_tools or []),
-                        ))
-                    raw = handler.create_completion(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stream=False,
-                        tools=provider_tools,
-                    )
-                    self._raise_if_force_stopped()
-                    return handler.normalize_completion_response(raw)
-                except Exception as exc:
-                    self._raise_if_force_stopped()
-                    error = self._normalize_exception(backend, exc)
-                    if isinstance(error, LLMTimeoutError):
-                        if attempt_index + 1 < attempts:
-                            if on_retry is not None:
-                                on_retry(attempt_index)
-                            self._sleep_before_retry(attempt_index)
-                            continue
-                    backend_errors.append(str(error))
-                    break
+                            tools=provider_tools,
+                        )
+                        self._raise_if_force_stopped(controller)
+                        return handler.normalize_completion_response(raw)
+                    except Exception as exc:
+                        self._raise_if_force_stopped(controller)
+                        error = self._normalize_exception(backend, exc)
+                        if isinstance(error, LLMTimeoutError):
+                            if attempt_index + 1 < attempts:
+                                if on_retry is not None:
+                                    on_retry(attempt_index)
+                                self._sleep_before_retry(attempt_index, controller)
+                                continue
+                        backend_errors.append(str(error))
+                        break
 
-        raise LLMBackendError("; ".join(backend_errors))
+            raise LLMBackendError("; ".join(backend_errors))
+        finally:
+            active_handler = None
+            if unregister is not None:
+                unregister()
 
     def fetch_stream(
         self,
@@ -505,6 +526,7 @@ class LLMFetcher:
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
         on_retry: Optional[Callable[[int], None]] = None,
         usage_sink: Optional[TokenUsage] = None,
+        controller: ExecutionController | None = None,
     ) -> Generator[str, None]:
         """Execute a streaming completion with backend fallback and retry.
 
@@ -563,66 +585,83 @@ class LLMFetcher:
                 A backend fails after partial output has already been
                 yielded.  The stream cannot continue.
         """
-        messages = self._build_messages(msg, system_prompt, context_handler)
-        backend_errors: List[str] = []
+        active_handler: LLMBackendHandler | None = None
 
-        for backend in self._resolve_backends(backend_name, self.fallback_order):
-            self._raise_if_force_stopped()
-            handler = self._handler_for_backend(backend)
-            yielded_any = False
+        def abort_active_handler(_request: object) -> None:
+            if active_handler is not None:
+                active_handler.abort_active_request()
 
-            attempts = self._max_attempts(backend)
-            for attempt_index in range(attempts):
-                try:
-                    self._raise_if_force_stopped()
-                    provider_tools = handler.prepare_tools(tools)
-                    if on_request is not None:
-                        on_request(RemoteRequestSnapshot(
-                            model=backend.model,
-                            messages=list(messages),
+        unregister = (
+            controller.register_force_canceller(abort_active_handler)
+            if controller is not None
+            else None
+        )
+        try:
+            messages = self._build_messages(msg, system_prompt, context_handler)
+            backend_errors: List[str] = []
+
+            for backend in self._resolve_backends(backend_name, self.fallback_order):
+                self._raise_if_force_stopped(controller)
+                handler = self._handler_for_backend(backend)
+                active_handler = handler
+                yielded_any = False
+
+                attempts = self._max_attempts(backend)
+                for attempt_index in range(attempts):
+                    try:
+                        self._raise_if_force_stopped(controller)
+                        provider_tools = handler.prepare_tools(tools)
+                        if on_request is not None:
+                            on_request(RemoteRequestSnapshot(
+                                model=backend.model,
+                                messages=list(messages),
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                stream=True,
+                                tools=list(provider_tools or []),
+                            ))
+                        raw = handler.create_completion(
+                            messages=messages,
                             temperature=temperature,
                             max_tokens=max_tokens,
                             stream=True,
-                            tools=list(provider_tools or []),
-                        ))
-                    raw = handler.create_completion(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stream=True,
-                        tools=provider_tools,
-                    )
-                    capture = StreamUsageCapture()
-                    for text in handler.iter_stream_text(
-                        raw, output_reasoning=output_reasoning,
-                        usage_capture=capture,
-                    ):
-                        self._raise_if_force_stopped()
-                        yielded_any = True
-                        yield text
-                    if usage_sink is not None:
-                        raw_usage = capture.raw
-                        if raw_usage:
-                            add_usage(usage_sink, handler.normalize_usage(raw_usage))
-                    return
-                except Exception as exc:
-                    self._raise_if_force_stopped()
-                    error = self._normalize_exception(backend, exc)
-                    if (
-                        isinstance(error, LLMTimeoutError)
-                        and not yielded_any
-                    ):
-                        if attempt_index + 1 < attempts:
-                            if on_retry is not None:
-                                on_retry(attempt_index)
-                            self._sleep_before_retry(attempt_index)
-                            continue
-                    if yielded_any:
-                        raise error
-                    backend_errors.append(str(error))
-                    break
+                            tools=provider_tools,
+                        )
+                        capture = StreamUsageCapture()
+                        for text in handler.iter_stream_text(
+                            raw, output_reasoning=output_reasoning,
+                            usage_capture=capture,
+                        ):
+                            self._raise_if_force_stopped(controller)
+                            yielded_any = True
+                            yield text
+                        if usage_sink is not None:
+                            raw_usage = capture.raw
+                            if raw_usage:
+                                add_usage(usage_sink, handler.normalize_usage(raw_usage))
+                        return
+                    except Exception as exc:
+                        self._raise_if_force_stopped(controller)
+                        error = self._normalize_exception(backend, exc)
+                        if (
+                            isinstance(error, LLMTimeoutError)
+                            and not yielded_any
+                        ):
+                            if attempt_index + 1 < attempts:
+                                if on_retry is not None:
+                                    on_retry(attempt_index)
+                                self._sleep_before_retry(attempt_index, controller)
+                                continue
+                        if yielded_any:
+                            raise error
+                        backend_errors.append(str(error))
+                        break
 
-        raise LLMBackendError("; ".join(backend_errors))
+            raise LLMBackendError("; ".join(backend_errors))
+        finally:
+            active_handler = None
+            if unregister is not None:
+                unregister()
 
     # -- helpers ----------------------------------------------------------------
 

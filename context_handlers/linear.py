@@ -86,6 +86,7 @@ _COMPACTION_OUTPUT_MAX_TOKENS = 8192
 _COMPACTION_INPUT_CHAR_LIMIT = 196_608
 _TOOL_RESULT_MAX_CHARS = 24_000
 _TOOL_RESULT_TOTAL_MAX_CHARS = 96_000
+_LARGE_TOOL_RESULT_NOTICE_CHARS = 6_000
 
 class ContextHandlerLinear(ContextHandler):
     """A simple context handler that stores messages in a flat list.
@@ -842,7 +843,10 @@ class ContextHandlerLinear(ContextHandler):
         Each tool result is bounded to ``_TOOL_RESULT_MAX_CHARS`` and the
         shared cumulative budget ``remaining_budget`` caps the total tool
         output across the whole request; results beyond it are replaced with
-        an explicit omission note.  Persisted history is never modified.
+        an explicit omission note. Large results also carry small size
+        metadata, so the next model turn can recognize the context pressure
+        without needing a separate introspection tool. Persisted history is
+        never modified.
 
         Args:
             messages: The message list being built (mutated in place).
@@ -882,12 +886,9 @@ class ContextHandlerLinear(ContextHandler):
             for ti in item.tool_calls:
                 if ti.result is not None:
                     call_id = ti.call.call_id or f"call_{id(ti)}"
-                    result_text = str(ti.result)
-                    
-                    if len(result_text) > _TOOL_RESULT_MAX_CHARS:
-                        result_text = self._bound_result_text(
-                            result_text, _TOOL_RESULT_MAX_CHARS
-                        )
+                    result_text = self._render_tool_result_for_model(
+                        str(ti.result), remaining_budget
+                    )
                     messages.append({
                         "role": "tool",
                         "content": result_text,
@@ -896,3 +897,67 @@ class ContextHandlerLinear(ContextHandler):
             return
 
         messages.append({"role": role, "content": content or ""})
+
+    def _render_tool_result_for_model(
+        self,
+        raw_result: str,
+        remaining_budget: Optional[List[int]],
+    ) -> str:
+        """Bound one result and annotate it when it is large for the model.
+
+        Args:
+            raw_result: Complete, persisted tool output.
+            remaining_budget: Shared per-request output budget, if enabled.
+
+        Returns:
+            The bounded transient content supplied in the provider's tool
+            message. It includes a compact size notice for large results.
+        """
+        original_chars = len(raw_result)
+        result_limit = _TOOL_RESULT_MAX_CHARS
+        if remaining_budget is not None:
+            result_limit = min(result_limit, max(remaining_budget[0], 0))
+
+        # Reserve space for the notice itself so the complete tool message
+        # respects both the per-result and shared request budgets.
+        needs_notice = original_chars >= _LARGE_TOOL_RESULT_NOTICE_CHARS
+        notice_template = (
+            "[Tool-result metadata: original_chars={original}; "
+            "visible_result_chars={visible}; truncated={truncated}. "
+            "This is a large output; preserve its key evidence and reduce "
+            "context before requesting more large outputs.]\n"
+        )
+        notice_reserve = len(notice_template.format(
+            original=original_chars,
+            visible=0,
+            truncated="yes",
+        )) if needs_notice else 0
+        visible_result = self._bound_result_text(
+            raw_result, max(result_limit - notice_reserve, 0)
+        )
+        was_truncated = len(visible_result) < original_chars
+
+        if needs_notice:
+            while True:
+                notice = notice_template.format(
+                    original=original_chars,
+                    visible=len(visible_result),
+                    truncated="yes" if was_truncated else "no",
+                )
+                result_text = f"{notice}{visible_result}"
+                overflow = len(result_text) - result_limit
+                if overflow <= 0:
+                    break
+                if not visible_result:
+                    result_text = self._bound_result_text(notice, result_limit)
+                    break
+                visible_result = self._bound_result_text(
+                    raw_result, max(len(visible_result) - overflow, 0)
+                )
+                was_truncated = len(visible_result) < original_chars
+        else:
+            result_text = visible_result
+
+        if remaining_budget is not None:
+            remaining_budget[0] = max(remaining_budget[0] - len(result_text), 0)
+        return result_text

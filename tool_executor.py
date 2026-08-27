@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List
 
 from .llm_types import LLMToolCall, Tool
+from .execution import ExecutionController, bind_execution_controller
+
+
+class ToolBatchCancelled(RuntimeError):
+    """Signal that force-stop abandoned the active tool batch."""
 
 
 @dataclass
@@ -94,6 +99,7 @@ class ToolExecutor:
         self,
         handlers: List[Callable[..., Any] | None],
         arguments_list: List[Dict[str, Any]],
+        controller: ExecutionController | None = None,
     ) -> List[Any]:
         """Execute tool handlers in parallel using a thread pool.
 
@@ -114,13 +120,18 @@ class ToolExecutor:
         """
         return [
             execution.result
-            for execution in self.execute_batch_timed(handlers, arguments_list)
+            for execution in self.execute_batch_timed(
+                handlers,
+                arguments_list,
+                controller=controller,
+            )
         ]
 
     def execute_batch_timed(
         self,
         handlers: List[Callable[..., Any] | None],
         arguments_list: List[Dict[str, Any]],
+        controller: ExecutionController | None = None,
     ) -> List[ToolExecution]:
         """Execute tool handlers in parallel, measuring each one's duration.
 
@@ -149,12 +160,18 @@ class ToolExecutor:
         durations: List[int] = [0] * n
         lock = threading.Lock()
 
-        with ThreadPoolExecutor(
-            max_workers=self._max_concurrency,
-        ) as executor:
-            futures = []
+        if controller is not None and controller.force_stopped.is_set():
+            raise ToolBatchCancelled("Tool batch cancelled by force-stop")
+
+        executor = ThreadPoolExecutor(max_workers=self._max_concurrency)
+        futures: list[Future[Any]] = []
+        force_cancelled = False
+        try:
 
             for idx in range(n):
+                if controller is not None and controller.force_stopped.is_set():
+                    force_cancelled = True
+                    break
                 fn = handlers[idx]
                 if fn is None:
                     continue
@@ -166,7 +183,8 @@ class ToolExecutor:
                 ) -> None:
                     started_at = time.perf_counter()
                     try:
-                        result = handler(**kwargs)
+                        with bind_execution_controller(controller):
+                            result = handler(**kwargs)
                     except Exception as exc:
                         result = exc
                     duration_ms = round((time.perf_counter() - started_at) * 1000)
@@ -178,8 +196,23 @@ class ToolExecutor:
                     executor.submit(submit_one, idx, fn, arguments_list[idx])
                 )
 
-            for _ in as_completed(futures):
-                pass
+            pending = set(futures)
+            while pending and not force_cancelled:
+                _, pending = wait(
+                    pending,
+                    timeout=0.05,
+                    return_when=FIRST_COMPLETED,
+                )
+                force_cancelled = (
+                    controller is not None and controller.force_stopped.is_set()
+                )
+
+            if force_cancelled:
+                for future in pending:
+                    future.cancel()
+                raise ToolBatchCancelled("Tool batch cancelled by force-stop")
+        finally:
+            executor.shutdown(wait=not force_cancelled, cancel_futures=force_cancelled)
 
         return [
             ToolExecution(result=results[i], duration_ms=durations[i])
