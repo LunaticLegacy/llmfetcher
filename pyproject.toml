@@ -30,6 +30,7 @@ package-dir = {llmfetcher = "."}
 packages = [
     "llmfetcher",
     "llmfetcher.context_handlers",
+    "llmfetcher.execution",
     "llmfetcher.fetcher_handlers",
     "llmfetcher.graph_memory",
     "llmfetcher.memory",

@@ -14,6 +14,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 | Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, token-usage, and terminal request-cancellation types. `ToolSchema` supports both compact first-party parameters and lossless external JSON Schema (for example MCP). |
 | Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; the system message contains only system instructions while registered tools travel once through provider-native schemas. Optional provider streaming emits incremental content/reasoning events but reconstructs the same final output for tools and durable context. Explicit `AgentRunOutcome` terminal states distinguish formal answers, reserved `stop_turn`, workflow completion, user stop, invalid empty responses, and exhausted tool-loop budgets. |
 | LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, ordinary retry/fallback, terminal request cancellation, credential-free preflight request observation, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
+| Execution control | `execution/` | Per-attempt `ExecutionController`, unified graceful/forced stop requests, resource canceller registration, stream interruption and queued steering messages. |
 | Context | `context_handlers/` | Base contract; durable linear history with compaction and raw archive; provider-backed retrieval composition; TLB adapter. `context_less_context/` is an experimental local worktree directory, not part of the indexed API. |
 | Graph memory | `graph_memory/` | Persistent entity/relation store, incremental extraction, hybrid graph retrieval, archive evidence, and stateless semantic extraction/reranking workers. |
 | Swarm | `swarm_module/` | Dependency graph, concurrent scheduler, TaskBus, bounded report handoff, and quiescent graph save/load. Assignments may carry an opaque external plan-leaf correlation ID that is preserved through events and snapshots. Repeated `run()` calls retain graph vertices; terminal dispatched tasks remain inspectable but are not implicitly rescheduled, and may be revived with a new immutable assignment. |
@@ -28,6 +29,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 |---|---|---|
 | Fetching | `LLMFetcher`, `LLMBackendConfig`, `LLMRequestCancelled` | Configures primary/fallback backend calls; ordinary failures can retry, while `abort_active_requests()` is terminal and never retries or falls back. |
 | Agent execution | `Agent`, `AgentRunControl` | Runs a session, accepts cooperative stop/steer controls, observes an optional `force_stopped` event during provider I/O, checkpoints completed context, and emits lifecycle events. |
+| Execution control | `ExecutionController`, `StopMode`, `StopRequest` | One attempt-local stop authority. Graceful and force-stop share a terminal request; force invokes registered resource cancellers and wakes blocking stream waits. |
 | Durable context | `ContextHandlerLinear` | Active transcript, LLM compaction, and append-only archived pre-compaction turns. |
 | Long-term graph | `GraphContextHandler`, `SemanticGraphWorker` | Graph/archive retrieval; extraction and reranking calls are isolated from the primary Agent's tools and transcript. |
 | Observability | `ExecutionEvent`, `agent:usage`, `agent:internal_usage` | Supplies SSE/event-log evidence and non-duplicated five-dimension token accounting. |
@@ -48,6 +50,16 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
   caller's hook rather than written by this package globally.
 - API-key storage is an application concern; `LLMBackendConfig` receives a key
   only for the process making the request.
+
+## Execution Control Boundary
+
+- `ExecutionController` is created per Angelus `ExecutionAttempt`; it is not
+  a process-global cancellation latch and must never be reused by a later run.
+- A graceful request is observed at Agent safe boundaries. A forced request
+  additionally calls registered cancellers (provider I/O, tool processes) and
+  interrupts registered stream resources. Both remain one stop lifecycle.
+- The package does not own journal/checkpoint directories. Angelus records
+  controller lifecycle facts and durable interruption evidence around it.
 
 ## Local Checks
 
