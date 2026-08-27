@@ -20,7 +20,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 | Swarm | `swarm_module/` | Dependency graph, concurrent scheduler, TaskBus, bounded report handoff, and quiescent graph save/load. Assignments may carry an opaque external plan-leaf correlation ID that is preserved through events and snapshots. Repeated `run()` calls retain graph vertices; terminal dispatched tasks remain inspectable but are not implicitly rescheduled, and may be revived with a new immutable assignment. |
 | Tools | `tool_handler.py`, `tool_executor.py`, `tools/` | Tool schemas/registry, parallel execution, and built-in shell, knowledge, web, and dynamic-spawn factories; `create_swarm_tools` accepts a shared worker pool, a name-bound factory, an optional live-Agent binder, and optional external-plan leaf validation for worker-local handlers needing persistence/reload callbacks. |
 | Retrieval modules | `rag_module/`, `rag_module_tlb/` | Legacy/knowledge-base RAG and auditable `INDEX.md` tree traversal. See [`rag_module_tlb/INDEX.md`](rag_module_tlb/INDEX.md). |
-| Interfaces | `cli.py`, `webapp.py`, `web/`, `demo/` | Local CLI, standalone web console, and example entry point. |
+| Interfaces | `cli.py`, `demo/` | Local CLI and example entry point. Browser control-plane ownership belongs to Angelus. |
 | Verification | `tests/` | Unit and regression coverage for public API, context, DeepSeek routing, execution graph, TaskBus, and usage ledger. |
 
 ## Angelus Integration Points
@@ -715,40 +715,6 @@ Angelus superproject rather than treating them as submodule tests.
 | [usage_ledger.py](usage_ledger.py#L24) | `copy_usage` | `usage: Optional[TokenUsage]` | `TokenUsage` | Copy provider usage, representing a missing provider report as zero. |
 | [usage_ledger.py](usage_ledger.py#L37) | `add_usage` | `total: TokenUsage, usage: TokenUsage` | `None` | Add all dimensions without deriving total from its subdimensions. |
 | [usage_ledger.py](usage_ledger.py#L46) | `drain_records` | `records: list[UsageRecord]` | `list[UsageRecord]` | Return and consume records in their completed-call order. |
-| [web/static/app.js](web/static/app.js#L1) | `$` | `id: unknown` | `unknown` | Perform the browser runtime operation: $. |
-| [web/static/app.js](web/static/app.js#L6) | `value` | `id: unknown` | `unknown` | Perform the browser runtime operation: value. |
-| [web/static/app.js](web/static/app.js#L8) | `config` | `None` | `unknown` | Perform the browser runtime operation: config. |
-| [web/static/app.js](web/static/app.js#L14) | `setStatus` | `text: unknown, state: unknown` | `unknown` | Perform the browser runtime operation: set status. |
-| [web/static/app.js](web/static/app.js#L15) | `escapeHtml` | `text: unknown` | `unknown` | Perform the browser runtime operation: escape html. |
-| [web/static/app.js](web/static/app.js#L16) | `removeWelcome` | `None` | `unknown` | Perform the browser runtime operation: remove welcome. |
-| [web/static/app.js](web/static/app.js#L17) | `appendMessage` | `role: unknown, content: unknown, reasoning: unknown` | `unknown` | Perform the browser runtime operation: append message. |
-| [web/static/app.js](web/static/app.js#L18) | `trace` | `title: unknown, message: unknown, data: unknown, kind: unknown` | `unknown` | Perform the browser runtime operation: trace. |
-| [web/static/app.js](web/static/app.js#L19) | `metrics` | `data: unknown` | `unknown` | Perform the browser runtime operation: metrics. |
-| [web/static/app.js](web/static/app.js#L20) | `setRunning` | `running: unknown` | `unknown` | Perform the browser runtime operation: set running. |
-| [web/static/app.js](web/static/app.js#L21) | `loadWorkspaces` | `selected: unknown` | `Promise<unknown>` | Perform the browser runtime operation: load workspaces. |
-| [web/static/app.js](web/static/app.js#L22) | `start` | `message: unknown` | `Promise<unknown>` | Perform the browser runtime operation: start. |
-| [web/static/app.js](web/static/app.js#L32) | `handleEvent` | `event: unknown` | `unknown` | Perform the browser runtime operation: handle event. |
-| [web/static/app.js](web/static/app.js#L39) | `finish` | `None` | `unknown` | Perform the browser runtime operation: finish. |
-| [webapp.py](webapp.py#L76) | `BrowserRunControl.should_stop` | `None` | `bool` | Implement `BrowserRunControl.should_stop`. |
-| [webapp.py](webapp.py#L79) | `BrowserRunControl.drain_steers` | `None` | `list[str]` | Implement `BrowserRunControl.drain_steers`. |
-| [webapp.py](webapp.py#L87) | `BrowserRunControl.stop` | `None` | `None` | Implement `BrowserRunControl.stop`. |
-| [webapp.py](webapp.py#L90) | `BrowserRunControl.steer` | `message: str` | `None` | Implement `BrowserRunControl.steer`. |
-| [webapp.py](webapp.py#L115) | `_safe_id` | `value: str, label: str` | `str` | Validate IDs before using them in a local storage path. |
-| [webapp.py](webapp.py#L122) | `_read_workspaces` | `None` | `list[dict[str, str]]` | Return the local workspace registry, repairing a missing registry. |
-| [webapp.py](webapp.py#L137) | `_write_workspaces` | `workspaces: list[dict[str, str]]` | `None` | Atomically replace the small local workspace registry. |
-| [webapp.py](webapp.py#L144) | `_workspace_exists` | `workspace_id: str` | `bool` | Return whether a workspace is registered locally. |
-| [webapp.py](webapp.py#L149) | `_get_session` | `workspace_id: str, session_id: str` | `BrowserSession` | Get or create the in-memory holder for a validated browser session. |
-| [webapp.py](webapp.py#L155) | `_event_payload` | `event: ExecutionEvent` | `dict[str, Any]` | Convert library events to JSON values suitable for Server-Sent Events. |
-| [webapp.py](webapp.py#L167) | `_build_agent` | `config: RunConfig, workspace_id: str, session_id: str` | `Agent` | Create an Agent from current UI settings without persisting credentials. |
-| [webapp.py](webapp.py#L197) | `index` | `None` | `FileResponse` | Serve the standalone chat console. |
-| [webapp.py](webapp.py#L203) | `providers` | `None` | `dict[str, list[str]]` | Expose the providers currently registered by the library. |
-| [webapp.py](webapp.py#L209) | `list_workspaces` | `None` | `dict[str, list[dict[str, str]]]` | List local workspaces available to the browser console. |
-| [webapp.py](webapp.py#L215) | `create_workspace` | `request: WorkspaceRequest` | `dict[str, str]` | Create a local workspace with an isolated context directory. |
-| [webapp.py](webapp.py#L231) | `start_run` | `request: RunRequest` | `dict[str, str]` | Start one synchronous Agent in a worker thread and return its run ID. |
-| [webapp.py](webapp.py#L282) | `stream_events` | `workspace_id: str, session_id: str` | `StreamingResponse` | Stream queued lifecycle events as SSE until the active run completes. |
-| [webapp.py](webapp.py#L301) | `stop_run` | `workspace_id: str, session_id: str` | `dict[str, bool]` | Request a stop at the next completed model-and-tool boundary. |
-| [webapp.py](webapp.py#L311) | `steer_run` | `workspace_id: str, session_id: str, request: SteerRequest` | `dict[str, bool]` | Queue a steering message that Agent.run applies at a safe boundary. |
-| [webapp.py](webapp.py#L320) | `main` | `None` | `None` | Run the local console with ``llmfetcher-web``. |
 
 ## Class Map
 
@@ -890,12 +856,5 @@ Angelus superproject rather than treating them as submodule tests.
 | [tools/obscura_tools.py](tools/obscura_tools.py#L75) | `WebSearchStore` | `path: str \| Path, defaults: dict[str, Any] \| None` | `object` | Persist web-search settings and per-provider usage counters in SQLite. |
 | [tools/obscura_tools.py](tools/obscura_tools.py#L572) | `ObscuraCDPClient` | `host: str, port: int` | `object` | Placeholder configuration for a future Obscura CDP client. |
 | [usage_ledger.py](usage_ledger.py#L17) | `UsageRecord` | `kind: str, usage: TokenUsage` | `object` | Usage reported by one completed LLM call. |
-| [webapp.py](webapp.py#L34) | `RunConfig` | `provider: str, model: str, api_key: str, api_url: str, system_prompt: str, temperature: float, max_tokens: int, max_rounds: int, enable_shell: bool` | `BaseModel` | Settings used to create the backend and Agent for a browser session. |
-| [webapp.py](webapp.py#L48) | `RunRequest` | `session_id: str, workspace_id: str, message: str, config: RunConfig` | `BaseModel` | A message and its non-persisted browser-side configuration. |
-| [webapp.py](webapp.py#L57) | `SteerRequest` | `message: str` | `BaseModel` | One instruction added at the next safe agent boundary. |
-| [webapp.py](webapp.py#L63) | `WorkspaceRequest` | `name: str` | `BaseModel` | A user-visible workspace name, stored only on the local machine. |
-| [webapp.py](webapp.py#L69) | `BrowserRunControl` | `None` | `AgentRunControl` | Thread-safe implementation of llmfetcher's cooperative run controls. |
-| [webapp.py](webapp.py#L95) | `ActiveRun` | `control: BrowserRunControl, events: queue.Queue[dict[str, Any]], done: threading.Event` | `object` | Live work and its event queue, owned by one browser session. |
-| [webapp.py](webapp.py#L104) | `BrowserSession` | `lock: threading.Lock, active: ActiveRun \| None` | `object` | In-memory state that prevents concurrent runs in the same chat. |
 
 <!-- END GENERATED SYMBOL MAP -->

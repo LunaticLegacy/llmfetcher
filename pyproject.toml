@@ -16,14 +16,11 @@ dependencies = [
     "anthropic>=0.100.0",
     "litellm>=1.0.0",
     "markdown-it-py",
-    "fastapi>=0.115.0",
     "networkx",
-    "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
 llmfetcher = "llmfetcher.cli:main"
-llmfetcher-web = "llmfetcher.webapp:main"
 
 [tool.setuptools]
 package-dir = {llmfetcher = "."}
@@ -39,11 +36,4 @@ packages = [
     "llmfetcher.rag_module_tlb",
     "llmfetcher.swarm_module",
     "llmfetcher.tools",
-]
-
-[tool.setuptools.package-data]
-llmfetcher = [
-    "web/templates/*.html",
-    "web/static/*.css",
-    "web/static/*.js",
 ]
