@@ -26,6 +26,26 @@ from .usage_ledger import UsageRecord, add_usage, copy_usage
 from .execution import ExecutionController
 
 
+def _supports_force_control(control: object) -> bool:
+    """Return whether one cooperative control can cancel provider resources.
+
+    Args:
+        control: Candidate global or Agent-scoped execution control.
+
+    Returns:
+        ``True`` when the object exposes the force-cancellation contract used
+        by ``LLMFetcher`` and tool execution.
+    """
+    return (
+        isinstance(control, ExecutionController)
+        or (
+            control is not None
+            and callable(getattr(control, "register_force_canceller", None))
+            and hasattr(control, "force_stopped")
+        )
+    )
+
+
 class AgentRunControl(Protocol):
     """Describe cooperative controls read between completed Agent steps.
 
@@ -579,7 +599,7 @@ class Agent:
             force-stop it asks the fetcher to close provider transports before
             ending the Agent thread; the worker cannot mutate Agent context.
         """
-        controller = control if isinstance(control, ExecutionController) else None
+        controller = control if _supports_force_control(control) else None
         return self.llm_fetcher.fetch(controller=controller, **fetch_kwargs)
 
     def _stream_model_response(
@@ -608,7 +628,7 @@ class Agent:
         calls: list[LLMToolCall] = []
         channel = "content"
         tool_payload: list[str] = []
-        controller = control if isinstance(control, ExecutionController) else None
+        controller = control if _supports_force_control(control) else None
         backend = self.llm_fetcher.default_backend_config
         # The fetcher fills this per-call accumulator with the provider's
         # streamed usage so streamed rounds carry the same token accounting
@@ -899,7 +919,7 @@ class Agent:
                         handlers,
                         arguments,
                         controller=(
-                            control if isinstance(control, ExecutionController) else None
+                            control if _supports_force_control(control) else None
                         ),
                     )
                 except ToolBatchCancelled as exc:

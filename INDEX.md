@@ -81,31 +81,32 @@ primary model response.
 
 | Source | Function / method | Input types | Output type | Semantics |
 |---|---|---|---|---|
-| [agent.py](agent.py#L37) | `AgentRunControl.should_stop` | `None` | `bool` | Return whether the Agent should stop at the current safe boundary. |
-| [agent.py](agent.py#L41) | `AgentRunControl.drain_steers` | `None` | `list[str]` | Return and consume queued user steering messages in FIFO order. |
-| [agent.py](agent.py#L110) | `AgentRunOutcome.to_dict` | `None` | `dict[str, Any]` | Return the credential-free terminal fields for lifecycle events. |
-| [agent.py](agent.py#L120) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
-| [agent.py](agent.py#L245) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
-| [agent.py](agent.py#L256) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
-| [agent.py](agent.py#L271) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
-| [agent.py](agent.py#L284) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
-| [agent.py](agent.py#L299) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L308) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L336) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
-| [agent.py](agent.py#L363) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
-| [agent.py](agent.py#L403) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
-| [agent.py](agent.py#L437) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
-| [agent.py](agent.py#L461) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
-| [agent.py](agent.py#L471) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
-| [agent.py](agent.py#L488) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
-| [agent.py](agent.py#L499) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
-| [agent.py](agent.py#L519) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
-| [agent.py](agent.py#L533) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
-| [agent.py](agent.py#L553) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
-| [agent.py](agent.py#L585) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
-| [agent.py](agent.py#L667) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
-| [agent.py](agent.py#L1110) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
-| [agent.py](agent.py#L1114) | `Agent.clear_context` | `None` | `None` | Clear context. |
+| [agent.py](agent.py#L29) | `_supports_force_control` | `control: object` | `bool` | Return whether one cooperative control can cancel provider resources. |
+| [agent.py](agent.py#L57) | `AgentRunControl.should_stop` | `None` | `bool` | Return whether the Agent should stop at the current safe boundary. |
+| [agent.py](agent.py#L61) | `AgentRunControl.drain_steers` | `None` | `list[str]` | Return and consume queued user steering messages in FIFO order. |
+| [agent.py](agent.py#L130) | `AgentRunOutcome.to_dict` | `None` | `dict[str, Any]` | Return the credential-free terminal fields for lifecycle events. |
+| [agent.py](agent.py#L140) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
+| [agent.py](agent.py#L265) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
+| [agent.py](agent.py#L276) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
+| [agent.py](agent.py#L291) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
+| [agent.py](agent.py#L304) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
+| [agent.py](agent.py#L319) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L328) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L356) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
+| [agent.py](agent.py#L383) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
+| [agent.py](agent.py#L423) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
+| [agent.py](agent.py#L457) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
+| [agent.py](agent.py#L481) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
+| [agent.py](agent.py#L491) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
+| [agent.py](agent.py#L508) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
+| [agent.py](agent.py#L519) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
+| [agent.py](agent.py#L539) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
+| [agent.py](agent.py#L553) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
+| [agent.py](agent.py#L573) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
+| [agent.py](agent.py#L605) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
+| [agent.py](agent.py#L687) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
+| [agent.py](agent.py#L1130) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
+| [agent.py](agent.py#L1134) | `Agent.clear_context` | `None` | `None` | Clear context. |
 | [cli.py](cli.py#L58) | `_load_tools` | `names: list[str]` | `list[Tool]` | Import and call tool factories by short name. |
 | [cli.py](cli.py#L94) | `_build_parser` | `None` | `argparse.ArgumentParser` | Implement `_build_parser`. |
 | [cli.py](cli.py#L178) | `_cmd_list_backends` | `None` | `None` | Print every registered backend provider. |
@@ -629,14 +630,14 @@ primary model response.
 
 | Source | Class | Constructor / field input types | Base(s) | Semantics |
 |---|---|---|---|---|
-| [agent.py](agent.py#L29) | `AgentRunControl` | `None` | `Protocol` | Describe cooperative controls read between completed Agent steps. |
-| [agent.py](agent.py#L46) | `AgentRunStopped` | `message: str, last_output: LLMOutput \| None` | `RuntimeError` | Signal a cooperative stop after durable completion of one Agent step. |
-| [agent.py](agent.py#L64) | `AgentRunLimitReached` | `None` | `RuntimeError` | Signal that an Agent exhausted its round budget before a terminal result. |
-| [agent.py](agent.py#L72) | `ContextLoadError` | `None` | `RuntimeError` | Signal that an existing Agent checkpoint could not be restored. |
-| [agent.py](agent.py#L76) | `ContextSaveError` | `None` | `RuntimeError` | Signal that a configured Agent checkpoint could not be committed. |
-| [agent.py](agent.py#L80) | `AgentRunTermination` | `None` | `str, Enum` | Explicit terminal classifications for one completed Agent invocation. |
-| [agent.py](agent.py#L92) | `AgentRunOutcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `object` | Inspectable terminal state for an Agent run. |
-| [agent.py](agent.py#L136) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, enable_stop_turn: bool, default_stream: bool` | `object` | Provide `Agent` behavior. |
+| [agent.py](agent.py#L49) | `AgentRunControl` | `None` | `Protocol` | Describe cooperative controls read between completed Agent steps. |
+| [agent.py](agent.py#L66) | `AgentRunStopped` | `message: str, last_output: LLMOutput \| None` | `RuntimeError` | Signal a cooperative stop after durable completion of one Agent step. |
+| [agent.py](agent.py#L84) | `AgentRunLimitReached` | `None` | `RuntimeError` | Signal that an Agent exhausted its round budget before a terminal result. |
+| [agent.py](agent.py#L92) | `ContextLoadError` | `None` | `RuntimeError` | Signal that an existing Agent checkpoint could not be restored. |
+| [agent.py](agent.py#L96) | `ContextSaveError` | `None` | `RuntimeError` | Signal that a configured Agent checkpoint could not be committed. |
+| [agent.py](agent.py#L100) | `AgentRunTermination` | `None` | `str, Enum` | Explicit terminal classifications for one completed Agent invocation. |
+| [agent.py](agent.py#L112) | `AgentRunOutcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `object` | Inspectable terminal state for an Agent run. |
+| [agent.py](agent.py#L156) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, enable_stop_turn: bool, default_stream: bool` | `object` | Provide `Agent` behavior. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L27) | `ArchiveRetrievalConfig` | `max_results: int, max_chars_per_record: int, min_score: float` | `object` | Hard bounds for local archive retrieval and returned evidence. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L44) | `ArchiveEvidence` | `timeline_start: int, timeline_end: int, role: str, score: float, text: str, matched_terms: tuple[str, ...]` | `object` | A bounded, display-safe projection of one archived context record. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L62) | `ArchiveRetrievalResult` | `query: str, evidence: tuple[ArchiveEvidence, ...], scanned_records: int` | `object` | Result metadata plus bounded evidence suitable for later injection. |
