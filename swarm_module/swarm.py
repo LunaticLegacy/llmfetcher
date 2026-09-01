@@ -382,6 +382,17 @@ class AgentSwarm:
         """
         self._graph.add_hook(hook)
 
+    def remove_hook(self, hook: ExecutionHook) -> bool:
+        """Remove a hook previously forwarded to the execution graph.
+
+        Args:
+            hook: Exact callback object previously passed to :meth:`add_hook`.
+
+        Returns:
+            Whether the hook was present and removed.
+        """
+        return self._graph.remove_hook(hook)
+
     def view_snapshot(self) -> dict[str, Any]:
         """Return a safe, UI-oriented snapshot of the active graph topology.
 

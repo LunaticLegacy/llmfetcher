@@ -454,6 +454,23 @@ class ExecutionGraph:
         with self._hooks_lock:
             self.hooks.append(hook)
 
+    def remove_hook(self, hook: ExecutionHook) -> bool:
+        """Remove one previously registered execution hook.
+
+        Args:
+            hook: Exact callback object previously passed to :meth:`add_hook`.
+
+        Returns:
+            ``True`` when the hook was registered and removed; otherwise
+            ``False``.
+        """
+        with self._hooks_lock:
+            try:
+                self.hooks.remove(hook)
+            except ValueError:
+                return False
+            return True
+
     def view_snapshot(self) -> dict[str, Any]:
         """Return a JSON-safe live topology view without executable objects.
 

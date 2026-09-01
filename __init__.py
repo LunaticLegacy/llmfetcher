@@ -11,7 +11,7 @@ Example usage:
     agent = Agent(llm_handler=fetcher, system_prompt="...", provider="anthropic")
 """
 
-__version__ = "0.4.0"
+from ._version import __version__
 __author__ = "LunaticLegacy"
 
 from .llm_fetcher import (

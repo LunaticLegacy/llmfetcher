@@ -553,7 +553,7 @@ class Agent:
     def _fetch_model_with_force_stop(
         self,
         *,
-        control: AgentRunControl | None,
+        control: AgentRunControl | None = None,
         **fetch_kwargs: Any,
     ) -> LLMOutput:
         """Fetch one model response, allowing a terminal browser force-stop.
@@ -587,7 +587,7 @@ class Agent:
         *,
         name: str,
         round_idx: int,
-        control: AgentRunControl | None,
+        control: AgentRunControl | None = None,
         **fetch_kwargs: Any,
     ) -> LLMOutput:
         """Stream one provider response, emit deltas, and rebuild its final form.
@@ -833,8 +833,11 @@ class Agent:
                 )
                 model_started_at = time.perf_counter()
                 result = (
-                    self._stream_model_response(name=name, round_idx=round_idx, **fetch_kwargs)
-                    if resolved_stream else self._fetch_model_with_force_stop(**fetch_kwargs)
+                    self._stream_model_response(
+                        name=name, round_idx=round_idx, control=control, **fetch_kwargs
+                    )
+                    if resolved_stream
+                    else self._fetch_model_with_force_stop(control=control, **fetch_kwargs)
                 )
                 model_duration_ms = round((time.perf_counter() - model_started_at) * 1000)
             except (AgentRunStopped, LLMRequestCancelled) as exc:

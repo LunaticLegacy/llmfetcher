@@ -4,6 +4,7 @@ import json
 import os
 import time
 import re
+import sqlite3
 import tempfile
 import uuid
 from dataclasses import asdict
@@ -87,6 +88,72 @@ _COMPACTION_INPUT_CHAR_LIMIT = 196_608
 _TOOL_RESULT_MAX_CHARS = 24_000
 _TOOL_RESULT_TOTAL_MAX_CHARS = 96_000
 _LARGE_TOOL_RESULT_NOTICE_CHARS = 6_000
+_CONTEXT_PAGE_SIZE = 200
+
+
+def read_persisted_context_page(
+    path: str | Path,
+    *,
+    before_timeline: int | None = None,
+    limit: int = _CONTEXT_PAGE_SIZE,
+) -> tuple[list[LLMContext], int | None, int]:
+    """Read one reverse-timeline page without loading the full checkpoint.
+
+    Args:
+        path: Context pointer JSON or legacy full-JSON checkpoint path.
+        before_timeline: Exclusive older-than timeline cursor, if supplied.
+        limit: Maximum returned entries. Values are bounded to 200.
+
+    Returns:
+        Chronological page entries, the next older cursor or ``None``, and
+        the persisted total message count.
+
+    Raises:
+        ValueError: If the pointer is malformed or an entry is invalid.
+        OSError: If the checkpoint cannot be read.
+    """
+    target = Path(path)
+    pointer = json.loads(target.read_text(encoding="utf-8"))
+    if not isinstance(pointer, dict):
+        raise ValueError("checkpoint must be an object")
+    bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
+    if pointer.get("schema_version") == 3 and pointer.get("storage") == "sqlite":
+        database_name = pointer.get("database")
+        if not isinstance(database_name, str) or Path(database_name).name != database_name:
+            raise ValueError("checkpoint database reference is invalid")
+        database = target.with_name(database_name)
+        where = ""
+        values: tuple[object, ...] = ()
+        if before_timeline is not None:
+            where = " WHERE timeline < ?"
+            values = (before_timeline,)
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            total_row = connection.execute("SELECT COUNT(*) FROM messages").fetchone()
+            rows = connection.execute(
+                "SELECT timeline, payload FROM messages" + where + " ORDER BY timeline DESC LIMIT ?",
+                (*values, bounded),
+            ).fetchall()
+            older = False
+            if rows:
+                older = connection.execute(
+                    "SELECT EXISTS(SELECT 1 FROM messages WHERE timeline < ?)",
+                    (rows[-1][0],),
+                ).fetchone()[0] == 1
+        finally:
+            connection.close()
+        entries = [ContextHandlerLinear._context_from_dict(json.loads(row[1])) for row in reversed(rows)]
+        return entries, rows[-1][0] if rows and older else None, int(total_row[0] if total_row else 0)
+    # Legacy compatibility is deliberately bounded for callers. Migration is
+    # the required route for large checkpoints because a JSON array is not
+    # randomly addressable.
+    entries_raw = pointer.get("messages", [])
+    if not isinstance(entries_raw, list):
+        raise ValueError("legacy checkpoint messages must be a list")
+    filtered = [item for item in entries_raw if isinstance(item, dict) and (before_timeline is None or item.get("timeline", 0) < before_timeline)]
+    selected = filtered[-bounded:]
+    next_cursor = selected[0].get("timeline") if len(filtered) > len(selected) and selected else None
+    return [ContextHandlerLinear._context_from_dict(item) for item in selected], next_cursor, len(entries_raw)
 
 class ContextHandlerLinear(ContextHandler):
     """A simple context handler that stores messages in a flat list.
@@ -151,7 +218,7 @@ class ContextHandlerLinear(ContextHandler):
         # silently discarded by the linear serializer.
         self.checkpoint_generation: str | None = None
         self.graph_checkpoint: str | None = None
-        self.context_editing: dict[str, Any] = {}
+        self.context_editing: dict[str, object] = {}
         self._usage_records: list[UsageRecord] = []
         # These diagnostics are intentionally transient: applications can
         # report the failed compaction attempt without persisting raw model
@@ -167,6 +234,10 @@ class ContextHandlerLinear(ContextHandler):
         # Set by a successful compaction so the next build_messages() appends
         # a derived resume user turn (never stored, never persisted).
         self._pending_resume: bool = False
+        # SQLite checkpoint high-water marks mean ordinary saves append only
+        # newly created timeline rows instead of rewriting the transcript.
+        self._storage_message_high_water = 0
+        self._storage_archive_high_water = 0
 
     # -- public API ---------------------------------------------------------
     # System prompt should NOT be included in this context manager.
@@ -184,6 +255,8 @@ class ContextHandlerLinear(ContextHandler):
         self._round = 0
         self._pending_resume = False
         self._usage_records.clear()
+        self._storage_message_high_water = 0
+        self._storage_archive_high_water = 0
         return True
 
     def drain_usage_records(self) -> list[UsageRecord]:
@@ -643,7 +716,7 @@ class ContextHandlerLinear(ContextHandler):
         checkpoint_generation: str | None = None,
         graph_checkpoint: str | None = None,
     ) -> bool:
-        """Serialize the conversation history to a JSON file.
+        """Persist metadata plus only newly-created transcript rows.
 
         Args:
             path: Destination file path.
@@ -660,21 +733,25 @@ class ContextHandlerLinear(ContextHandler):
             
         try:
             generation = checkpoint_generation or uuid.uuid4().hex
+            target = Path(path)
+            database = target.with_suffix(target.suffix + ".sqlite3")
+            self._save_sqlite_rows(database)
             data: Dict[str, Any] = {
-                "schema_version": 2,
+                "schema_version": 3,
+                "storage": "sqlite",
+                "database": database.name,
                 "checkpoint_generation": generation,
                 "compress_threshold": self.compress_threshold,
                 "round": self._round,
                 "abstract": self._compacted_to_dict(self.abstract),
-                "messages": [self._context_to_dict(m) for m in self.messages],
-                "archive": [self._context_to_dict(m) for m in self.archive],
+                "message_count": self._sqlite_count(database, "messages"),
+                "archive_count": self._sqlite_count(database, "archive"),
             }
             if self.context_editing:
                 data["context_editing"] = dict(self.context_editing)
             committed_graph = graph_checkpoint if graph_checkpoint is not None else self.graph_checkpoint
             if committed_graph:
                 data["graph_checkpoint"] = committed_graph
-            target = Path(path)
             serialized = json.dumps(data, ensure_ascii=False, indent=2)
             temp_path: Optional[Path] = None
             try:
@@ -721,7 +798,8 @@ class ContextHandlerLinear(ContextHandler):
             return False
         
         try:
-            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            target = Path(path)
+            raw = json.loads(target.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
 
@@ -732,16 +810,27 @@ class ContextHandlerLinear(ContextHandler):
             if not isinstance(compress_threshold, int) or isinstance(compress_threshold, bool):
                 raise ValueError("compress_threshold must be an integer")
             abstract = self._compacted_from_dict(raw.get("abstract"))
-            messages = [
-                self._context_from_dict(m) for m in raw.get("messages", [])
-            ]
+            sqlite_checkpoint = raw.get("schema_version") == 3 and raw.get("storage") == "sqlite"
+            if sqlite_checkpoint:
+                messages, _, _ = read_persisted_context_page(target)
+                archive: list[LLMContext] = []
+                database_name = raw.get("database")
+                if not isinstance(database_name, str):
+                    raise ValueError("checkpoint database must be a string")
+                database = target.with_name(database_name)
+                message_high_water = self._sqlite_max_timeline(database, "messages")
+                archive_high_water = self._sqlite_max_timeline(database, "archive")
+            else:
+                messages = [self._context_from_dict(m) for m in raw.get("messages", [])]
+                archive_raw = raw.get("archive", [])
+                if not isinstance(archive_raw, list):
+                    raise ValueError("archive must be a list")
+                archive = [self._context_from_dict(m) for m in archive_raw]
+                message_high_water = 0
+                archive_high_water = 0
             # ``archive`` was introduced after the original linear format.
             # Missing it is a valid legacy file, whose already-discarded raw
             # history unfortunately cannot be reconstructed.
-            archive_raw = raw.get("archive", [])
-            if not isinstance(archive_raw, list):
-                raise ValueError("archive must be a list")
-            archive = [self._context_from_dict(m) for m in archive_raw]
             # Old context files do not contain ``round``. Recover their next
             # timeline boundary from both retained and compacted history.
             restored_timelines = [message.timeline for message in messages]
@@ -771,11 +860,80 @@ class ContextHandlerLinear(ContextHandler):
             self.checkpoint_generation = generation
             self.graph_checkpoint = graph_checkpoint
             self.context_editing = dict(editing)
+            self._storage_message_high_water = message_high_water
+            self._storage_archive_high_water = archive_high_water
             # The resume prompt is derived state, never persisted.
             self._pending_resume = False
             return True
         except (TypeError, KeyError, ValueError):
             return False
+
+    def _save_sqlite_rows(self, database: Path) -> None:
+        """Append changed context rows in one SQLite transaction.
+
+        Args:
+            database: Durable sidecar database for this context pointer.
+
+        Returns:
+            ``None`` after the transaction commits.
+        """
+        database.parent.mkdir(parents=True, exist_ok=True)
+        new_messages = [item for item in self.messages if item.timeline > self._storage_message_high_water]
+        new_archive = [item for item in self.archive if item.timeline > self._storage_archive_high_water]
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("CREATE TABLE IF NOT EXISTS messages (timeline INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
+            connection.execute("CREATE TABLE IF NOT EXISTS archive (timeline INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
+            connection.execute("CREATE INDEX IF NOT EXISTS messages_timeline_desc ON messages(timeline DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS archive_timeline_desc ON archive(timeline DESC)")
+            for item in new_messages:
+                connection.execute("INSERT OR REPLACE INTO messages(timeline, payload) VALUES (?, ?)", (item.timeline, json.dumps(self._context_to_dict(item), ensure_ascii=False)))
+            for item in new_archive:
+                connection.execute("INSERT OR REPLACE INTO archive(timeline, payload) VALUES (?, ?)", (item.timeline, json.dumps(self._context_to_dict(item), ensure_ascii=False)))
+                connection.execute("DELETE FROM messages WHERE timeline = ?", (item.timeline,))
+            connection.commit()
+        finally:
+            connection.close()
+        if new_messages:
+            self._storage_message_high_water = max(self._storage_message_high_water, max(item.timeline for item in new_messages))
+        if new_archive:
+            self._storage_archive_high_water = max(self._storage_archive_high_water, max(item.timeline for item in new_archive))
+
+    @staticmethod
+    def _sqlite_count(database: Path, table: str) -> int:
+        """Return one table row count without reading transcript payloads.
+
+        Args:
+            database: Durable context database.
+            table: Internal fixed table name to count.
+
+        Returns:
+            Current row count.
+        """
+        connection = sqlite3.connect(database)
+        try:
+            return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _sqlite_max_timeline(database: Path, table: str) -> int:
+        """Return the latest persisted timeline without loading rows.
+
+        Args:
+            database: Durable context database.
+            table: Internal fixed table name to inspect.
+
+        Returns:
+            Largest timeline, or zero for an empty table.
+        """
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            row = connection.execute(f"SELECT COALESCE(MAX(timeline), 0) FROM {table}").fetchone()
+        finally:
+            connection.close()
+        return int(row[0])
 
     # -- serialization helpers ---------------------------------------------
 

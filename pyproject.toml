@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llmfetcher"
-version = "0.4.0"
+dynamic = ["version"]
 description = "Multi-agent LLM orchestration framework"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
@@ -37,3 +37,6 @@ packages = [
     "llmfetcher.swarm_module",
     "llmfetcher.tools",
 ]
+
+[tool.setuptools.dynamic]
+version = {attr = "llmfetcher._version.__version__"}
