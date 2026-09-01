@@ -89,6 +89,9 @@ _TOOL_RESULT_MAX_CHARS = 24_000
 _TOOL_RESULT_TOTAL_MAX_CHARS = 96_000
 _LARGE_TOOL_RESULT_NOTICE_CHARS = 6_000
 _CONTEXT_PAGE_SIZE = 200
+_OMITTED_TOOL_RESULT = (
+    "[Historical tool result omitted to reserve context for newer tool output.]"
+)
 
 
 @dataclass(frozen=True)
@@ -564,16 +567,13 @@ class ContextHandlerLinear(ContextHandler):
             A list of message dicts.
         """
         messages: List[Dict[str, Any]] = []
+        history = self.get_prev_messages()
+        result_budgets = self._tool_result_budgets(history)
 
-        # Cumulative tool-output budget across the whole request, shared by
-        # every assistant entry so parallel tool batches cannot sum to an
-        # unbounded prompt.  Mirrors ``_TOOL_RESULT_TOTAL_MAX_CHARS``.
-        remaining_budget: List[int] = [_TOOL_RESULT_TOTAL_MAX_CHARS]
-
-        for item in self.get_prev_messages():
+        for item in history:
             if isinstance(item, LLMContext):
                 self._append_context_messages(
-                    messages, item, remaining_budget=remaining_budget
+                    messages, item, result_budgets=result_budgets
                 )
             elif isinstance(item, LLMContextCompacted):
                 messages.append({
@@ -595,6 +595,41 @@ class ContextHandlerLinear(ContextHandler):
             })
 
         return messages
+
+    @staticmethod
+    def _tool_result_budgets(
+        history: List[LLMContext | LLMContextCompacted],
+    ) -> Dict[int, int]:
+        """Allocate request budget to the newest tool results first.
+
+        Tool outputs must remain paired with their historical assistant tool
+        calls, but forward allocation let old terminal output consume the
+        shared budget before a just-completed call reached the model. Planning
+        from newest to oldest retains immediate execution feedback while the
+        final provider message order remains chronological.
+
+        Args:
+            history: Ordered active and compacted context entries.
+
+        Returns:
+            Per-``ToolInfo`` character budgets keyed by object identity.
+        """
+        remaining = _TOOL_RESULT_TOTAL_MAX_CHARS
+        budgets: Dict[int, int] = {}
+        for item in reversed(history):
+            if not isinstance(item, LLMContext):
+                continue
+            for tool_info in reversed(item.tool_calls):
+                if tool_info.result is None:
+                    continue
+                allowance = min(
+                    len(str(tool_info.result)),
+                    _TOOL_RESULT_MAX_CHARS,
+                    max(remaining, 0),
+                )
+                budgets[id(tool_info)] = allowance
+                remaining -= allowance
+        return budgets
 
     # -- compaction helpers ------------------------------------------------
 
@@ -1032,7 +1067,7 @@ class ContextHandlerLinear(ContextHandler):
         self,
         messages: List[Dict[str, Any]],
         item: LLMContext,
-        remaining_budget: Optional[List[int]] = None,
+        result_budgets: Dict[int, int],
     ) -> None:
         """Append backend-neutral messages for a single context entry.
 
@@ -1042,10 +1077,9 @@ class ContextHandlerLinear(ContextHandler):
         2. A ``{"role": "tool", ...}`` message per tool call that has
            a result.
 
-        Each tool result is bounded to ``_TOOL_RESULT_MAX_CHARS`` and the
-        shared cumulative budget ``remaining_budget`` caps the total tool
-        output across the whole request; results beyond it are replaced with
-        an explicit omission note. Large results also carry small size
+        Each tool result is bounded to ``_TOOL_RESULT_MAX_CHARS``. Preplanned
+        budgets prioritize the newest results, while older output is replaced
+        with an explicit omission note. Large results also carry small size
         metadata, so the next model turn can recognize the context pressure
         without needing a separate introspection tool. Persisted history is
         never modified.
@@ -1053,9 +1087,8 @@ class ContextHandlerLinear(ContextHandler):
         Args:
             messages: The message list being built (mutated in place).
             item: The context entry to convert.
-            remaining_budget: Optional single-element list holding the
-                remaining cumulative tool-output budget, shared across
-                entries of one request.
+            result_budgets: Precomputed output budgets keyed by each
+                ``ToolInfo`` identity. Newer tool results receive priority.
         """
         role = item.role
         content = item.content
@@ -1089,7 +1122,7 @@ class ContextHandlerLinear(ContextHandler):
                 if ti.result is not None:
                     call_id = ti.call.call_id or f"call_{id(ti)}"
                     result_text = self._render_tool_result_for_model(
-                        str(ti.result), remaining_budget
+                        str(ti.result), result_budgets.get(id(ti), 0)
                     )
                     messages.append({
                         "role": "tool",
@@ -1103,22 +1136,22 @@ class ContextHandlerLinear(ContextHandler):
     def _render_tool_result_for_model(
         self,
         raw_result: str,
-        remaining_budget: Optional[List[int]],
+        result_limit: int,
     ) -> str:
         """Bound one result and annotate it when it is large for the model.
 
         Args:
             raw_result: Complete, persisted tool output.
-            remaining_budget: Shared per-request output budget, if enabled.
+            result_limit: Precomputed character allowance for this result.
 
         Returns:
             The bounded transient content supplied in the provider's tool
             message. It includes a compact size notice for large results.
         """
         original_chars = len(raw_result)
-        result_limit = _TOOL_RESULT_MAX_CHARS
-        if remaining_budget is not None:
-            result_limit = min(result_limit, max(remaining_budget[0], 0))
+        result_limit = min(_TOOL_RESULT_MAX_CHARS, max(result_limit, 0))
+        if result_limit == 0:
+            return _OMITTED_TOOL_RESULT
 
         # Reserve space for the notice itself so the complete tool message
         # respects both the per-result and shared request budgets.
@@ -1160,6 +1193,4 @@ class ContextHandlerLinear(ContextHandler):
         else:
             result_text = visible_result
 
-        if remaining_budget is not None:
-            remaining_budget[0] = max(remaining_budget[0] - len(result_text), 0)
         return result_text
