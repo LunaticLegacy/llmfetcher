@@ -33,6 +33,7 @@ from .llm_types import (
     LLMTimeoutError,
     LLMBackendError,
     LLMRequestCancelled,
+    JsonObject,
     RemoteRequestSnapshot,
     TokenUsage,
 )
@@ -382,6 +383,46 @@ class LLMFetcher:
                 continue
         return aborted
 
+    def prepare_request(
+        self,
+        msg: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.4,
+        max_tokens: int = 4096,
+        context_handler: Optional[ContextHandler] = None,
+        backend_name: Optional[str] = None,
+        tools: Optional[Sequence[ToolDefinition]] = None,
+        stream: bool = False,
+    ) -> RemoteRequestSnapshot:
+        """Build the first dispatch-ready request without provider I/O.
+
+        Args:
+            msg: Current user message appended after durable context entries.
+            system_prompt: Optional system instruction prepended to messages.
+            temperature: Sampling temperature for the future provider request.
+            max_tokens: Maximum completion tokens for the future request.
+            context_handler: Optional context source used to assemble history.
+            backend_name: Optional explicit backend; defaults to the normal
+                first backend in fallback order.
+            tools: Optional model-visible tool definitions to prepare.
+            stream: Whether the eventual provider call would be streamed.
+
+        Returns:
+            Credential-free provider-neutral request snapshot for the first
+            eligible backend. This method never opens a provider transport.
+
+        Raises:
+            LLMBackendError: If no backend can be resolved for the request.
+        """
+        messages = self._build_messages(msg, system_prompt, context_handler)
+        backends = self._resolve_backends(backend_name, self.fallback_order)
+        if not backends:
+            raise LLMBackendError("No backend is configured")
+        _, snapshot = self._prepare_backend_request(
+            backends[0], messages, temperature, max_tokens, tools, stream,
+        )
+        return snapshot
+
     def fetch(
         self,
         msg: str,
@@ -474,24 +515,20 @@ class LLMFetcher:
                 for attempt_index in range(attempts):
                     try:
                         self._raise_if_force_stopped(controller)
-                        provider_tools = handler.prepare_tools(tools)
+                        handler, snapshot = self._prepare_backend_request(
+                            backend, messages, temperature, max_tokens, tools, False,
+                        )
+                        active_handler = handler
                         if on_request is not None:
                             # Emit one typed, credential-free snapshot at the
                             # application boundary before provider I/O begins.
-                            on_request(RemoteRequestSnapshot(
-                                model=backend.model,
-                                messages=list(messages),
-                                temperature=temperature,
-                                max_tokens=max_tokens,
-                                stream=False,
-                                tools=list(provider_tools or []),
-                            ))
+                            on_request(snapshot)
                         raw = handler.create_completion(
                             messages=messages,
                             temperature=temperature,
                             max_tokens=max_tokens,
                             stream=False,
-                            tools=provider_tools,
+                            tools=snapshot.tools,
                         )
                         self._raise_if_force_stopped(controller)
                         return handler.normalize_completion_response(raw)
@@ -610,22 +647,18 @@ class LLMFetcher:
                 for attempt_index in range(attempts):
                     try:
                         self._raise_if_force_stopped(controller)
-                        provider_tools = handler.prepare_tools(tools)
+                        handler, snapshot = self._prepare_backend_request(
+                            backend, messages, temperature, max_tokens, tools, True,
+                        )
+                        active_handler = handler
                         if on_request is not None:
-                            on_request(RemoteRequestSnapshot(
-                                model=backend.model,
-                                messages=list(messages),
-                                temperature=temperature,
-                                max_tokens=max_tokens,
-                                stream=True,
-                                tools=list(provider_tools or []),
-                            ))
+                            on_request(snapshot)
                         raw = handler.create_completion(
                             messages=messages,
                             temperature=temperature,
                             max_tokens=max_tokens,
                             stream=True,
-                            tools=provider_tools,
+                            tools=snapshot.tools,
                         )
                         capture = StreamUsageCapture()
                         for text in handler.iter_stream_text(
@@ -664,6 +697,40 @@ class LLMFetcher:
                 unregister()
 
     # -- helpers ----------------------------------------------------------------
+
+    def _prepare_backend_request(
+        self,
+        backend: LLMBackendConfig,
+        messages: List[JsonObject],
+        temperature: float,
+        max_tokens: int,
+        tools: Optional[Sequence[ToolDefinition]],
+        stream: bool,
+    ) -> tuple[LLMBackendHandler, RemoteRequestSnapshot]:
+        """Prepare one backend's tool schemas and safe request snapshot.
+
+        Args:
+            backend: Resolved provider configuration for this attempt.
+            messages: Fully assembled provider-neutral message sequence.
+            temperature: Sampling temperature selected for the request.
+            max_tokens: Completion-token cap selected for the request.
+            tools: Optional model-visible tools requiring provider preparation.
+            stream: Whether this request would use provider streaming.
+
+        Returns:
+            Prepared backend handler and its credential-free request snapshot.
+        """
+        handler = self._handler_for_backend(backend)
+        provider_tools = handler.prepare_tools(tools)
+        snapshot = RemoteRequestSnapshot(
+            model=backend.model,
+            messages=list(messages),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=stream,
+            tools=list(provider_tools or []),
+        )
+        return handler, snapshot
 
     @staticmethod
     def _max_attempts(backend: LLMBackendConfig) -> int:

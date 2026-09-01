@@ -7,7 +7,7 @@ import re
 import sqlite3
 import tempfile
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, override
 
@@ -89,6 +89,31 @@ _TOOL_RESULT_MAX_CHARS = 24_000
 _TOOL_RESULT_TOTAL_MAX_CHARS = 96_000
 _LARGE_TOOL_RESULT_NOTICE_CHARS = 6_000
 _CONTEXT_PAGE_SIZE = 200
+
+
+@dataclass(frozen=True)
+class CompactionRequestPreview:
+    """One exact, credential-free compaction request plan.
+
+    Attributes:
+        text: Bounded transcript sent as the compactor's user message.
+        system_prompt: Fixed compactor instruction for the model request.
+        temperature: Sampling temperature used by the compactor.
+        max_tokens: Completion-token budget used by the compactor.
+        messages: Number of active context entries before input truncation.
+        omitted: Number of entries excluded by the input character budget.
+        threshold: Context size that triggers compaction.
+        round: Context round associated with this plan.
+    """
+
+    text: str
+    system_prompt: str
+    temperature: float
+    max_tokens: int
+    messages: int
+    omitted: int
+    threshold: int
+    round: int
 
 
 def read_persisted_context_page(
@@ -405,7 +430,8 @@ class ContextHandlerLinear(ContextHandler):
             source_timelines.extend(self.abstract.source_timeline)
         source_timelines.extend(m.timeline for m in self.messages)
 
-        compaction_input = self._build_compaction_input()
+        request_preview = self.compaction_request_preview()
+        compaction_input = request_preview.text
         context_size = self._estimate_context_size()
         self._emit_compaction_event(
             "context:compact_started",
@@ -422,10 +448,10 @@ class ContextHandlerLinear(ContextHandler):
         )
         try:
             result: LLMOutput = self.llm_handler.fetch(
-                msg=compaction_input,
-                system_prompt=_COMPACTING_SYSTEM_PROMPT,
-                temperature=0.0,
-                max_tokens=self.compaction_output_max_tokens,
+                msg=request_preview.text,
+                system_prompt=request_preview.system_prompt,
+                temperature=request_preview.temperature,
+                max_tokens=request_preview.max_tokens,
                 context_handler=None,
             )
         except Exception as exc:
@@ -643,17 +669,12 @@ class ContextHandlerLinear(ContextHandler):
             return {}
         return {call_id: str(raw_value) for call_id, raw_value in tool_results.items()}
 
-    def _build_compaction_input(self) -> str:
-        """Render a bounded, newest-first transcript for one summary request.
-
-        The compactor is intentionally called without this handler as request
-        context. This method supplies only a capped textual transcript, so a
-        failed or delayed compaction can never ask the backend to accept the
-        entire unbounded conversation plus a large generation budget.
+    def compaction_request_preview(self) -> CompactionRequestPreview:
+        """Build the exact compaction request parameters without sending them.
 
         Returns:
-            JSON-like transcript containing the most recent context entries
-            that fit the compaction input budget.
+            Bounded input text and the fixed model parameters that
+            :meth:`compact` would use for its next provider request.
         """
         serialized_entries = [
             json.dumps(entry, ensure_ascii=False, default=str)
@@ -678,7 +699,30 @@ class ContextHandlerLinear(ContextHandler):
             f"{self.compaction_input_char_limit} character compaction budget.]\n"
             if omitted else ""
         )
-        return prefix + "\n\n".join(retained)
+        return CompactionRequestPreview(
+            text=prefix + "\n\n".join(retained),
+            system_prompt=_COMPACTING_SYSTEM_PROMPT,
+            temperature=0.0,
+            max_tokens=self.compaction_output_max_tokens,
+            messages=len(serialized_entries),
+            omitted=omitted,
+            threshold=self.compress_threshold,
+            round=self._round,
+        )
+
+    def _build_compaction_input(self) -> str:
+        """Render a bounded, newest-first transcript for one summary request.
+
+        The compactor is intentionally called without this handler as request
+        context. This method supplies only a capped textual transcript, so a
+        failed or delayed compaction can never ask the backend to accept the
+        entire unbounded conversation plus a large generation budget.
+
+        Returns:
+            JSON-like transcript containing the most recent context entries
+            that fit the compaction input budget.
+        """
+        return self.compaction_request_preview().text
 
     @staticmethod
     def _parse_compacted_abstract(raw: str) -> Optional[str]:
