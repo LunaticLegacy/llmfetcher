@@ -71,6 +71,10 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 The full project may also have root-level integration tests; run those from the
 Angelus superproject rather than treating them as submodule tests.
 
+`GraphContextHandler` forwards `compaction_output_max_tokens` to its linear
+history handler. This limits only the compactor's generated summary, never the
+primary model response.
+
 <!-- BEGIN GENERATED SYMBOL MAP -->
 
 ## Function Map
@@ -295,24 +299,24 @@ Angelus superproject rather than treating them as submodule tests.
 | [graph_memory/graph_store.py](graph_memory/graph_store.py#L478) | `GraphStore.save` | `path: str \| Path` | `bool` | Serialize the graph to JSON. Returns True on success. |
 | [graph_memory/graph_store.py](graph_memory/graph_store.py#L511) | `GraphStore.load` | `path: str \| Path` | `bool` | Deserialize the graph from JSON. Returns True on success. |
 | [graph_memory/graph_store.py](graph_memory/graph_store.py#L525) | `GraphStore.__len__` | `None` | `int` | Implement `GraphStore.__len__`. |
-| [graph_memory/handler.py](graph_memory/handler.py#L101) | `GraphContextHandler._init_session_state` | `None` | `None` | (Re)set all per-session transient state (keeps long-term graph). |
-| [graph_memory/handler.py](graph_memory/handler.py#L112) | `GraphContextHandler.has_retrieved` | `None` | `bool` | True once a retrieval has been performed this session. |
-| [graph_memory/handler.py](graph_memory/handler.py#L117) | `GraphContextHandler.graph_memory` | `None` | `str` | Last rendered ``<graph_memory>`` block (empty when none). |
-| [graph_memory/handler.py](graph_memory/handler.py#L122) | `GraphContextHandler.compaction_generation` | `None` | `int` | Number of compactions observed since the session started. |
-| [graph_memory/handler.py](graph_memory/handler.py#L127) | `GraphContextHandler.compress_threshold` | `None` | `int` | Compaction threshold forwarded from the inner linear handler. |
-| [graph_memory/handler.py](graph_memory/handler.py#L137) | `GraphContextHandler.extra_usage` | `None` | `Any` | Aggregate token usage from linear compaction + graph LLM calls. |
-| [graph_memory/handler.py](graph_memory/handler.py#L157) | `GraphContextHandler.record_usage` | `usage: Optional[Any]` | `None` | Forward one internal LLM call's usage to the inner linear handler. |
-| [graph_memory/handler.py](graph_memory/handler.py#L161) | `GraphContextHandler.drain_usage_records` | `None` | `list[UsageRecord]` | Drain child internal-call records in the order their components run. |
-| [graph_memory/handler.py](graph_memory/handler.py#L175) | `GraphContextHandler.retrieve` | `query: str` | `GraphRetrievalResult` | Run hybrid graph retrieval and store the rendered context block. |
-| [graph_memory/handler.py](graph_memory/handler.py#L193) | `GraphContextHandler.add_user_message` | `message: str` | `None` | Append a user message and trigger retrieval when due. |
-| [graph_memory/handler.py](graph_memory/handler.py#L204) | `GraphContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[dict[str, str]]` | `None` | Append an assistant output, detect compaction and flush the graph. |
-| [graph_memory/handler.py](graph_memory/handler.py#L227) | `GraphContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: graph memory block (user), then linear history. |
-| [graph_memory/handler.py](graph_memory/handler.py#L238) | `GraphContextHandler.save` | `path: str \| Path` | `bool` | Save the conversation AND the companion graph file. |
-| [graph_memory/handler.py](graph_memory/handler.py#L280) | `GraphContextHandler.load` | `path: str \| Path` | `bool` | Restore the conversation and its companion graph. |
-| [graph_memory/handler.py](graph_memory/handler.py#L351) | `GraphContextHandler.clear_context` | `None` | `bool` | Clear the session but keep the long-term memory graph. |
-| [graph_memory/handler.py](graph_memory/handler.py#L359) | `GraphContextHandler._retrieve_archive_evidence` | `query: str` | `str` | Render small, provenance-labelled raw evidence for a new query. |
-| [graph_memory/handler.py](graph_memory/handler.py#L392) | `GraphContextHandler._should_retrieve` | `None` | `bool` | Decide whether this newly stored user message should retrieve. |
-| [graph_memory/handler.py](graph_memory/handler.py#L409) | `GraphContextHandler._flush_pending` | `None` | `None` | Ingest buffered messages into the graph and clear the buffer. |
+| [graph_memory/handler.py](graph_memory/handler.py#L105) | `GraphContextHandler._init_session_state` | `None` | `None` | (Re)set all per-session transient state (keeps long-term graph). |
+| [graph_memory/handler.py](graph_memory/handler.py#L116) | `GraphContextHandler.has_retrieved` | `None` | `bool` | True once a retrieval has been performed this session. |
+| [graph_memory/handler.py](graph_memory/handler.py#L121) | `GraphContextHandler.graph_memory` | `None` | `str` | Last rendered ``<graph_memory>`` block (empty when none). |
+| [graph_memory/handler.py](graph_memory/handler.py#L126) | `GraphContextHandler.compaction_generation` | `None` | `int` | Number of compactions observed since the session started. |
+| [graph_memory/handler.py](graph_memory/handler.py#L131) | `GraphContextHandler.compress_threshold` | `None` | `int` | Compaction threshold forwarded from the inner linear handler. |
+| [graph_memory/handler.py](graph_memory/handler.py#L141) | `GraphContextHandler.extra_usage` | `None` | `Any` | Aggregate token usage from linear compaction + graph LLM calls. |
+| [graph_memory/handler.py](graph_memory/handler.py#L161) | `GraphContextHandler.record_usage` | `usage: Optional[Any]` | `None` | Forward one internal LLM call's usage to the inner linear handler. |
+| [graph_memory/handler.py](graph_memory/handler.py#L165) | `GraphContextHandler.drain_usage_records` | `None` | `list[UsageRecord]` | Drain child internal-call records in the order their components run. |
+| [graph_memory/handler.py](graph_memory/handler.py#L179) | `GraphContextHandler.retrieve` | `query: str` | `GraphRetrievalResult` | Run hybrid graph retrieval and store the rendered context block. |
+| [graph_memory/handler.py](graph_memory/handler.py#L197) | `GraphContextHandler.add_user_message` | `message: str` | `None` | Append a user message and trigger retrieval when due. |
+| [graph_memory/handler.py](graph_memory/handler.py#L208) | `GraphContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[dict[str, str]]` | `None` | Append an assistant output, detect compaction and flush the graph. |
+| [graph_memory/handler.py](graph_memory/handler.py#L231) | `GraphContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: graph memory block (user), then linear history. |
+| [graph_memory/handler.py](graph_memory/handler.py#L242) | `GraphContextHandler.save` | `path: str \| Path` | `bool` | Save the conversation AND the companion graph file. |
+| [graph_memory/handler.py](graph_memory/handler.py#L284) | `GraphContextHandler.load` | `path: str \| Path` | `bool` | Restore the conversation and its companion graph. |
+| [graph_memory/handler.py](graph_memory/handler.py#L355) | `GraphContextHandler.clear_context` | `None` | `bool` | Clear the session but keep the long-term memory graph. |
+| [graph_memory/handler.py](graph_memory/handler.py#L363) | `GraphContextHandler._retrieve_archive_evidence` | `query: str` | `str` | Render small, provenance-labelled raw evidence for a new query. |
+| [graph_memory/handler.py](graph_memory/handler.py#L396) | `GraphContextHandler._should_retrieve` | `None` | `bool` | Decide whether this newly stored user message should retrieve. |
+| [graph_memory/handler.py](graph_memory/handler.py#L413) | `GraphContextHandler._flush_pending` | `None` | `None` | Ingest buffered messages into the graph and clear the buffer. |
 | [graph_memory/models.py](graph_memory/models.py#L42) | `EntityNode.to_dict` | `None` | `dict[str, Any]` | Implement `EntityNode.to_dict`. |
 | [graph_memory/models.py](graph_memory/models.py#L46) | `EntityNode.from_dict` | `data: dict[str, Any]` | `'EntityNode'` | Implement `EntityNode.from_dict`. |
 | [graph_memory/models.py](graph_memory/models.py#L86) | `RelationEdge.key` | `None` | `tuple[str, str]` | Undirected canonical edge key (sorted pair). |
@@ -664,7 +668,7 @@ Angelus superproject rather than treating them as submodule tests.
 | [graph_memory/builder.py](graph_memory/builder.py#L47) | `IngestStats` | `entities_added: int, relations_added: int, llm_used: bool, fallback_regex: bool, error: str` | `object` | Statistics for one ingest batch. |
 | [graph_memory/builder.py](graph_memory/builder.py#L83) | `GraphBuilder` | `store: GraphStore, fetcher: Optional[ExtractionFetcher], max_batch_chars: int, max_entities_per_batch: int` | `object` | Incremental conversation -> memory-graph builder. |
 | [graph_memory/graph_store.py](graph_memory/graph_store.py#L104) | `GraphStore` | `None` | `object` | In-memory entity-relation graph with temporal + provenance metadata. |
-| [graph_memory/handler.py](graph_memory/handler.py#L41) | `GraphContextHandler` | `compacting_fetcher: CompactionFetcher, extraction_fetcher: Optional[ExtractionFetcher], query_fetcher: Optional[ExtractionFetcher], store: Optional[GraphStore], retriever_config: Optional[RetrievalConfig], retrieval_trigger: str, graph_update_every: int, max_context_threshold: int, graph_save_suffix: str` | `ContextHandler` | A context handler with an entity-relation long-term memory graph. |
+| [graph_memory/handler.py](graph_memory/handler.py#L41) | `GraphContextHandler` | `compacting_fetcher: CompactionFetcher, extraction_fetcher: Optional[ExtractionFetcher], query_fetcher: Optional[ExtractionFetcher], store: Optional[GraphStore], retriever_config: Optional[RetrievalConfig], retrieval_trigger: str, graph_update_every: int, max_context_threshold: int, compaction_output_max_tokens: int, graph_save_suffix: str` | `ContextHandler` | A context handler with an entity-relation long-term memory graph. |
 | [graph_memory/models.py](graph_memory/models.py#L15) | `EntityNode` | `id: str, name: str, entity_type: str, aliases: list[str], summary: str, first_seen: int, last_seen: int, freq: int, embedding: Optional[list[float]]` | `object` | A single entity in the memory graph. |
 | [graph_memory/models.py](graph_memory/models.py#L61) | `RelationEdge` | `source_id: str, target_id: str, relation: str, weight: float, first_seen: int, last_seen: int, valid: bool, evidence: list[int]` | `object` | A relation between two entities with temporal attributes. |
 | [graph_memory/models.py](graph_memory/models.py#L109) | `CommunitySummary` | `level: int, community_id: str, summary: str, member_entity_ids: list[str], source_timelines: list[int]` | `object` | Summary of one community (cluster) of the memory graph. |

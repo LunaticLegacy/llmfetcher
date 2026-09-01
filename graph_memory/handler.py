@@ -62,6 +62,8 @@ class GraphContextHandler(ContextHandler):
             this many user/assistant messages (default 3).
         max_context_threshold: Character threshold that triggers linear
             context compaction (forwarded to the linear handler).
+        compaction_output_max_tokens: Maximum completion tokens requested
+            from the compactor (forwarded to the linear handler).
         graph_save_suffix: Suffix appended to the context file path when
             persisting the graph (default ``".graph.json"``).
     """
@@ -77,12 +79,14 @@ class GraphContextHandler(ContextHandler):
         retrieval_trigger: str = "first_message",
         graph_update_every: int = 3,
         max_context_threshold: int = 262144,
+        compaction_output_max_tokens: int = 8192,
         graph_save_suffix: str = ".graph.json",
     ) -> None:
         super().__init__()
         self.linear = ContextHandlerLinear(
             compacting_fetcher,
             max_context_threshold=max_context_threshold,
+            compaction_output_max_tokens=compaction_output_max_tokens,
         )
         self.store = store if store is not None else GraphStore()
         self.builder = GraphBuilder(self.store, fetcher=extraction_fetcher)
