@@ -1021,6 +1021,13 @@ class Agent:
             # process crash, force-stop, or later model failure cannot erase
             # every turn produced by a long-running Agent invocation.
             self._save_context()
+            self._emit(
+                "agent",
+                name,
+                "agent:context_checkpoint",
+                f"Persisted context checkpoint after round {round_idx}",
+                data={"round": round_idx, "context_path": str(self.context_path or "")},
+            )
 
             if self._completion_requested.is_set():
                 outcome = self._set_outcome(

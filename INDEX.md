@@ -28,7 +28,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 | Component | Import / path | Why Angelus uses it |
 |---|---|---|
 | Fetching | `LLMFetcher`, `LLMBackendConfig`, `LLMRequestCancelled` | Configures primary/fallback backend calls; ordinary failures can retry, while `abort_active_requests()` is terminal and never retries or falls back. |
-| Agent execution | `Agent`, `AgentRunControl` | Runs a session, forwards cooperative stop/steer controls to both ordinary and streaming provider calls, observes an optional `force_stopped` event during provider I/O, checkpoints completed context, and emits lifecycle events. |
+| Agent execution | `Agent`, `AgentRunControl` | Runs a session, forwards cooperative stop/steer controls to both ordinary and streaming provider calls, observes an optional `force_stopped` event during provider I/O, checkpoints completed context, then emits `agent:context_checkpoint` for the host's safe graph-generation commit. |
 | Execution control | `ExecutionController`, `StopMode`, `StopRequest` | One attempt-local stop authority. Graceful and force-stop share a terminal request; force invokes registered resource cancellers and wakes blocking stream waits. |
 | Durable context | `ContextHandlerLinear` | Schema 3 SQLite row-store with a small JSON pointer: recovery loads only the newest 200 active turns, API readers page backward by timeline, and compaction archives rows without full-transcript rewrites. Legacy JSON remains readable for the one-shot migration script. |
 | Long-term graph | `GraphContextHandler`, `SemanticGraphWorker` | Graph/archive retrieval; extraction and reranking calls are isolated from the primary Agent's tools and transcript. |
