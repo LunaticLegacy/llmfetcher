@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, quote_plus, urlparse
 
 from ..llm_types import Tool, ToolSchema, ToolParameter
+from ..execution import current_execution_controller
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +45,48 @@ def _get_obscura_bin() -> str:
         if bundled.is_file():
             return str(bundled)
     return "obscura"
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    """Terminate one CLI tool process and all children it started."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            process.kill()
+        except (OSError, ProcessLookupError):
+            pass
+
+
+def _run_cli(command: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    """Run a cancellable CLI command for the current tool execution."""
+    controller = current_execution_controller()
+    if controller is not None and controller.force_stopped.is_set():
+        raise RuntimeError("command force-stopped before execution")
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    unregister = (
+        controller.register_force_canceller(lambda _request: _kill_process_group(process))
+        if controller is not None
+        else None
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        process.communicate()
+        raise
+    finally:
+        if unregister is not None:
+            unregister()
+
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _unwrap_search_url(href: str) -> str:
@@ -256,14 +300,12 @@ def _curl_document(url: str, timeout: int, user_agent: str) -> tuple[Any | None,
     """
     from bs4 import BeautifulSoup
 
-    completed = subprocess.run(
+    completed = _run_cli(
         [
             "curl", "-L", "--compressed", "--connect-timeout", str(min(5, timeout)),
             "--max-time", str(timeout), "-A", user_agent, url,
         ],
-        capture_output=True,
-        text=True,
-        check=False,
+        timeout,
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or "no stderr"
@@ -478,11 +520,9 @@ def _obscura_fetch_cli(**kwargs: Any) -> dict[str, Any]:
     if eval_js:
         cmd_parts.extend(["-e", eval_js])
 
-    result = subprocess.run(
+    result = _run_cli(
         cmd_parts,
-        capture_output=True,
-        text=True,
-        timeout=wait + 15,  # hard ceiling
+        wait + 15,
     )
 
     payload = {
@@ -540,11 +580,9 @@ def _obscura_scrape_cli(**kwargs: Any) -> dict[str, Any]:
         cmd_parts.extend(["-e", eval_js])
     cmd_parts.extend(urls)
 
-    result = subprocess.run(
+    result = _run_cli(
         cmd_parts,
-        capture_output=True,
-        text=True,
-        timeout=timeout + 15,
+        timeout + 15,
     )
 
     stdout_text = result.stdout.strip()

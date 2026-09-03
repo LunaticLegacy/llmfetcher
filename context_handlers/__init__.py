@@ -1,5 +1,5 @@
 from .base import ContextHandler
-from .linear import ContextHandlerLinear
+from .linear import CompactionRequestPreview, ContextHandlerLinear
 from .retrieved import RetrievedContextHandler
 from .archive_retrieval import (
     ArchiveEvidence,
@@ -11,6 +11,7 @@ from .archive_retrieval import (
 __all__ = [
     "ContextHandler",
     "ContextHandlerLinear",
+    "CompactionRequestPreview",
     "RetrievedContextHandler",
     "ArchiveEvidence",
     "ArchiveRetrievalConfig",

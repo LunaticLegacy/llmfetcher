@@ -61,6 +61,11 @@ class TLBContextHandler(ContextHandler):
         self,
         message: LLMOutput,
         tool_results: Optional[Dict[str, str]] = None,
+        *,
+        usage: Optional[Dict[str, int]] = None,
+        model_duration_ms: Optional[int] = None,
+        round_duration_ms: Optional[int] = None,
+        created_at: Optional[float] = None,
     ) -> None:
         """Record an LLM response into the conversation history.
 

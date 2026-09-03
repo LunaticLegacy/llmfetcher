@@ -2,20 +2,48 @@ from __future__ import annotations
 
 import threading
 import time
-import queue
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Any, Optional, Dict, Protocol
+from typing import List, Any, Optional, Dict, Protocol, Callable
 from pathlib import Path
 
 from .llm_fetcher import LLMBackendConfig, LLMFetcher, LLMBackendHandler
-from .llm_types import Tool, ToolParameter, ToolSchema, LLMOutput, LLMToolCall, TokenUsage
+from .llm_types import (
+    Tool,
+    ToolParameter,
+    ToolSchema,
+    LLMOutput,
+    LLMRequestCancelled,
+    LLMToolCall,
+    TokenUsage,
+)
 from .tool_handler import ToolHandler
-from .tool_executor import ToolExecutor
+from .tool_executor import ToolBatchCancelled, ToolExecutor
 from .context_handlers import ContextHandlerLinear, ContextHandler
 from .events import ExecutionEvent, ExecutionHook
 from .usage_ledger import UsageRecord, add_usage, copy_usage
+from .execution import ExecutionController
+
+
+def _supports_force_control(control: object) -> bool:
+    """Return whether one cooperative control can cancel provider resources.
+
+    Args:
+        control: Candidate global or Agent-scoped execution control.
+
+    Returns:
+        ``True`` when the object exposes the force-cancellation contract used
+        by ``LLMFetcher`` and tool execution.
+    """
+    return (
+        isinstance(control, ExecutionController)
+        or (
+            control is not None
+            and callable(getattr(control, "register_force_canceller", None))
+            and hasattr(control, "force_stopped")
+        )
+    )
 
 
 class AgentRunControl(Protocol):
@@ -59,6 +87,14 @@ class AgentRunLimitReached(RuntimeError):
     The last response requested tools, so returning it as a user-facing answer
     would silently discard the required next model step.
     """
+
+
+class ContextLoadError(RuntimeError):
+    """Signal that an existing Agent checkpoint could not be restored."""
+
+
+class ContextSaveError(RuntimeError):
+    """Signal that a configured Agent checkpoint could not be committed."""
 
 
 class AgentRunTermination(str, Enum):
@@ -131,6 +167,7 @@ class Agent:
         default_max_tokens: int = 32768,
         enable_stop_turn: bool = False,
         default_stream: bool = False,
+        tool_result_transformer: Callable[[str, str, str], str] | None = None,
     ):
         """Initialize one tool-using Agent.
 
@@ -151,6 +188,9 @@ class Agent:
                 workflow needs a model-visible non-text terminal boundary.
             default_stream: Whether calls omitting ``stream`` should emit
                 incremental lifecycle events while preserving final results.
+            tool_result_transformer: Optional host-owned transformation applied
+                to a completed tool result before it enters model context. It
+                receives the tool name, call ID, and complete string result.
 
         Returns:
             None.
@@ -163,6 +203,8 @@ class Agent:
             raise ValueError("default_max_rounds must be zero or greater")
         if default_max_tokens <= 0:
             raise ValueError("default_max_tokens must be greater than zero")
+
+        # Initiate the variable.
         self.llm_fetcher = llm_fetcher
         self.system_prompt = system_prompt
         self.max_concurrency = max_concurrency
@@ -171,15 +213,25 @@ class Agent:
         self.default_max_rounds = default_max_rounds
         self.default_max_tokens = default_max_tokens
         self.default_stream = default_stream
+        self.tool_result_transformer = tool_result_transformer
 
+        # Handle the tool, and make the tool executor.
         self.tool_handler: ToolHandler = ToolHandler()
         self.tool_executor: ToolExecutor = ToolExecutor(
             max_concurrency=self.max_concurrency,
         )
+
+        # Handle the context. If there's no defaulot, create a deefault.
         self.context_handler: ContextHandler = context_handler or ContextHandlerLinear(
             compacting_llmfetcher_handler=self.llm_fetcher,
             max_context_threshold=self.max_context_threshold,
         )
+
+        # Meaningless code.
+        if context_handler is not None:
+            configured_linear = getattr(context_handler, "linear", context_handler)
+            if hasattr(configured_linear, "compress_threshold"):
+                self.max_context_threshold = configured_linear.compress_threshold
 
         # Route compaction lifecycle events from the inner linear handler into
         # this Agent's event stream (source="context"), so they persist into
@@ -507,22 +559,26 @@ class Agent:
         """Persist the current context when this Agent has a storage path.
 
         Returns:
-            ``True`` when a configured context was saved successfully;
-            ``False`` when persistence is disabled or the handler reports a
-            write failure.
+            ``True`` when persistence is disabled or the configured context
+            was saved successfully.
+
+        Raises:
+            ContextSaveError: If the configured handler rejects the commit.
 
         This helper is called for both ordinary completion and cooperative
         stops so a completed model-and-tool boundary is never lost merely
         because execution will not enter another round.
         """
         if self.context_path is None:
-            return False
-        return self.context_handler.save(self.context_path)
+            return True
+        if not self.context_handler.save(self.context_path):
+            raise ContextSaveError(f"Could not save context checkpoint: {self.context_path}")
+        return True
 
     def _fetch_model_with_force_stop(
         self,
         *,
-        control: AgentRunControl | None,
+        control: AgentRunControl | None = None,
         **fetch_kwargs: Any,
     ) -> LLMOutput:
         """Fetch one model response, allowing a terminal browser force-stop.
@@ -548,47 +604,15 @@ class Agent:
             force-stop it asks the fetcher to close provider transports before
             ending the Agent thread; the worker cannot mutate Agent context.
         """
-        force_event = getattr(control, "force_stopped", None)
-        if force_event is None:
-            return self.llm_fetcher.fetch(**fetch_kwargs)
-
-        result_queue: queue.Queue[tuple[bool, LLMOutput | BaseException]] = queue.Queue(maxsize=1)
-
-        def fetch_in_background() -> None:
-            """Keep blocking provider I/O isolated from the Agent worker."""
-            try:
-                result_queue.put((True, self.llm_fetcher.fetch(**fetch_kwargs)))
-            except BaseException as exc:
-                result_queue.put((False, exc))
-
-        threading.Thread(
-            target=fetch_in_background,
-            name="llmfetcher-model-request",
-            daemon=True,
-        ).start()
-        while True:
-            if force_event.wait(timeout=0.05):
-                # Closing SDK transports interrupts providers such as OpenAI
-                # and Anthropic.  Regardless of SDK support, do not let the
-                # detached request resume this terminal Agent invocation.
-                abort_requests = getattr(self.llm_fetcher, "abort_active_requests", None)
-                if callable(abort_requests):
-                    abort_requests()
-                raise AgentRunStopped("Agent force-stopped during model request")
-            try:
-                completed, value = result_queue.get_nowait()
-            except queue.Empty:
-                continue
-            if completed:
-                return value  # type: ignore[return-value]
-            raise value  # type: ignore[misc]
+        controller = control if _supports_force_control(control) else None
+        return self.llm_fetcher.fetch(controller=controller, **fetch_kwargs)
 
     def _stream_model_response(
         self,
         *,
         name: str,
         round_idx: int,
-        control: AgentRunControl | None,
+        control: AgentRunControl | None = None,
         **fetch_kwargs: Any,
     ) -> LLMOutput:
         """Stream one provider response, emit deltas, and rebuild its final form.
@@ -609,7 +633,7 @@ class Agent:
         calls: list[LLMToolCall] = []
         channel = "content"
         tool_payload: list[str] = []
-        force_event = getattr(control, "force_stopped", None)
+        controller = control if _supports_force_control(control) else None
         backend = self.llm_fetcher.default_backend_config
         # The fetcher fills this per-call accumulator with the provider's
         # streamed usage so streamed rounds carry the same token accounting
@@ -617,13 +641,8 @@ class Agent:
         stream_usage = TokenUsage()
 
         for chunk in self.llm_fetcher.fetch_stream(
-            usage_sink=stream_usage, **fetch_kwargs
+            controller=controller, usage_sink=stream_usage, **fetch_kwargs
         ):
-            if force_event is not None and force_event.is_set():
-                abort = getattr(self.llm_fetcher, "abort_active_requests", None)
-                if callable(abort):
-                    abort()
-                raise AgentRunStopped("Agent force-stopped during streamed model request")
             if chunk == "\n<think>\n":
                 channel = "reasoning"
                 continue
@@ -709,6 +728,8 @@ class Agent:
             RuntimeError: If a model returns neither tool calls nor formal
                 answer content; this is an invalid empty response rather than
                 a successful completion.
+            ContextLoadError: If an existing checkpoint cannot be restored.
+            ContextSaveError: If a completed boundary cannot be persisted.
         """
         resolved_max_rounds = self.default_max_rounds if max_rounds is None else max_rounds
         resolved_max_tokens = (
@@ -749,11 +770,18 @@ class Agent:
         tool_results: Optional[Dict[str, str]] = None
         have_tool_call: bool = False
 
-        load_result = (
-            self.context_handler.load(self.context_path)
-            if self.context_path is not None
-            else False
-        )
+        desired_context_threshold = self.max_context_threshold
+        context_file = Path(self.context_path) if self.context_path is not None else None
+        load_result = False
+        if context_file is not None and context_file.exists():
+            load_result = self.context_handler.load(context_file)
+            if not load_result:
+                raise ContextLoadError(f"Could not load context checkpoint: {context_file}")
+        # The run configuration is authoritative for this turn. Apply it
+        # after loading so a prior checkpoint cannot overwrite the UI choice.
+        loaded_linear = getattr(self.context_handler, "linear", self.context_handler)
+        if hasattr(loaded_linear, "compress_threshold"):
+            loaded_linear.compress_threshold = desired_context_threshold
         if verbose:
             if not load_result:
                 print(
@@ -806,7 +834,6 @@ class Agent:
 
             try:
                 fetch_kwargs = dict(
-                    control=control,
                     msg=message_input,
                     system_prompt=prompt,
                     temperature=temperature,
@@ -818,16 +845,31 @@ class Agent:
                         f"Remote request prepared for round {round_idx}",
                         data={"round": round_idx, "request": request.to_dict()},
                     ),
+                    on_retry=lambda retry_index: self._emit(
+                        "agent", name, "agent:retry",
+                        f"Retrying LLM request for round {round_idx} "
+                        f"(retry {retry_index + 1})",
+                        data={
+                            "round": round_idx,
+                            "retry_index": retry_index,
+                            "attempt": retry_index + 1,
+                        },
+                    ),
                 )
                 model_started_at = time.perf_counter()
                 result = (
-                    self._stream_model_response(name=name, round_idx=round_idx, **fetch_kwargs)
-                    if resolved_stream else self._fetch_model_with_force_stop(**fetch_kwargs)
+                    self._stream_model_response(
+                        name=name, round_idx=round_idx, control=control, **fetch_kwargs
+                    )
+                    if resolved_stream
+                    else self._fetch_model_with_force_stop(control=control, **fetch_kwargs)
                 )
                 model_duration_ms = round((time.perf_counter() - model_started_at) * 1000)
-            except AgentRunStopped:
+            except (AgentRunStopped, LLMRequestCancelled) as exc:
                 self._set_outcome(AgentRunTermination.USER_STOPPED, round_idx)
-                raise
+                if isinstance(exc, AgentRunStopped):
+                    raise
+                raise AgentRunStopped(str(exc)) from exc
 
             # Accumulate token usage across rounds.
             add_usage(self.usage, copy_usage(result.usage))
@@ -835,7 +877,9 @@ class Agent:
             # separate record is the canonical per-call usage ledger entry,
             # so consumers need not infer hidden calls from round payloads.
             self._emit(
-                "agent", name, "agent:usage",
+                "agent", 
+                name, 
+                "agent:usage",
                 f"Primary LLM usage for round {round_idx}",
                 data={
                     "kind": "primary",
@@ -875,21 +919,47 @@ class Agent:
                     )
                 )
                 tool_started_at = time.perf_counter()
-                results_list: List[Any] = self.tool_executor.execute_batch(
-                    handlers, arguments,
-                )
-                tool_results = dict([
-                    (tc.call_id or f"call_{i}", str(r))
-                    for i, (tc, r) in enumerate(
-                        zip(result.tool_calls, results_list),
+                try:
+                    executions = self.tool_executor.execute_batch_timed(
+                        handlers,
+                        arguments,
+                        controller=(
+                            control if _supports_force_control(control) else None
+                        ),
                     )
-                ])
+                except ToolBatchCancelled as exc:
+                    self._set_outcome(AgentRunTermination.USER_STOPPED, round_idx)
+                    self._emit(
+                        "agent", name, "agent:stopped",
+                        "Force-stopped during tool execution",
+                        data=self.last_outcome.to_dict() if self.last_outcome else {},
+                    )
+                    raise AgentRunStopped(str(exc), last_output=result) from exc
+                results_list: List[Any] = [
+                    execution.result for execution in executions
+                ]
+                tool_results = {}
+                for i, (tool_call, raw_result) in enumerate(
+                    zip(result.tool_calls, results_list),
+                ):
+                    call_id = tool_call.call_id or f"call_{i}"
+                    result_text = str(raw_result)
+                    if self.tool_result_transformer is not None:
+                        result_text = self.tool_result_transformer(
+                            tool_call.name,
+                            call_id,
+                            result_text,
+                        )
+                    tool_results[call_id] = result_text
                 have_tool_call = True
 
                 # Preserve typed outcomes for event consumers while the model
-                # receives the string map above on its next round.
+                # receives the string map above on its next round.  Each entry
+                # also carries that tool's own wall-clock duration so the chat
+                # can show per-tool timing without inferring it from the batch.
                 completed_calls = []
-                for call, raw_result in zip(requested_calls, results_list):
+                for call, execution in zip(requested_calls, executions):
+                    raw_result = execution.result
                     result_ok = not isinstance(raw_result, Exception)
                     if isinstance(raw_result, dict) and raw_result.get("ok") is False:
                         result_ok = False
@@ -897,6 +967,7 @@ class Agent:
                         **call,
                         "ok": result_ok,
                         "result": raw_result,
+                        "duration_ms": execution.duration_ms,
                     })
                 self._emit(
                     "agent",
@@ -929,6 +1000,9 @@ class Agent:
                 )
                 raise RuntimeError(outcome.detail)
 
+            round_duration_ms = round((time.perf_counter() - round_started_at) * 1000)
+            response_completed_at = time.time()
+            round_usage = self._usage_data(copy_usage(result.usage))
             self._emit(
                 "agent", name, "agent:round",
                 f"Round {round_idx}, {len(result.tool_calls)} tool call(s)",
@@ -940,8 +1014,8 @@ class Agent:
                         for tc in result.tool_calls
                     ],
                     "usage": self._usage_data(self.usage),
-                    "round_usage": self._usage_data(copy_usage(result.usage)),
-                    "duration_ms": round((time.perf_counter() - round_started_at) * 1000),
+                    "round_usage": round_usage,
+                    "duration_ms": round_duration_ms,
                     "model_duration_ms": model_duration_ms,
                     "assistant_content": result.content,
                     "reasoning_content": result.reasoning_content,
@@ -954,6 +1028,10 @@ class Agent:
             self.context_handler.add_assistant_message(
                 message=result,
                 tool_results=tool_results,
+                usage=round_usage,
+                model_duration_ms=model_duration_ms,
+                round_duration_ms=round_duration_ms,
+                created_at=response_completed_at,
             )
             self._drain_internal_usage(name)
 
@@ -962,6 +1040,13 @@ class Agent:
             # process crash, force-stop, or later model failure cannot erase
             # every turn produced by a long-running Agent invocation.
             self._save_context()
+            self._emit(
+                "agent",
+                name,
+                "agent:context_checkpoint",
+                f"Persisted context checkpoint after round {round_idx}",
+                data={"round": round_idx, "context_path": str(self.context_path or "")},
+            )
 
             if self._completion_requested.is_set():
                 outcome = self._set_outcome(

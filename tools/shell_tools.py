@@ -5,6 +5,7 @@ import shlex
 import subprocess
 from typing import Any, Callable, Dict, List, Optional
 
+from ..execution import current_execution_controller
 from ..llm_types import Tool, ToolSchema, ToolParameter
 
 
@@ -54,6 +55,13 @@ def create_shell_tools(
         command: str = kwargs["command"]
         timeout: float = min(kwargs.get("timeout", 30.0), max_timeout)
         requested_cwd: Optional[str] = kwargs.get("cwd")
+        controller = current_execution_controller()
+
+        def force_stopped() -> bool:
+            return (
+                (controller is not None and controller.force_stopped.is_set())
+                or (force_stop_event is not None and force_stop_event.is_set())
+            )
 
         # Validate working directory
         if sandbox_cwd:
@@ -97,10 +105,11 @@ def create_shell_tools(
                 if not any(base_cmd == allowed for allowed in allowed_commands):
                     return f"Error: command '{base_cmd}' not in allowed list: {allowed_commands}"
 
-        if force_stop_event is not None and force_stop_event.is_set():
+        if force_stopped():
             return "Error: command force-stopped before execution"
 
         proc = None
+        unregister_canceller: Callable[[], None] | None = None
         try:
             proc = subprocess.Popen(
                 command,
@@ -118,7 +127,11 @@ def create_shell_tools(
             )
             if register_process:
                 register_process(proc)
-            if force_stop_event is not None and force_stop_event.is_set():
+            if controller is not None:
+                unregister_canceller = controller.register_force_canceller(
+                    lambda _request: _kill_process_group(proc)
+                )
+            if force_stopped():
                 _kill_process_group(proc)
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -129,8 +142,13 @@ def create_shell_tools(
         except Exception as exc:
             return f"Error: {exc}"
         finally:
+            if unregister_canceller is not None:
+                unregister_canceller()
             if proc is not None and unregister_process:
                 unregister_process(proc)
+
+        if force_stopped():
+            return "Error: command force-stopped during execution"
 
         lines: List[str] = []
         if stdout:

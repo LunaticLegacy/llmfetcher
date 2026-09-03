@@ -11,7 +11,7 @@ Example usage:
     agent = Agent(llm_handler=fetcher, system_prompt="...", provider="anthropic")
 """
 
-__version__ = "0.4.0"
+from ._version import __version__
 __author__ = "LunaticLegacy"
 
 from .llm_fetcher import (
@@ -28,6 +28,8 @@ from .agent import (
     AgentRunControl,
     AgentRunStopped,
     AgentRunTermination,
+    ContextLoadError,
+    ContextSaveError,
 )
 
 from .tool_handler import (
@@ -43,6 +45,12 @@ from .llm_types import (
 
 from .tool_executor import (
     ToolExecutor,
+)
+
+from .execution import (
+    ExecutionController,
+    StopMode,
+    StopRequest,
 )
 
 from .swarm_module import (

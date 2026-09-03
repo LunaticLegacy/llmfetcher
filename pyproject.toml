@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llmfetcher"
-version = "0.4.0"
+dynamic = ["version"]
 description = "Multi-agent LLM orchestration framework"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
@@ -16,20 +16,18 @@ dependencies = [
     "anthropic>=0.100.0",
     "litellm>=1.0.0",
     "markdown-it-py",
-    "fastapi>=0.115.0",
     "networkx",
-    "uvicorn>=0.30.0",
 ]
 
 [project.scripts]
 llmfetcher = "llmfetcher.cli:main"
-llmfetcher-web = "llmfetcher.webapp:main"
 
 [tool.setuptools]
 package-dir = {llmfetcher = "."}
 packages = [
     "llmfetcher",
     "llmfetcher.context_handlers",
+    "llmfetcher.execution",
     "llmfetcher.fetcher_handlers",
     "llmfetcher.graph_memory",
     "llmfetcher.memory",
@@ -40,9 +38,5 @@ packages = [
     "llmfetcher.tools",
 ]
 
-[tool.setuptools.package-data]
-llmfetcher = [
-    "web/templates/*.html",
-    "web/static/*.css",
-    "web/static/*.js",
-]
+[tool.setuptools.dynamic]
+version = {attr = "llmfetcher._version.__version__"}

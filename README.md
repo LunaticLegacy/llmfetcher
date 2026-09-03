@@ -55,41 +55,6 @@ The base dependencies install the OpenAI, Anthropic, and LiteLLM client
 libraries. Local OpenVINO and ONNX Runtime handlers require their respective
 runtime packages.
 
-## Web Console
-
-The repository includes a local, single-page frontend for chatting with an
-`Agent` and observing its execution. It exposes the same backend configuration,
-tool registration, budgets, event hooks, and cooperative stop controls used by
-the Python API.
-
-```bash
-pip install -e .
-llmfetcher-web
-```
-
-Open [http://127.0.0.1:8765](http://127.0.0.1:8765). Configure a provider,
-model, optional API URL and key, then send a message. API keys are used only to
-start the active run and are not stored in the persisted chat context. Context
-files are saved locally under `.llmfetcher/sessions/`.
-
-The optional Shell switch exposes the existing restricted `shell` tool with its
-working directory limited to the process directory. Only enable it for models
-you trust with local-machine access.
-
-### Workspaces and CLI
-
-Each workspace has its own persistent chat context. Select one in the console,
-or manage it from the main CLI:
-
-```bash
-llmfetcher workspace list
-llmfetcher workspace create "产品研究"
-llmfetcher web --port 8765
-```
-
-`llmfetcher web` is equivalent to `llmfetcher-web`; the latter remains a
-convenient dedicated console entry point.
-
 ## Quick Start
 
 Create one text Agent. `Agent.run()` is synchronous and returns the final

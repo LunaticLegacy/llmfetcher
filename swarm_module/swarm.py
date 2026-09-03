@@ -382,6 +382,17 @@ class AgentSwarm:
         """
         self._graph.add_hook(hook)
 
+    def remove_hook(self, hook: ExecutionHook) -> bool:
+        """Remove a hook previously forwarded to the execution graph.
+
+        Args:
+            hook: Exact callback object previously passed to :meth:`add_hook`.
+
+        Returns:
+            Whether the hook was present and removed.
+        """
+        return self._graph.remove_hook(hook)
+
     def view_snapshot(self) -> dict[str, Any]:
         """Return a safe, UI-oriented snapshot of the active graph topology.
 
@@ -444,6 +455,39 @@ class AgentSwarm:
                 totals["cached"] += usage.cached_tokens or 0
                 totals["reasoning"] += usage.reasoning_tokens or 0
         return totals
+
+    def agent_usage(self) -> dict[str, dict[str, int]]:
+        """Project token usage for every currently registered Agent.
+
+        The projection uses the same normalized dimensions as
+        :meth:`total_usage`, so a client can safely sum the individual rows
+        and compare them to the session aggregate.  Dynamic workers remain in
+        the graph after completion and are consequently included.
+
+        Returns:
+            Agent name to non-negative input/output/total/cached/reasoning
+            token counters.
+        """
+        with self._graph._topology_lock:
+            result: dict[str, dict[str, int]] = {}
+            for name, agent in self._graph.agent_dict.items():
+                if agent is None:
+                    continue
+                usage = getattr(agent, "usage", None)
+                if usage is None:
+                    result[name] = {
+                        "input": 0, "output": 0, "total": 0,
+                        "cached": 0, "reasoning": 0,
+                    }
+                    continue
+                result[name] = {
+                    "input": usage.input_tokens or 0,
+                    "output": usage.output_tokens or 0,
+                    "total": usage.total_tokens or 0,
+                    "cached": usage.cached_tokens or 0,
+                    "reasoning": usage.reasoning_tokens or 0,
+                }
+        return result
 
     def run(
         self,

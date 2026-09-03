@@ -190,9 +190,22 @@ class RetrievedContextHandler(ContextHandler):
             self.retrieve(message)
 
     def add_assistant_message(
-        self, message: LLMOutput, tool_results: dict[str, str] | None = None,
+        self,
+        message: LLMOutput,
+        tool_results: dict[str, str] | None = None,
+        *,
+        usage: dict[str, int] | None = None,
+        model_duration_ms: int | None = None,
+        round_duration_ms: int | None = None,
+        created_at: float | None = None,
     ) -> None:
-        self.linear.add_assistant_message(message, tool_results)
+        self.linear.add_assistant_message(
+            message, tool_results,
+            usage=usage,
+            model_duration_ms=model_duration_ms,
+            round_duration_ms=round_duration_ms,
+            created_at=created_at,
+        )
 
     def build_messages(self) -> list[dict[str, Any]]:
         """Build messages: retrieved as **user** role (P0-I), then linear."""

@@ -201,6 +201,13 @@ class LLMContext:
     content_reasoning: str = ""                     # reasoning content (e.g. <think>...</think>)
     tool_calls: List[ToolInfo] = field(default_factory=list)  # tool calls + their results
     tags: List[str] = field(default_factory=list)             # optional tags
+    # Observability belongs to the durable assistant turn, rather than to an
+    # ephemeral execution event.  Keys use the console/API names so this
+    # record remains provider-neutral and JSON-safe.
+    usage: Dict[str, int] = field(default_factory=dict)
+    model_duration_ms: Optional[int] = None
+    round_duration_ms: Optional[int] = None
+    created_at: Optional[float] = None
 
 
 @dataclass
