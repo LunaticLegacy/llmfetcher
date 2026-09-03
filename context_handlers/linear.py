@@ -85,8 +85,6 @@ _COMPACTING_SYSTEM_PROMPT = (
 
 _COMPACTION_OUTPUT_MAX_TOKENS = 8192
 _COMPACTION_INPUT_CHAR_LIMIT = 196_608
-_TOOL_RESULT_MAX_CHARS = 24_000
-_LARGE_TOOL_RESULT_NOTICE_CHARS = 6_000
 _CONTEXT_PAGE_SIZE = 200
 
 
@@ -614,39 +612,6 @@ class ContextHandlerLinear(ContextHandler):
             total += len(json.dumps(message, ensure_ascii=False, default=str))
         return total
 
-    @staticmethod
-    def _bound_result_text(value: str, limit: int) -> str:
-        """Return a request-safe copy of a tool result bounded to *limit* chars.
-
-        Keeps the head (where command output and early evidence usually land)
-        and the tail (where errors and exit summaries appear) and marks the
-        omitted middle, so one oversized shell/HTML result cannot inflate
-        every later model request.  The durable event ledger
-        (``agent:tools_completed``) retains the full raw value for audit.
-
-        Args:
-            value: Raw tool result text.
-            limit: Maximum characters to retain.
-
-        Returns:
-            The original value when it fits, otherwise a head/tail window
-            around an explicit omission marker.
-        """
-        if len(value) <= limit:
-            return value
-        marker = "\n... [omitted {} characters] ...\n".format(
-            max(0, len(value) - limit)
-        )
-        # Guarantee the bounded copy never exceeds the limit even when the
-        # marker itself would not fit: prefer the head, then the tail, then
-        # shrink to a bare omission note.
-        if limit <= len(marker):
-            return marker[:limit]
-        head = limit - len(marker)
-        tail = head // 2
-        head -= tail
-        return value[:head] + marker + value[-tail:]
-
     def _bounded_tool_results(
         self,
         tool_results: Optional[Dict[str, str]],
@@ -654,11 +619,8 @@ class ContextHandlerLinear(ContextHandler):
         """Copy complete tool output into the in-memory conversation history.
 
         Tool calls may return complete HTML pages, archives, or command output.
-        The history keeps the complete value for lossless persistence and
-        archive retrieval; request-side trimming in
-        :meth:`_append_context_messages` is what protects model requests from
-        oversized results.  The durable ``agent:tools_completed`` event ledger
-        additionally retains full raw evidence.
+        The host can persist a large output and pass a stable reference here;
+        this handler does not apply a second limit or mutate that reference.
 
         Args:
             tool_results: Raw tool output keyed by provider tool-call ID.
@@ -1046,11 +1008,9 @@ class ContextHandlerLinear(ContextHandler):
         2. A ``{"role": "tool", ...}`` message per tool call that has
            a result.
 
-        Each tool result is independently bounded to
-        ``_TOOL_RESULT_MAX_CHARS``. Its provider-visible form never changes
-        when a later tool call completes, preserving an append-only request
-        prefix for provider prompt caches. Large results carry small size
-        metadata, while persisted history remains unmodified.
+        This context layer preserves every supplied tool result verbatim. A
+        host may replace a large result with a stable artifact reference before
+        it is recorded, but context reconstruction itself never truncates it.
 
         Args:
             messages: The message list being built (mutated in place).
@@ -1087,69 +1047,11 @@ class ContextHandlerLinear(ContextHandler):
             for ti in item.tool_calls:
                 if ti.result is not None:
                     call_id = ti.call.call_id or f"call_{id(ti)}"
-                    result_text = self._render_tool_result_for_model(str(ti.result))
                     messages.append({
                         "role": "tool",
-                        "content": result_text,
+                        "content": str(ti.result),
                         "tool_call_id": call_id,
                     })
             return
 
         messages.append({"role": role, "content": content or ""})
-
-    def _render_tool_result_for_model(
-        self,
-        raw_result: str,
-    ) -> str:
-        """Bound one result and annotate it when it is large for the model.
-
-        Args:
-            raw_result: Complete, persisted tool output.
-        Returns:
-            The bounded transient content supplied in the provider's tool
-            message. It includes a compact size notice for large results.
-        """
-        original_chars = len(raw_result)
-        result_limit = _TOOL_RESULT_MAX_CHARS
-
-        # Reserve space for the notice itself so the complete tool message
-            # respects the single-result prompt limit.
-        needs_notice = original_chars >= _LARGE_TOOL_RESULT_NOTICE_CHARS
-        notice_template = (
-            "[Tool-result metadata: original_chars={original}; "
-            "visible_result_chars={visible}; truncated={truncated}. "
-            "This is a large output; preserve its key evidence and reduce "
-            "context before requesting more large outputs.]\n"
-        )
-        notice_reserve = len(notice_template.format(
-            original=original_chars,
-            visible=0,
-            truncated="yes",
-        )) if needs_notice else 0
-        visible_result = self._bound_result_text(
-            raw_result, max(result_limit - notice_reserve, 0)
-        )
-        was_truncated = len(visible_result) < original_chars
-
-        if needs_notice:
-            while True:
-                notice = notice_template.format(
-                    original=original_chars,
-                    visible=len(visible_result),
-                    truncated="yes" if was_truncated else "no",
-                )
-                result_text = f"{notice}{visible_result}"
-                overflow = len(result_text) - result_limit
-                if overflow <= 0:
-                    break
-                if not visible_result:
-                    result_text = self._bound_result_text(notice, result_limit)
-                    break
-                visible_result = self._bound_result_text(
-                    raw_result, max(len(visible_result) - overflow, 0)
-                )
-                was_truncated = len(visible_result) < original_chars
-        else:
-            result_text = visible_result
-
-        return result_text

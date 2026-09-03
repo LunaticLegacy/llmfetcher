@@ -5,7 +5,7 @@ import time
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Any, Optional, Dict, Protocol
+from typing import List, Any, Optional, Dict, Protocol, Callable
 from pathlib import Path
 
 from .llm_fetcher import LLMBackendConfig, LLMFetcher, LLMBackendHandler
@@ -167,6 +167,7 @@ class Agent:
         default_max_tokens: int = 32768,
         enable_stop_turn: bool = False,
         default_stream: bool = False,
+        tool_result_transformer: Callable[[str, str, str], str] | None = None,
     ):
         """Initialize one tool-using Agent.
 
@@ -187,6 +188,9 @@ class Agent:
                 workflow needs a model-visible non-text terminal boundary.
             default_stream: Whether calls omitting ``stream`` should emit
                 incremental lifecycle events while preserving final results.
+            tool_result_transformer: Optional host-owned transformation applied
+                to a completed tool result before it enters model context. It
+                receives the tool name, call ID, and complete string result.
 
         Returns:
             None.
@@ -209,6 +213,7 @@ class Agent:
         self.default_max_rounds = default_max_rounds
         self.default_max_tokens = default_max_tokens
         self.default_stream = default_stream
+        self.tool_result_transformer = tool_result_transformer
 
         # Handle the tool, and make the tool executor.
         self.tool_handler: ToolHandler = ToolHandler()
@@ -933,12 +938,19 @@ class Agent:
                 results_list: List[Any] = [
                     execution.result for execution in executions
                 ]
-                tool_results = dict([
-                    (tc.call_id or f"call_{i}", str(r))
-                    for i, (tc, r) in enumerate(
-                        zip(result.tool_calls, results_list),
-                    )
-                ])
+                tool_results = {}
+                for i, (tool_call, raw_result) in enumerate(
+                    zip(result.tool_calls, results_list),
+                ):
+                    call_id = tool_call.call_id or f"call_{i}"
+                    result_text = str(raw_result)
+                    if self.tool_result_transformer is not None:
+                        result_text = self.tool_result_transformer(
+                            tool_call.name,
+                            call_id,
+                            result_text,
+                        )
+                    tool_results[call_id] = result_text
                 have_tool_call = True
 
                 # Preserve typed outcomes for event consumers while the model
