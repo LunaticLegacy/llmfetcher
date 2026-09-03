@@ -86,7 +86,6 @@ _COMPACTING_SYSTEM_PROMPT = (
 _COMPACTION_OUTPUT_MAX_TOKENS = 8192
 _COMPACTION_INPUT_CHAR_LIMIT = 196_608
 _TOOL_RESULT_MAX_CHARS = 24_000
-_TOOL_RESULT_TOTAL_MAX_CHARS = 96_000
 _LARGE_TOOL_RESULT_NOTICE_CHARS = 6_000
 _CONTEXT_PAGE_SIZE = 200
 _OMITTED_TOOL_RESULT = (
@@ -609,35 +608,30 @@ class ContextHandlerLinear(ContextHandler):
     def _tool_result_budgets(
         history: List[LLMContext | LLMContextCompacted],
     ) -> Dict[int, int]:
-        """Allocate request budget to the newest tool results first.
+        """Apply a stable per-result limit without a shared prompt budget.
 
-        Tool outputs must remain paired with their historical assistant tool
-        calls, but forward allocation let old terminal output consume the
-        shared budget before a just-completed call reached the model. Planning
-        from newest to oldest retains immediate execution feedback while the
-        final provider message order remains chronological.
+        A given historical result must project to the same provider message on
+        every later round.  A rolling aggregate budget changes older messages
+        when a new tool result arrives, which breaks prefix caching even though
+        the Agent's actual history is append-only.  Context compaction and the
+        provider's own context limit bound total request size instead.
 
         Args:
             history: Ordered active and compacted context entries.
 
         Returns:
-            Per-``ToolInfo`` character budgets keyed by object identity.
+            Per-``ToolInfo`` stable character limits keyed by object identity.
         """
-        remaining = _TOOL_RESULT_TOTAL_MAX_CHARS
         budgets: Dict[int, int] = {}
-        for item in reversed(history):
+        for item in history:
             if not isinstance(item, LLMContext):
                 continue
-            for tool_info in reversed(item.tool_calls):
+            for tool_info in item.tool_calls:
                 if tool_info.result is None:
                     continue
-                allowance = min(
-                    len(str(tool_info.result)),
-                    _TOOL_RESULT_MAX_CHARS,
-                    max(remaining, 0),
+                budgets[id(tool_info)] = min(
+                    len(str(tool_info.result)), _TOOL_RESULT_MAX_CHARS,
                 )
-                budgets[id(tool_info)] = allowance
-                remaining -= allowance
         return budgets
 
     # -- compaction helpers ------------------------------------------------
