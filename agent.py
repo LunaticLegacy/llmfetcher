@@ -1100,14 +1100,20 @@ class Agent:
             # persistence and the complete tool batch, preserving one step.
             steers = control.drain_steers() if control is not None else []
             if steers:
+                steer_messages = [str(steer) for steer in steers]
+                steer_ids = [
+                    steer_id for steer_id in
+                    (getattr(steer, "steer_id", None) for steer in steers)
+                    if isinstance(steer_id, str) and steer_id
+                ]
                 for steer in steers:
-                    self.context_handler.add_user_message(message=steer)
+                    self.context_handler.add_user_message(message=str(steer))
                 self._drain_internal_usage(name)
-                message = steers[-1]
+                message = steer_messages[-1]
                 self._emit(
                     "agent", name, "agent:steer_applied",
-                    f"Applied {len(steers)} steering message(s)",
-                    data={"round": round_idx, "messages": steers},
+                    f"Applied {len(steer_messages)} steering message(s)",
+                    data={"round": round_idx, "messages": steer_messages, "steer_ids": steer_ids},
                 )
 
             if not have_tool_call and not steers:
