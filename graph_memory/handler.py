@@ -209,6 +209,11 @@ class GraphContextHandler(ContextHandler):
         self,
         message: LLMOutput,
         tool_results: Optional[dict[str, str]] = None,
+        *,
+        usage: Optional[dict[str, int]] = None,
+        model_duration_ms: Optional[int] = None,
+        round_duration_ms: Optional[int] = None,
+        created_at: Optional[float] = None,
     ) -> None:
         """Append an assistant output, detect compaction and flush the graph."""
         # Snapshot before the linear handler may compact the history.
@@ -219,8 +224,18 @@ class GraphContextHandler(ContextHandler):
             timeline=timeline,
             content=message.content or "",
             content_reasoning=message.reasoning_content or "",
+            usage=dict(usage or {}),
+            model_duration_ms=model_duration_ms,
+            round_duration_ms=round_duration_ms,
+            created_at=created_at,
         ))
-        self.linear.add_assistant_message(message, tool_results)
+        self.linear.add_assistant_message(
+            message, tool_results,
+            usage=usage,
+            model_duration_ms=model_duration_ms,
+            round_duration_ms=round_duration_ms,
+            created_at=created_at,
+        )
         now = (len(self.linear.messages), self.linear.abstract is not None)
         compacted = prev[0] > 0 and now[0] == 0 and now[1]
         if compacted:

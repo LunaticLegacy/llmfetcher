@@ -66,6 +66,11 @@ class ContextHandler(ABC):
         self,
         message: LLMOutput,
         tool_results: Optional[Dict[str, str]] = None,
+        *,
+        usage: Optional[Dict[str, int]] = None,
+        model_duration_ms: Optional[int] = None,
+        round_duration_ms: Optional[int] = None,
+        created_at: Optional[float] = None,
     ) -> None:
         """Record an LLM response into the conversation history.
 
@@ -77,6 +82,10 @@ class ContextHandler(ABC):
                 When provided, each tool call in *message* is paired
                 with its result so that future ``build_messages`` calls
                 can emit the ``{"role": "tool", ...}`` feedback turn.
+            usage: Primary model-call token usage for this durable turn.
+            model_duration_ms: Wall time spent generating this model output.
+            round_duration_ms: Whole round wall time, including tools.
+            created_at: Unix timestamp when this response completed.
         """
 
     @abstractmethod

@@ -359,6 +359,11 @@ class ContextHandlerLinear(ContextHandler):
         self,
         message: LLMOutput,
         tool_results: Optional[Dict[str, str]] = None,
+        *,
+        usage: Optional[Dict[str, int]] = None,
+        model_duration_ms: Optional[int] = None,
+        round_duration_ms: Optional[int] = None,
+        created_at: Optional[float] = None,
     ) -> None:
         """Append an LLM output to the conversation history.
 
@@ -386,6 +391,10 @@ class ContextHandlerLinear(ContextHandler):
             content=message.content,
             content_reasoning=message.reasoning_content,
             tool_calls=tool_calls,
+            usage=dict(usage or {}),
+            model_duration_ms=model_duration_ms,
+            round_duration_ms=round_duration_ms,
+            created_at=created_at,
         ))
 
         # Auto-trigger compaction when context exceeds threshold.
@@ -1038,6 +1047,10 @@ class ContextHandlerLinear(ContextHandler):
             content_reasoning=data.get("content_reasoning", ""),
             tool_calls=tool_calls,
             tags=data.get("tags", []),
+            usage=dict(data.get("usage") or {}),
+            model_duration_ms=data.get("model_duration_ms"),
+            round_duration_ms=data.get("round_duration_ms"),
+            created_at=data.get("created_at"),
         )
 
     @staticmethod

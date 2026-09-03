@@ -988,6 +988,9 @@ class Agent:
                 )
                 raise RuntimeError(outcome.detail)
 
+            round_duration_ms = round((time.perf_counter() - round_started_at) * 1000)
+            response_completed_at = time.time()
+            round_usage = self._usage_data(copy_usage(result.usage))
             self._emit(
                 "agent", name, "agent:round",
                 f"Round {round_idx}, {len(result.tool_calls)} tool call(s)",
@@ -999,8 +1002,8 @@ class Agent:
                         for tc in result.tool_calls
                     ],
                     "usage": self._usage_data(self.usage),
-                    "round_usage": self._usage_data(copy_usage(result.usage)),
-                    "duration_ms": round((time.perf_counter() - round_started_at) * 1000),
+                    "round_usage": round_usage,
+                    "duration_ms": round_duration_ms,
                     "model_duration_ms": model_duration_ms,
                     "assistant_content": result.content,
                     "reasoning_content": result.reasoning_content,
@@ -1013,6 +1016,10 @@ class Agent:
             self.context_handler.add_assistant_message(
                 message=result,
                 tool_results=tool_results,
+                usage=round_usage,
+                model_duration_ms=model_duration_ms,
+                round_duration_ms=round_duration_ms,
+                created_at=response_completed_at,
             )
             self._drain_internal_usage(name)
 
