@@ -88,9 +88,6 @@ _COMPACTION_INPUT_CHAR_LIMIT = 196_608
 _TOOL_RESULT_MAX_CHARS = 24_000
 _LARGE_TOOL_RESULT_NOTICE_CHARS = 6_000
 _CONTEXT_PAGE_SIZE = 200
-_OMITTED_TOOL_RESULT = (
-    "[Historical tool result omitted to reserve context for newer tool output.]"
-)
 
 
 @dataclass(frozen=True)
@@ -576,13 +573,9 @@ class ContextHandlerLinear(ContextHandler):
         """
         messages: List[Dict[str, Any]] = []
         history = self.get_prev_messages()
-        result_budgets = self._tool_result_budgets(history)
-
         for item in history:
             if isinstance(item, LLMContext):
-                self._append_context_messages(
-                    messages, item, result_budgets=result_budgets
-                )
+                self._append_context_messages(messages, item)
             elif isinstance(item, LLMContextCompacted):
                 messages.append({
                     "role": "system",
@@ -603,36 +596,6 @@ class ContextHandlerLinear(ContextHandler):
             })
 
         return messages
-
-    @staticmethod
-    def _tool_result_budgets(
-        history: List[LLMContext | LLMContextCompacted],
-    ) -> Dict[int, int]:
-        """Apply a stable per-result limit without a shared prompt budget.
-
-        A given historical result must project to the same provider message on
-        every later round.  A rolling aggregate budget changes older messages
-        when a new tool result arrives, which breaks prefix caching even though
-        the Agent's actual history is append-only.  Context compaction and the
-        provider's own context limit bound total request size instead.
-
-        Args:
-            history: Ordered active and compacted context entries.
-
-        Returns:
-            Per-``ToolInfo`` stable character limits keyed by object identity.
-        """
-        budgets: Dict[int, int] = {}
-        for item in history:
-            if not isinstance(item, LLMContext):
-                continue
-            for tool_info in item.tool_calls:
-                if tool_info.result is None:
-                    continue
-                budgets[id(tool_info)] = min(
-                    len(str(tool_info.result)), _TOOL_RESULT_MAX_CHARS,
-                )
-        return budgets
 
     # -- compaction helpers ------------------------------------------------
 
@@ -1074,7 +1037,6 @@ class ContextHandlerLinear(ContextHandler):
         self,
         messages: List[Dict[str, Any]],
         item: LLMContext,
-        result_budgets: Dict[int, int],
     ) -> None:
         """Append backend-neutral messages for a single context entry.
 
@@ -1084,18 +1046,15 @@ class ContextHandlerLinear(ContextHandler):
         2. A ``{"role": "tool", ...}`` message per tool call that has
            a result.
 
-        Each tool result is bounded to ``_TOOL_RESULT_MAX_CHARS``. Preplanned
-        budgets prioritize the newest results, while older output is replaced
-        with an explicit omission note. Large results also carry small size
-        metadata, so the next model turn can recognize the context pressure
-        without needing a separate introspection tool. Persisted history is
-        never modified.
+        Each tool result is independently bounded to
+        ``_TOOL_RESULT_MAX_CHARS``. Its provider-visible form never changes
+        when a later tool call completes, preserving an append-only request
+        prefix for provider prompt caches. Large results carry small size
+        metadata, while persisted history remains unmodified.
 
         Args:
             messages: The message list being built (mutated in place).
             item: The context entry to convert.
-            result_budgets: Precomputed output budgets keyed by each
-                ``ToolInfo`` identity. Newer tool results receive priority.
         """
         role = item.role
         content = item.content
@@ -1128,9 +1087,7 @@ class ContextHandlerLinear(ContextHandler):
             for ti in item.tool_calls:
                 if ti.result is not None:
                     call_id = ti.call.call_id or f"call_{id(ti)}"
-                    result_text = self._render_tool_result_for_model(
-                        str(ti.result), result_budgets.get(id(ti), 0)
-                    )
+                    result_text = self._render_tool_result_for_model(str(ti.result))
                     messages.append({
                         "role": "tool",
                         "content": result_text,
@@ -1143,25 +1100,20 @@ class ContextHandlerLinear(ContextHandler):
     def _render_tool_result_for_model(
         self,
         raw_result: str,
-        result_limit: int,
     ) -> str:
         """Bound one result and annotate it when it is large for the model.
 
         Args:
             raw_result: Complete, persisted tool output.
-            result_limit: Precomputed character allowance for this result.
-
         Returns:
             The bounded transient content supplied in the provider's tool
             message. It includes a compact size notice for large results.
         """
         original_chars = len(raw_result)
-        result_limit = min(_TOOL_RESULT_MAX_CHARS, max(result_limit, 0))
-        if result_limit == 0:
-            return _OMITTED_TOOL_RESULT
+        result_limit = _TOOL_RESULT_MAX_CHARS
 
         # Reserve space for the notice itself so the complete tool message
-        # respects both the per-result and shared request budgets.
+            # respects the single-result prompt limit.
         needs_notice = original_chars >= _LARGE_TOOL_RESULT_NOTICE_CHARS
         notice_template = (
             "[Tool-result metadata: original_chars={original}; "
