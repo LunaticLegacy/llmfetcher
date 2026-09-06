@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "llmfetcher"
 dynamic = ["version"]
 description = "Multi-agent LLM orchestration framework"
-license = "AGPL-3.0-or-later"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 authors = [
     {name = "LunaticLegacy"},
