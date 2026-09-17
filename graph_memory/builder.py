@@ -24,6 +24,7 @@ from .extraction_prompts import (
 )
 from .graph_store import GraphStore
 from ..usage_ledger import UsageRecord, copy_usage, drain_records
+from ..multimodal import image_reference_markers
 
 
 class ExtractionFetcher(Protocol):
@@ -172,6 +173,11 @@ class GraphBuilder:
         for m in reversed(messages):
             role = getattr(m, "role", "")
             content = getattr(m, "content", "") or ""
+            markers = "\n".join(image_reference_markers(getattr(m, "images", None)))
+            if markers:
+                # An image-only turn still carries durable provenance; keep it
+                # in the transcript instead of dropping the whole message.
+                content = f"{content.strip()}\n{markers}".strip()
             if role not in ("user", "assistant") or not content.strip():
                 continue
             label = "User" if role == "user" else "Assistant"

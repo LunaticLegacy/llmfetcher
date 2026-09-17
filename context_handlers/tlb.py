@@ -46,13 +46,14 @@ class TLBContextHandler(ContextHandler):
     @override
     def add_user_message(
         self,
-        message: str,
+        message: "str | UserMessage",
     ) -> None:
         """
         Append an User input to conversation history.
 
         Args:
-            message: The original user input.
+            message: The original user input (plain text or a
+                :class:`~llmfetcher.multimodal.UserMessage`).
         """
         
 

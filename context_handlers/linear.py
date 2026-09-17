@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..multimodal import UserMessage, ImageToolResult, validate_images
+
 import json
 import os
 import time
@@ -341,7 +343,7 @@ class ContextHandlerLinear(ContextHandler):
     @override
     def add_user_message(
         self,
-        message: str,
+        message: "str | UserMessage",
     ) -> None:
         """
         Append an User input to conversation history.
@@ -350,13 +352,16 @@ class ContextHandlerLinear(ContextHandler):
         round counter (``_round``).
 
         Args:
-            message: The original user input.
+            message: The original user input; a
+                :class:`~llmfetcher.multimodal.UserMessage` also carries
+                durable image references that are preserved verbatim.
         """
         self._round += 1
         self.messages.append(LLMContext(
             role="user",
             timeline=self._round,
-            content=message,
+            content=str(message),
+            images=validate_images(message.images) if isinstance(message, UserMessage) else [],
         ))
         # A real user turn supersedes any derived resume prompt left by a
         # previous compaction.
@@ -391,7 +396,10 @@ class ContextHandlerLinear(ContextHandler):
         for index, tc in enumerate(message.tool_calls):
             call_id = tc.call_id or f"call_{index}"
             result = bounded_tool_results.get(call_id) if bounded_tool_results else None
-            tool_calls.append(ToolInfo(call=tc, result=result))
+            tool_calls.append(ToolInfo(
+                call=tc, result=str(result) if result is not None else None,
+                images=validate_images(result.images) if isinstance(result, ImageToolResult) else [],
+            ))
 
         self.messages.append(LLMContext(
             role=message.role,
@@ -644,7 +652,8 @@ class ContextHandlerLinear(ContextHandler):
         """
         if not tool_results:
             return {}
-        return {call_id: str(raw_value) for call_id, raw_value in tool_results.items()}
+        return {call_id: raw_value if isinstance(raw_value, ImageToolResult) else str(raw_value)
+                for call_id, raw_value in tool_results.items()}
 
     def compaction_request_preview(self) -> CompactionRequestPreview:
         """Build the exact compaction request parameters without sending them.
@@ -975,11 +984,12 @@ class ContextHandlerLinear(ContextHandler):
                 call_id=tc["call"].get("call_id"),
                 source=tc["call"].get("source"),
             )
-            tool_calls.append(ToolInfo(call=call, result=tc.get("result")))
+            tool_calls.append(ToolInfo(call=call, result=tc.get("result"), images=validate_images(tc.get('images', []))))
         return LLMContext(
             role=data["role"],
             timeline=data["timeline"],
             content=data.get("content", ""),
+            images=validate_images(data.get('images', [])),
             content_reasoning=data.get("content_reasoning", ""),
             tool_calls=tool_calls,
             tags=data.get("tags", []),
@@ -1061,14 +1071,16 @@ class ContextHandlerLinear(ContextHandler):
                     for i, ti in enumerate(item.tool_calls)
                 ],
             })
-            for ti in item.tool_calls:
+            for i, ti in enumerate(item.tool_calls):
                 if ti.result is not None:
-                    call_id = ti.call.call_id or f"call_{id(ti)}"
+                    call_id = ti.call.call_id or f"call_{i}"
                     messages.append({
                         "role": "tool",
                         "content": str(ti.result),
                         "tool_call_id": call_id,
+                        **({'images': validate_images(ti.images)} if ti.images else {}),
                     })
             return
 
-        messages.append({"role": role, "content": content or ""})
+        messages.append({"role": role, "content": content or "",
+                         **({'images': validate_images(item.images)} if item.images else {})})

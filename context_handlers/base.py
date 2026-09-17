@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 from ..llm_types import LLMOutput, TokenUsage
+from ..multimodal import UserMessage
 
 
 class ContextHandler(ABC):
@@ -57,13 +58,15 @@ class ContextHandler(ABC):
     @abstractmethod
     def add_user_message(
         self,
-        message: str,
+        message: "str | UserMessage",
     ) -> None:
         """
         Append an User input to conversation history.
 
         Args:
-            message: The original user input.
+            message: The original user input. Either plain text or a
+                :class:`~llmfetcher.multimodal.UserMessage` carrying image
+                references; implementations preserve references when present.
         """
 
     @abstractmethod

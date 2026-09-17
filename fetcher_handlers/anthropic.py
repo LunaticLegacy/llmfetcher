@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..multimodal import image_blocks, bounded_resolver
+
 import json
 from typing import Iterable, Mapping, Optional, Sequence
 
@@ -26,10 +28,16 @@ class AnthropicHandler(LLMBackendHandler):
     def convert_messages(self, messages: list[dict[str, str]]) -> tuple[list[dict[str, JSONValue]], Optional[str]]:
         anthropic_messages: list[dict[str, JSONValue]] = []
         system_message: Optional[str] = None
+        resolver = bounded_resolver(getattr(self.fetcher, 'image_resolver', None))
 
         for msg in messages:
             role = msg.get("role", "")
             content = msg.get("content", "")
+            images = image_blocks(msg.get('images', []), resolver, 'anthropic')
+            if images:
+                if role not in {'user', 'tool'}:
+                    raise ValueError('Images require user or tool messages')
+                content = ([{'type': 'text', 'text': content}] if content else []) + images
             if role == "system":
                 system_message = content
                 continue
@@ -47,6 +55,12 @@ class AnthropicHandler(LLMBackendHandler):
                         ],
                     }
                 )
+            elif role == 'assistant' and msg.get('tool_calls'):
+                blocks = [{'type': 'text', 'text': content}] if content else []
+                blocks.extend({'type': 'tool_use', 'id': call['id'],
+                               'name': call['name'], 'input': call.get('arguments', {})}
+                              for call in msg['tool_calls'])
+                anthropic_messages.append({'role': 'assistant', 'content': blocks})
             else:
                 anthropic_messages.append({"role": role, "content": content})
 

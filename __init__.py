@@ -12,6 +12,7 @@ Example usage:
 """
 
 from ._version import __version__
+from .multimodal import ImageReference, UserMessage, ImageToolResult
 __author__ = "LunaticLegacy"
 
 from .llm_fetcher import (

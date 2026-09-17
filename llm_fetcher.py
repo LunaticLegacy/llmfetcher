@@ -137,6 +137,7 @@ class LLMFetcher:
         self,
         backends: Optional[Sequence[LLMBackendConfig]] = None,
         default_backend: Optional[str] = None,
+        image_resolver=None,
     ) -> None:
         """Initialise the multi-backend dispatcher.
 
@@ -163,6 +164,7 @@ class LLMFetcher:
                 "At least one LLMBackendConfig is required."
             )
 
+        self.image_resolver = image_resolver
         self.backends: Dict[str, LLMBackendConfig] = {}
         self.backend_order: List[str] = []
         self.handlers: Dict[str, LLMBackendHandler] = {}
@@ -752,6 +754,16 @@ class LLMFetcher:
         """
         handler = self._handler_for_backend(backend)
         provider_tools = handler.prepare_tools(tools)
+        images = [ref for message in messages for ref in message.get('images', [])]
+        # Provider support is an explicit allow-list, never a capability
+        # guess: unsupported backends must reject image input rather than
+        # silently flattening it to text (design: "Unsupported providers
+        # reject image input"). Extend this set only with a handler that
+        # owns native wire conversion.
+        if images and backend.provider not in {'openai', 'anthropic'}:
+            raise ValueError(f'Provider {backend.provider} does not support native image inputs')
+        if len(images) > 20:
+            raise ValueError('Image request exceeds 20 images; compact or start a new conversation')
         snapshot = RemoteRequestSnapshot(
             model=backend.model,
             messages=list(messages),
@@ -804,6 +816,8 @@ class LLMFetcher:
         if context is not None:
             messages.extend(context.build_messages())
         if msg:
-            messages.append({"role": "user", "content": msg})
+            from .multimodal import UserMessage, validate_images
+            messages.append({"role": "user", "content": str(msg),
+                             **({'images': validate_images(msg.images)} if isinstance(msg, UserMessage) and msg.images else {})})
         
         return messages

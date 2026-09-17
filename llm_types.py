@@ -6,6 +6,7 @@ from typing import List, Dict, Literal, Optional, Tuple, Union, Set, Any, Callab
 from typing import TypeAlias
 from uuid import UUID, uuid4
 import json
+from .multimodal import ImageReference
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -140,6 +141,7 @@ class ToolInfo:
 
     call: LLMToolCall
     result: Optional[str] = None  # execution result text, if available
+    images: list[ImageReference] = field(default_factory=list)
 
 
 @dataclass
@@ -208,6 +210,7 @@ class LLMContext:
     model_duration_ms: Optional[int] = None
     round_duration_ms: Optional[int] = None
     created_at: Optional[float] = None
+    images: list[ImageReference] = field(default_factory=list)
 
 
 @dataclass

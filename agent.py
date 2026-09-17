@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .multimodal import UserMessage, ImageToolResult
+
 import threading
 import time
 import json
@@ -478,7 +480,7 @@ class Agent:
             "context",
             self._agent_name_in_graph,
             event_type,
-            message,
+            str(message),
             data=data,
         )
 
@@ -763,7 +765,7 @@ class Agent:
             "agent",
             name,
             "agent:start",
-            message,
+            str(message),
             data={
                 "backend": {
                     "name": backend.name,
@@ -826,7 +828,8 @@ class Agent:
                 f"LLM request round {round_idx}",
                 data={
                     "round": round_idx,
-                    "message": message,
+                    "message": str(message),
+                    **({'images': message.images} if isinstance(message, UserMessage) else {}),
                     "msg": message_input,
                     "system_prompt": prompt,
                     "temperature": temperature,
@@ -961,7 +964,8 @@ class Agent:
                             call_id,
                             result_text,
                         )
-                    tool_results[call_id] = result_text
+                    tool_results[call_id] = (ImageToolResult(result_text, raw_result.images)
+                                            if isinstance(raw_result, ImageToolResult) else result_text)
                 have_tool_call = True
 
                 # Preserve typed outcomes for event consumers while the model
@@ -977,7 +981,8 @@ class Agent:
                     completed_calls.append({
                         **call,
                         "ok": result_ok,
-                        "result": raw_result,
+                        "result": ({'text': raw_result.text, 'images': raw_result.images}
+                                   if isinstance(raw_result, ImageToolResult) else raw_result),
                         "duration_ms": execution.duration_ms,
                     })
                 self._emit(

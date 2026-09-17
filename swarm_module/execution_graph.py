@@ -1520,7 +1520,7 @@ class ExecutionGraph:
                 return {}
         self._shutdown_requested.clear()
 
-        self._emit("graph", "", "graph:start", message)
+        self._emit("graph", "", "graph:start", str(message))
 
         with self._topology_lock:
             remaining_dependencies = {
