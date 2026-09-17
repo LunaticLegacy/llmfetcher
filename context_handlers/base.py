@@ -23,6 +23,11 @@ class ContextHandler(ABC):
         visible.
         """
         self._extra_usage: TokenUsage = TokenUsage()
+        # ``save`` remains a boolean compatibility API, but callers need the
+        # original OS/serialization failure to diagnose a rejected checkpoint.
+        # This is transient diagnostic state and is never persisted alongside
+        # conversation content.
+        self.last_save_error: Exception | None = None
 
     @property
     def extra_usage(self) -> TokenUsage:

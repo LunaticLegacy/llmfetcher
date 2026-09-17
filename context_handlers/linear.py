@@ -118,6 +118,7 @@ def read_persisted_context_page(
     *,
     before_timeline: int | None = None,
     limit: int = _CONTEXT_PAGE_SIZE,
+    include_archive: bool = False,
 ) -> tuple[list[LLMContext], int | None, int]:
     """Read one reverse-timeline page without loading the full checkpoint.
 
@@ -125,6 +126,9 @@ def read_persisted_context_page(
         path: Context pointer JSON or legacy full-JSON checkpoint path.
         before_timeline: Exclusive older-than timeline cursor, if supplied.
         limit: Maximum returned entries. Values are bounded to 200.
+        include_archive: Include compacted transcript rows for a read-only
+            history projection.  Keep this ``False`` when hydrating an Agent:
+            archived rows must not be restored into its active model context.
 
     Returns:
         Chronological page entries, the next older cursor or ``None``, and
@@ -144,6 +148,14 @@ def read_persisted_context_page(
         if not isinstance(database_name, str) or Path(database_name).name != database_name:
             raise ValueError("checkpoint database reference is invalid")
         database = target.with_name(database_name)
+        # Compaction atomically moves completed rounds from ``messages`` to
+        # ``archive``.  The two tables are therefore disjoint, but a chat
+        # transcript needs their shared timeline, not only the active tail.
+        source = (
+            "SELECT timeline, payload FROM messages "
+            "UNION ALL SELECT timeline, payload FROM archive"
+            if include_archive else "SELECT timeline, payload FROM messages"
+        )
         where = ""
         values: tuple[object, ...] = ()
         if before_timeline is not None:
@@ -151,15 +163,17 @@ def read_persisted_context_page(
             values = (before_timeline,)
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
         try:
-            total_row = connection.execute("SELECT COUNT(*) FROM messages").fetchone()
+            total_row = connection.execute(
+                f"SELECT COUNT(*) FROM ({source})"
+            ).fetchone()
             rows = connection.execute(
-                "SELECT timeline, payload FROM messages" + where + " ORDER BY timeline DESC LIMIT ?",
+                f"SELECT timeline, payload FROM ({source})" + where + " ORDER BY timeline DESC LIMIT ?",
                 (*values, bounded),
             ).fetchall()
             older = False
             if rows:
                 older = connection.execute(
-                    "SELECT EXISTS(SELECT 1 FROM messages WHERE timeline < ?)",
+                    f"SELECT EXISTS(SELECT 1 FROM ({source}) WHERE timeline < ?)",
                     (rows[-1][0],),
                 ).fetchone()[0] == 1
         finally:
@@ -736,9 +750,11 @@ class ContextHandlerLinear(ContextHandler):
             ``True`` on success, ``False`` on write failure.
         """
         if not path:
+            self.last_save_error = ValueError("context checkpoint path is required")
             return False
             
         try:
+            self.last_save_error = None
             generation = checkpoint_generation or uuid.uuid4().hex
             target = Path(path)
             database = target.with_suffix(target.suffix + ".sqlite3")
@@ -785,7 +801,8 @@ class ContextHandlerLinear(ContextHandler):
             self.checkpoint_generation = generation
             self.graph_checkpoint = committed_graph
             return True
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError) as exc:
+            self.last_save_error = exc
             return False
 
     @override

@@ -572,7 +572,18 @@ class Agent:
         if self.context_path is None:
             return True
         if not self.context_handler.save(self.context_path):
-            raise ContextSaveError(f"Could not save context checkpoint: {self.context_path}")
+            cause = getattr(self.context_handler, "last_save_error", None)
+            detail = (
+                f" ({type(cause).__name__}: {str(cause)[:500]})"
+                if isinstance(cause, Exception)
+                else ""
+            )
+            error = ContextSaveError(
+                f"Could not save context checkpoint: {self.context_path}{detail}"
+            )
+            if isinstance(cause, Exception):
+                raise error from cause
+            raise error
         return True
 
     def _fetch_model_with_force_stop(
