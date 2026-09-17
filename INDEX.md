@@ -13,7 +13,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 |---|---|---|
 | Public API | `__init__.py`, `llm_types.py` | Public imports, request/response, tool, context, token-usage, and terminal request-cancellation types. `ToolSchema` supports both compact first-party parameters and lossless external JSON Schema (for example MCP). |
 | Agent loop | `agent.py`, `events.py`, `usage_ledger.py` | Synchronous model/tool loop; the system message contains only system instructions while registered tools travel once through provider-native schemas. Optional provider streaming emits incremental content/reasoning events but reconstructs the same final output for tools and durable context. Explicit `AgentRunOutcome` terminal states distinguish formal answers, reserved `stop_turn`, workflow completion, user stop, invalid empty responses, and exhausted tool-loop budgets. |
-| LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, ordinary retry/fallback, terminal request cancellation, credential-free preflight request observation, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
+| LLM dispatch | `llm_fetcher.py`, `fetcher_handlers/` | Backend selection, typed/causal timeout classification and bounded retry/fallback, terminal request cancellation, credential-free preflight request observation, and OpenAI-compatible, DeepSeek, Anthropic, LiteLLM, OpenVINO, and ONNX Runtime adapters. |
 | Execution control | `execution/` | Per-attempt `ExecutionController`, unified graceful/forced stop requests, resource canceller registration, stream interruption and queued steering messages. |
 | Context | `context_handlers/` | Base contract; durable linear history with compaction and raw archive; provider-backed retrieval composition; TLB adapter. `context_less_context/` is an experimental local worktree directory, not part of the indexed API. |
 | Graph memory | `graph_memory/` | Persistent entity/relation store, incremental extraction, hybrid graph retrieval, archive evidence, and stateless semantic extraction/reranking workers. |
@@ -27,7 +27,7 @@ handlers, graph/archive memory, and dependency-driven multi-agent execution.
 
 | Component | Import / path | Why Angelus uses it |
 |---|---|---|
-| Fetching | `LLMFetcher`, `LLMBackendConfig`, `LLMRequestCancelled` | Configures primary/fallback backend calls; ordinary failures can retry, while `abort_active_requests()` is terminal and never retries or falls back. |
+| Fetching | `LLMFetcher`, `LLMBackendConfig`, `LLMRequestCancelled` | Configures primary/fallback backend calls; only normalized timeout failures retry, streamed calls stop retrying after their first delta, and `abort_active_requests()` is terminal. |
 | Agent execution | `Agent`, `AgentRunControl` | Runs a session, forwards cooperative stop/steer controls to both ordinary and streaming provider calls, observes an optional `force_stopped` event during provider I/O, checkpoints completed context, then emits `agent:context_checkpoint` for the host's safe graph-generation commit. |
 | Execution control | `ExecutionController`, `StopMode`, `StopRequest` | One attempt-local stop authority. Graceful and force-stop share a terminal request; force invokes registered resource cancellers and wakes blocking stream waits. |
 | Durable context | `ContextHandlerLinear` | Schema 3 SQLite row-store with a small JSON pointer: recovery loads only the newest 200 active turns, API readers page backward by timeline, and compaction archives rows without full-transcript rewrites. Legacy JSON remains readable for the one-shot migration script. |
@@ -86,27 +86,27 @@ primary model response.
 | [agent.py](agent.py#L61) | `AgentRunControl.drain_steers` | `None` | `list[str]` | Return and consume queued user steering messages in FIFO order. |
 | [agent.py](agent.py#L130) | `AgentRunOutcome.to_dict` | `None` | `dict[str, Any]` | Return the credential-free terminal fields for lifecycle events. |
 | [agent.py](agent.py#L140) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
-| [agent.py](agent.py#L265) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
-| [agent.py](agent.py#L276) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
-| [agent.py](agent.py#L291) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
-| [agent.py](agent.py#L304) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
-| [agent.py](agent.py#L319) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L328) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L356) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
-| [agent.py](agent.py#L383) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
-| [agent.py](agent.py#L423) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
-| [agent.py](agent.py#L457) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
-| [agent.py](agent.py#L481) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
-| [agent.py](agent.py#L491) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
-| [agent.py](agent.py#L508) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
-| [agent.py](agent.py#L519) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
-| [agent.py](agent.py#L539) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
-| [agent.py](agent.py#L553) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
-| [agent.py](agent.py#L573) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
-| [agent.py](agent.py#L605) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
-| [agent.py](agent.py#L687) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
-| [agent.py](agent.py#L1130) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
-| [agent.py](agent.py#L1134) | `Agent.clear_context` | `None` | `None` | Clear context. |
+| [agent.py](agent.py#L270) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
+| [agent.py](agent.py#L281) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
+| [agent.py](agent.py#L296) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
+| [agent.py](agent.py#L309) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
+| [agent.py](agent.py#L324) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L333) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L361) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
+| [agent.py](agent.py#L388) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
+| [agent.py](agent.py#L428) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
+| [agent.py](agent.py#L462) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
+| [agent.py](agent.py#L486) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
+| [agent.py](agent.py#L496) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
+| [agent.py](agent.py#L513) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
+| [agent.py](agent.py#L524) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
+| [agent.py](agent.py#L544) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
+| [agent.py](agent.py#L558) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
+| [agent.py](agent.py#L589) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
+| [agent.py](agent.py#L621) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
+| [agent.py](agent.py#L703) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
+| [agent.py](agent.py#L1173) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
+| [agent.py](agent.py#L1177) | `Agent.clear_context` | `None` | `None` | Clear context. |
 | [cli.py](cli.py#L58) | `_load_tools` | `names: list[str]` | `list[Tool]` | Import and call tool factories by short name. |
 | [cli.py](cli.py#L94) | `_build_parser` | `None` | `argparse.ArgumentParser` | Implement `_build_parser`. |
 | [cli.py](cli.py#L178) | `_cmd_list_backends` | `None` | `None` | Print every registered backend provider. |
@@ -121,74 +121,71 @@ primary model response.
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L140) | `_tokenize` | `text: str` | `list[str]` | Return case-insensitive lexical tokens, with useful CJK fallback. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L152) | `_record_search_text` | `record: LLMContext` | `str` | Construct the local lexical index text for one raw context record. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L163) | `_bounded_record_text` | `record: LLMContext, limit: int` | `str` | Render a source record with one total character cap. |
-| [context_handlers/base.py](context_handlers/base.py#L28) | `ContextHandler.extra_usage` | `None` | `TokenUsage` | Token usage accumulated by internal (non-round) LLM calls. |
-| [context_handlers/base.py](context_handlers/base.py#L37) | `ContextHandler.record_usage` | `usage: Optional[TokenUsage]` | `None` | Accumulate one internal LLM call's usage into ``extra_usage``. |
-| [context_handlers/base.py](context_handlers/base.py#L53) | `ContextHandler.add_user_message` | `message: str` | `None` | Append an User input to conversation history. |
-| [context_handlers/base.py](context_handlers/base.py#L65) | `ContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]]` | `None` | Record an LLM response into the conversation history. |
-| [context_handlers/base.py](context_handlers/base.py#L83) | `ContextHandler.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
-| [context_handlers/base.py](context_handlers/base.py#L97) | `ContextHandler.save` | `path: str \| Path` | `bool` | Save context from disk. |
-| [context_handlers/base.py](context_handlers/base.py#L109) | `ContextHandler.load` | `path: str \| Path` | `bool` | Load context from disk. |
-| [context_handlers/base.py](context_handlers/base.py#L121) | `ContextHandler.clear_context` | `None` | `bool` | Clear context. |
+| [context_handlers/base.py](context_handlers/base.py#L33) | `ContextHandler.extra_usage` | `None` | `TokenUsage` | Token usage accumulated by internal (non-round) LLM calls. |
+| [context_handlers/base.py](context_handlers/base.py#L42) | `ContextHandler.record_usage` | `usage: Optional[TokenUsage]` | `None` | Accumulate one internal LLM call's usage into ``extra_usage``. |
+| [context_handlers/base.py](context_handlers/base.py#L58) | `ContextHandler.add_user_message` | `message: str` | `None` | Append an User input to conversation history. |
+| [context_handlers/base.py](context_handlers/base.py#L70) | `ContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]], usage: Optional[Dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float]` | `None` | Record an LLM response into the conversation history. |
+| [context_handlers/base.py](context_handlers/base.py#L97) | `ContextHandler.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
+| [context_handlers/base.py](context_handlers/base.py#L111) | `ContextHandler.save` | `path: str \| Path` | `bool` | Save context from disk. |
+| [context_handlers/base.py](context_handlers/base.py#L123) | `ContextHandler.load` | `path: str \| Path` | `bool` | Load context from disk. |
+| [context_handlers/base.py](context_handlers/base.py#L135) | `ContextHandler.clear_context` | `None` | `bool` | Clear context. |
 | [context_handlers/linear.py](context_handlers/linear.py#L27) | `CompactionFetcher.fetch` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, context_handler: Optional[ContextHandler], backend_name: Optional[str], tools: Any` | `LLMOutput` | Generate one compacted context response. |
-| [context_handlers/linear.py](context_handlers/linear.py#L122) | `read_persisted_context_page` | `path: str \| Path, before_timeline: int \| None, limit: int` | `tuple[list[LLMContext], int \| None, int]` | Read one reverse-timeline page without loading the full checkpoint. |
-| [context_handlers/linear.py](context_handlers/linear.py#L274) | `ContextHandlerLinear.clear_context` | `None` | `Any` | Clear all conversation entries and restart timeline numbering. |
-| [context_handlers/linear.py](context_handlers/linear.py#L290) | `ContextHandlerLinear.drain_usage_records` | `None` | `list[UsageRecord]` | Return completed internal-call usage records exactly once. |
-| [context_handlers/linear.py](context_handlers/linear.py#L295) | `ContextHandlerLinear.set_compaction_event_hook` | `hook: Optional[Callable[[str, str, dict], None]]` | `None` | Attach or detach the compaction lifecycle event observer. |
-| [context_handlers/linear.py](context_handlers/linear.py#L310) | `ContextHandlerLinear._emit_compaction_event` | `event_type: str, message: str, data: Dict[str, Any]` | `None` | Notify the attached observer, isolating any observer failure. |
-| [context_handlers/linear.py](context_handlers/linear.py#L334) | `ContextHandlerLinear.add_user_message` | `message: str` | `None` | Append an User input to conversation history. |
-| [context_handlers/linear.py](context_handlers/linear.py#L358) | `ContextHandlerLinear.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]]` | `None` | Append an LLM output to the conversation history. |
-| [context_handlers/linear.py](context_handlers/linear.py#L397) | `ContextHandlerLinear.compact` | `None` | `bool` | Compress the conversation history into a single abstract. |
-| [context_handlers/linear.py](context_handlers/linear.py#L544) | `ContextHandlerLinear.get_prev_messages` | `None` | `List[LLMContext \| LLMContextCompacted]` | Return the stored conversation history. |
-| [context_handlers/linear.py](context_handlers/linear.py#L552) | `ContextHandlerLinear.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
-| [context_handlers/linear.py](context_handlers/linear.py#L600) | `ContextHandlerLinear._tool_result_budgets` | `history: List[LLMContext \| LLMContextCompacted]` | `Dict[int, int]` | Allocate request budget to the newest tool results first. |
-| [context_handlers/linear.py](context_handlers/linear.py#L636) | `ContextHandlerLinear._estimate_context_size` | `None` | `int` | Estimate the size of the context that would reach the model. |
-| [context_handlers/linear.py](context_handlers/linear.py#L652) | `ContextHandlerLinear._bound_result_text` | `value: str, limit: int` | `str` | Return a request-safe copy of a tool result bounded to *limit* chars. |
-| [context_handlers/linear.py](context_handlers/linear.py#L684) | `ContextHandlerLinear._bounded_tool_results` | `tool_results: Optional[Dict[str, str]]` | `Dict[str, str]` | Copy complete tool output into the in-memory conversation history. |
-| [context_handlers/linear.py](context_handlers/linear.py#L707) | `ContextHandlerLinear.compaction_request_preview` | `None` | `CompactionRequestPreview` | Build the exact compaction request parameters without sending them. |
-| [context_handlers/linear.py](context_handlers/linear.py#L748) | `ContextHandlerLinear._build_compaction_input` | `None` | `str` | Render a bounded, newest-first transcript for one summary request. |
-| [context_handlers/linear.py](context_handlers/linear.py#L763) | `ContextHandlerLinear._parse_compacted_abstract` | `raw: str` | `Optional[str]` | Extract the contents of the ``<context_abstract>`` tag. |
-| [context_handlers/linear.py](context_handlers/linear.py#L791) | `ContextHandlerLinear.save` | `path: str \| Path, checkpoint_generation: str \| None, graph_checkpoint: str \| None` | `bool` | Persist metadata plus only newly-created transcript rows. |
-| [context_handlers/linear.py](context_handlers/linear.py#L864) | `ContextHandlerLinear.load` | `path: Optional[str \| Path]` | `bool` | Deserialize conversation history from a JSON file. |
-| [context_handlers/linear.py](context_handlers/linear.py#L950) | `ContextHandlerLinear._save_sqlite_rows` | `database: Path` | `None` | Append changed context rows in one SQLite transaction. |
-| [context_handlers/linear.py](context_handlers/linear.py#L983) | `ContextHandlerLinear._sqlite_count` | `database: Path, table: str` | `int` | Return one table row count without reading transcript payloads. |
-| [context_handlers/linear.py](context_handlers/linear.py#L1000) | `ContextHandlerLinear._sqlite_max_timeline` | `database: Path, table: str` | `int` | Return the latest persisted timeline without loading rows. |
-| [context_handlers/linear.py](context_handlers/linear.py#L1020) | `ContextHandlerLinear._context_to_dict` | `ctx: LLMContext` | `Dict[str, Any]` | Implement `ContextHandlerLinear._context_to_dict`. |
-| [context_handlers/linear.py](context_handlers/linear.py#L1024) | `ContextHandlerLinear._context_from_dict` | `data: Dict[str, Any]` | `LLMContext` | Implement `ContextHandlerLinear._context_from_dict`. |
-| [context_handlers/linear.py](context_handlers/linear.py#L1044) | `ContextHandlerLinear._compacted_to_dict` | `comp: Optional[LLMContextCompacted]` | `Optional[Dict[str, Any]]` | Implement `ContextHandlerLinear._compacted_to_dict`. |
-| [context_handlers/linear.py](context_handlers/linear.py#L1052) | `ContextHandlerLinear._compacted_from_dict` | `data: Optional[Dict[str, Any]]` | `Optional[LLMContextCompacted]` | Implement `ContextHandlerLinear._compacted_from_dict`. |
-| [context_handlers/linear.py](context_handlers/linear.py#L1066) | `ContextHandlerLinear._append_context_messages` | `messages: List[Dict[str, Any]], item: LLMContext, result_budgets: Dict[int, int]` | `None` | Append backend-neutral messages for a single context entry. |
-| [context_handlers/linear.py](context_handlers/linear.py#L1136) | `ContextHandlerLinear._render_tool_result_for_model` | `raw_result: str, result_limit: int` | `str` | Bound one result and annotate it when it is large for the model. |
+| [context_handlers/linear.py](context_handlers/linear.py#L116) | `read_persisted_context_page` | `path: str \| Path, before_timeline: int \| None, limit: int, include_archive: bool` | `tuple[list[LLMContext], int \| None, int]` | Read one reverse-timeline page without loading the full checkpoint. |
+| [context_handlers/linear.py](context_handlers/linear.py#L282) | `ContextHandlerLinear.clear_context` | `None` | `Any` | Clear all conversation entries and restart timeline numbering. |
+| [context_handlers/linear.py](context_handlers/linear.py#L298) | `ContextHandlerLinear.drain_usage_records` | `None` | `list[UsageRecord]` | Return completed internal-call usage records exactly once. |
+| [context_handlers/linear.py](context_handlers/linear.py#L303) | `ContextHandlerLinear.set_compaction_event_hook` | `hook: Optional[Callable[[str, str, dict], None]]` | `None` | Attach or detach the compaction lifecycle event observer. |
+| [context_handlers/linear.py](context_handlers/linear.py#L318) | `ContextHandlerLinear._emit_compaction_event` | `event_type: str, message: str, data: Dict[str, Any]` | `None` | Notify the attached observer, isolating any observer failure. |
+| [context_handlers/linear.py](context_handlers/linear.py#L342) | `ContextHandlerLinear.add_user_message` | `message: str` | `None` | Append an User input to conversation history. |
+| [context_handlers/linear.py](context_handlers/linear.py#L366) | `ContextHandlerLinear.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]], usage: Optional[Dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float]` | `None` | Append an LLM output to the conversation history. |
+| [context_handlers/linear.py](context_handlers/linear.py#L414) | `ContextHandlerLinear.compact` | `None` | `bool` | Compress the conversation history into a single abstract. |
+| [context_handlers/linear.py](context_handlers/linear.py#L561) | `ContextHandlerLinear.get_prev_messages` | `None` | `List[LLMContext \| LLMContextCompacted]` | Return the stored conversation history. |
+| [context_handlers/linear.py](context_handlers/linear.py#L569) | `ContextHandlerLinear.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
+| [context_handlers/linear.py](context_handlers/linear.py#L614) | `ContextHandlerLinear._estimate_context_size` | `None` | `int` | Estimate the size of the context that would reach the model. |
+| [context_handlers/linear.py](context_handlers/linear.py#L629) | `ContextHandlerLinear._bounded_tool_results` | `tool_results: Optional[Dict[str, str]]` | `Dict[str, str]` | Copy complete tool output into the in-memory conversation history. |
+| [context_handlers/linear.py](context_handlers/linear.py#L649) | `ContextHandlerLinear.compaction_request_preview` | `None` | `CompactionRequestPreview` | Build the exact compaction request parameters without sending them. |
+| [context_handlers/linear.py](context_handlers/linear.py#L690) | `ContextHandlerLinear._build_compaction_input` | `None` | `str` | Render a bounded, newest-first transcript for one summary request. |
+| [context_handlers/linear.py](context_handlers/linear.py#L705) | `ContextHandlerLinear._parse_compacted_abstract` | `raw: str` | `Optional[str]` | Extract the contents of the ``<context_abstract>`` tag. |
+| [context_handlers/linear.py](context_handlers/linear.py#L733) | `ContextHandlerLinear.save` | `path: str \| Path, checkpoint_generation: str \| None, graph_checkpoint: str \| None` | `bool` | Persist metadata plus only newly-created transcript rows. |
+| [context_handlers/linear.py](context_handlers/linear.py#L809) | `ContextHandlerLinear.load` | `path: Optional[str \| Path]` | `bool` | Deserialize conversation history from a JSON file. |
+| [context_handlers/linear.py](context_handlers/linear.py#L895) | `ContextHandlerLinear._save_sqlite_rows` | `database: Path` | `None` | Append changed context rows in one SQLite transaction. |
+| [context_handlers/linear.py](context_handlers/linear.py#L928) | `ContextHandlerLinear._sqlite_count` | `database: Path, table: str` | `int` | Return one table row count without reading transcript payloads. |
+| [context_handlers/linear.py](context_handlers/linear.py#L945) | `ContextHandlerLinear._sqlite_max_timeline` | `database: Path, table: str` | `int` | Return the latest persisted timeline without loading rows. |
+| [context_handlers/linear.py](context_handlers/linear.py#L965) | `ContextHandlerLinear._context_to_dict` | `ctx: LLMContext` | `Dict[str, Any]` | Implement `ContextHandlerLinear._context_to_dict`. |
+| [context_handlers/linear.py](context_handlers/linear.py#L969) | `ContextHandlerLinear._context_from_dict` | `data: Dict[str, Any]` | `LLMContext` | Implement `ContextHandlerLinear._context_from_dict`. |
+| [context_handlers/linear.py](context_handlers/linear.py#L993) | `ContextHandlerLinear._compacted_to_dict` | `comp: Optional[LLMContextCompacted]` | `Optional[Dict[str, Any]]` | Implement `ContextHandlerLinear._compacted_to_dict`. |
+| [context_handlers/linear.py](context_handlers/linear.py#L1001) | `ContextHandlerLinear._compacted_from_dict` | `data: Optional[Dict[str, Any]]` | `Optional[LLMContextCompacted]` | Implement `ContextHandlerLinear._compacted_from_dict`. |
+| [context_handlers/linear.py](context_handlers/linear.py#L1015) | `ContextHandlerLinear._append_context_messages` | `messages: List[Dict[str, Any]], item: LLMContext` | `None` | Append backend-neutral messages for a single context entry. |
 | [context_handlers/retrieved.py](context_handlers/retrieved.py#L63) | `_extract_json_from_text` | `text: str` | `dict[str, Any]` | Extract and parse the first valid JSON object from text via raw_decode. |
 | [context_handlers/retrieved.py](context_handlers/retrieved.py#L162) | `RetrievedContextHandler._init_session_state` | `None` | `None` | (Re)set all per-session transient state (P0-J). |
 | [context_handlers/retrieved.py](context_handlers/retrieved.py#L175) | `RetrievedContextHandler.has_retrieved` | `None` | `bool` | Implement `RetrievedContextHandler.has_retrieved`. |
 | [context_handlers/retrieved.py](context_handlers/retrieved.py#L178) | `RetrievedContextHandler.retrieve` | `query: str` | `list[dict[str, Any]]` | Explicitly trigger TLB retrieval. |
 | [context_handlers/retrieved.py](context_handlers/retrieved.py#L186) | `RetrievedContextHandler.add_user_message` | `message: str` | `None` | Implement `RetrievedContextHandler.add_user_message`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L192) | `RetrievedContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: dict[str, str] \| None` | `None` | Implement `RetrievedContextHandler.add_assistant_message`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L197) | `RetrievedContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: retrieved as **user** role (P0-I), then linear. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L210) | `RetrievedContextHandler.save` | `path: str \| Path` | `bool` | Implement `RetrievedContextHandler.save`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L218) | `RetrievedContextHandler.load` | `path: str \| Path` | `bool` | Implement `RetrievedContextHandler.load`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L221) | `RetrievedContextHandler.clear_context` | `None` | `bool` | Clear linear context AND reset all per-session state (P0-J). |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L229) | `RetrievedContextHandler.create_save_tool` | `None` | `Tool` | Return a Tool for LLM-triggered mid-session archival. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L271) | `RetrievedContextHandler._should_retrieve` | `None` | `bool` | Return whether the newly added user message requires retrieval. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L293) | `RetrievedContextHandler._retrieve_from_tlb` | `query: str` | `list[dict[str, Any]]` | Implement `RetrievedContextHandler._retrieve_from_tlb`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L336) | `RetrievedContextHandler._resolve_archive_targets` | `None` | `Any` | Resolve which TLB/root pairs to archive to based on scope. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L357) | `RetrievedContextHandler._archive_session` | `None` | `_ARCHIVE_RESULT` | Archive current session to knowledge bases. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L394) | `RetrievedContextHandler._archive_to` | `tlb: Any, root: Path, session_md: str` | `_ARCHIVE_RESULT` | Archive to one knowledge base. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L449) | `RetrievedContextHandler._export_archival_state` | `None` | `str` | Export structured archival state from linear handler (P0-K). |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L475) | `RetrievedContextHandler._classify_session` | `session_md: str, root: Path` | `dict[str, Any]` | Implement `RetrievedContextHandler._classify_session`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L525) | `RetrievedContextHandler._build_session_markdown` | `transcript: str` | `str \| None` | Implement `RetrievedContextHandler._build_session_markdown`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L582) | `RetrievedContextHandler._summarize_session` | `transcript: str` | `dict[str, Any]` | Implement `RetrievedContextHandler._summarize_session`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L602) | `RetrievedContextHandler._parse_session_file` | `path: Path` | `dict[str, Any] \| None` | Implement `RetrievedContextHandler._parse_session_file`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L638) | `RetrievedContextHandler._messages_to_text` | `messages: list[dict[str, Any]]` | `str` | Implement `RetrievedContextHandler._messages_to_text`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L654) | `RetrievedContextHandler._update_index` | `index_path: Path, filename: str, topic: str, reason: str` | `None` | Implement `RetrievedContextHandler._update_index`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L678) | `RetrievedContextHandler._slugify` | `text: str` | `str` | Implement `RetrievedContextHandler._slugify`. |
-| [context_handlers/retrieved.py](context_handlers/retrieved.py#L684) | `_render_retrieved_memory` | `sessions: list[dict[str, Any]]` | `str` | Render retrieved sessions as a user-role context block (P0-I). |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L192) | `RetrievedContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: dict[str, str] \| None, usage: dict[str, int] \| None, model_duration_ms: int \| None, round_duration_ms: int \| None, created_at: float \| None` | `None` | Implement `RetrievedContextHandler.add_assistant_message`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L210) | `RetrievedContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: retrieved as **user** role (P0-I), then linear. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L223) | `RetrievedContextHandler.save` | `path: str \| Path` | `bool` | Implement `RetrievedContextHandler.save`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L231) | `RetrievedContextHandler.load` | `path: str \| Path` | `bool` | Implement `RetrievedContextHandler.load`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L234) | `RetrievedContextHandler.clear_context` | `None` | `bool` | Clear linear context AND reset all per-session state (P0-J). |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L242) | `RetrievedContextHandler.create_save_tool` | `None` | `Tool` | Return a Tool for LLM-triggered mid-session archival. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L284) | `RetrievedContextHandler._should_retrieve` | `None` | `bool` | Return whether the newly added user message requires retrieval. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L306) | `RetrievedContextHandler._retrieve_from_tlb` | `query: str` | `list[dict[str, Any]]` | Implement `RetrievedContextHandler._retrieve_from_tlb`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L349) | `RetrievedContextHandler._resolve_archive_targets` | `None` | `Any` | Resolve which TLB/root pairs to archive to based on scope. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L370) | `RetrievedContextHandler._archive_session` | `None` | `_ARCHIVE_RESULT` | Archive current session to knowledge bases. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L407) | `RetrievedContextHandler._archive_to` | `tlb: Any, root: Path, session_md: str` | `_ARCHIVE_RESULT` | Archive to one knowledge base. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L462) | `RetrievedContextHandler._export_archival_state` | `None` | `str` | Export structured archival state from linear handler (P0-K). |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L488) | `RetrievedContextHandler._classify_session` | `session_md: str, root: Path` | `dict[str, Any]` | Implement `RetrievedContextHandler._classify_session`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L538) | `RetrievedContextHandler._build_session_markdown` | `transcript: str` | `str \| None` | Implement `RetrievedContextHandler._build_session_markdown`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L595) | `RetrievedContextHandler._summarize_session` | `transcript: str` | `dict[str, Any]` | Implement `RetrievedContextHandler._summarize_session`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L615) | `RetrievedContextHandler._parse_session_file` | `path: Path` | `dict[str, Any] \| None` | Implement `RetrievedContextHandler._parse_session_file`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L651) | `RetrievedContextHandler._messages_to_text` | `messages: list[dict[str, Any]]` | `str` | Implement `RetrievedContextHandler._messages_to_text`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L667) | `RetrievedContextHandler._update_index` | `index_path: Path, filename: str, topic: str, reason: str` | `None` | Implement `RetrievedContextHandler._update_index`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L691) | `RetrievedContextHandler._slugify` | `text: str` | `str` | Implement `RetrievedContextHandler._slugify`. |
+| [context_handlers/retrieved.py](context_handlers/retrieved.py#L697) | `_render_retrieved_memory` | `sessions: list[dict[str, Any]]` | `str` | Render retrieved sessions as a user-role context block (P0-I). |
 | [context_handlers/tlb.py](context_handlers/tlb.py#L47) | `TLBContextHandler.add_user_message` | `message: str` | `None` | Append an User input to conversation history. |
-| [context_handlers/tlb.py](context_handlers/tlb.py#L60) | `TLBContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]]` | `None` | Record an LLM response into the conversation history. |
-| [context_handlers/tlb.py](context_handlers/tlb.py#L78) | `TLBContextHandler.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
-| [context_handlers/tlb.py](context_handlers/tlb.py#L93) | `TLBContextHandler.save` | `path: str \| Path` | `bool` | Save context from disk. |
-| [context_handlers/tlb.py](context_handlers/tlb.py#L107) | `TLBContextHandler.load` | `path: str \| Path` | `bool` | Load context from disk. |
-| [context_handlers/tlb.py](context_handlers/tlb.py#L121) | `TLBContextHandler.clear_context` | `None` | `bool` | Clear context. |
+| [context_handlers/tlb.py](context_handlers/tlb.py#L60) | `TLBContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]], usage: Optional[Dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float]` | `None` | Record an LLM response into the conversation history. |
+| [context_handlers/tlb.py](context_handlers/tlb.py#L83) | `TLBContextHandler.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
+| [context_handlers/tlb.py](context_handlers/tlb.py#L98) | `TLBContextHandler.save` | `path: str \| Path` | `bool` | Save context from disk. |
+| [context_handlers/tlb.py](context_handlers/tlb.py#L112) | `TLBContextHandler.load` | `path: str \| Path` | `bool` | Load context from disk. |
+| [context_handlers/tlb.py](context_handlers/tlb.py#L126) | `TLBContextHandler.clear_context` | `None` | `bool` | Clear context. |
 | [demo/demo.py](demo/demo.py#L23) | `main` | `None` | `Any` | Implement `main`. |
 | [fetcher_handlers/_tool_schemas.py](fetcher_handlers/_tool_schemas.py#L8) | `tool_to_openai_schema` | `tool: Tool` | `ToolSchemaDict` | Serialize an executable tool into OpenAI-style function schema. |
 | [fetcher_handlers/_tool_schemas.py](fetcher_handlers/_tool_schemas.py#L20) | `to_openai_tool_schemas` | `tools: Optional[Sequence[ToolDefinition]]` | `Optional[list[ToolSchemaDict]]` | Normalize runtime tools or legacy schemas into OpenAI-compatible payloads. |
@@ -311,14 +308,14 @@ primary model response.
 | [graph_memory/handler.py](graph_memory/handler.py#L165) | `GraphContextHandler.drain_usage_records` | `None` | `list[UsageRecord]` | Drain child internal-call records in the order their components run. |
 | [graph_memory/handler.py](graph_memory/handler.py#L179) | `GraphContextHandler.retrieve` | `query: str` | `GraphRetrievalResult` | Run hybrid graph retrieval and store the rendered context block. |
 | [graph_memory/handler.py](graph_memory/handler.py#L197) | `GraphContextHandler.add_user_message` | `message: str` | `None` | Append a user message and trigger retrieval when due. |
-| [graph_memory/handler.py](graph_memory/handler.py#L208) | `GraphContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[dict[str, str]]` | `None` | Append an assistant output, detect compaction and flush the graph. |
-| [graph_memory/handler.py](graph_memory/handler.py#L231) | `GraphContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: graph memory block (user), then linear history. |
-| [graph_memory/handler.py](graph_memory/handler.py#L242) | `GraphContextHandler.save` | `path: str \| Path` | `bool` | Save the conversation AND the companion graph file. |
-| [graph_memory/handler.py](graph_memory/handler.py#L284) | `GraphContextHandler.load` | `path: str \| Path` | `bool` | Restore the conversation and its companion graph. |
-| [graph_memory/handler.py](graph_memory/handler.py#L355) | `GraphContextHandler.clear_context` | `None` | `bool` | Clear the session but keep the long-term memory graph. |
-| [graph_memory/handler.py](graph_memory/handler.py#L363) | `GraphContextHandler._retrieve_archive_evidence` | `query: str` | `str` | Render small, provenance-labelled raw evidence for a new query. |
-| [graph_memory/handler.py](graph_memory/handler.py#L396) | `GraphContextHandler._should_retrieve` | `None` | `bool` | Decide whether this newly stored user message should retrieve. |
-| [graph_memory/handler.py](graph_memory/handler.py#L413) | `GraphContextHandler._flush_pending` | `None` | `None` | Ingest buffered messages into the graph and clear the buffer. |
+| [graph_memory/handler.py](graph_memory/handler.py#L208) | `GraphContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[dict[str, str]], usage: Optional[dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float]` | `None` | Append an assistant output, detect compaction and flush the graph. |
+| [graph_memory/handler.py](graph_memory/handler.py#L246) | `GraphContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: graph memory block (user), then linear history. |
+| [graph_memory/handler.py](graph_memory/handler.py#L257) | `GraphContextHandler.save` | `path: str \| Path` | `bool` | Save the conversation AND the companion graph file. |
+| [graph_memory/handler.py](graph_memory/handler.py#L299) | `GraphContextHandler.load` | `path: str \| Path` | `bool` | Restore the conversation and its companion graph. |
+| [graph_memory/handler.py](graph_memory/handler.py#L370) | `GraphContextHandler.clear_context` | `None` | `bool` | Clear the session but keep the long-term memory graph. |
+| [graph_memory/handler.py](graph_memory/handler.py#L378) | `GraphContextHandler._retrieve_archive_evidence` | `query: str` | `str` | Render small, provenance-labelled raw evidence for a new query. |
+| [graph_memory/handler.py](graph_memory/handler.py#L411) | `GraphContextHandler._should_retrieve` | `None` | `bool` | Decide whether this newly stored user message should retrieve. |
+| [graph_memory/handler.py](graph_memory/handler.py#L428) | `GraphContextHandler._flush_pending` | `None` | `None` | Ingest buffered messages into the graph and clear the buffer. |
 | [graph_memory/models.py](graph_memory/models.py#L42) | `EntityNode.to_dict` | `None` | `dict[str, Any]` | Implement `EntityNode.to_dict`. |
 | [graph_memory/models.py](graph_memory/models.py#L46) | `EntityNode.from_dict` | `data: dict[str, Any]` | `'EntityNode'` | Implement `EntityNode.from_dict`. |
 | [graph_memory/models.py](graph_memory/models.py#L86) | `RelationEdge.key` | `None` | `tuple[str, str]` | Undirected canonical edge key (sorted pair). |
@@ -379,9 +376,9 @@ primary model response.
 | [llm_types.py](llm_types.py#L160) | `TokenUsage.cache_hit_rate` | `None` | `float` | Fraction of input tokens served from the provider's prompt cache. |
 | [llm_types.py](llm_types.py#L184) | `LLMOutput.text` | `None` | `str` | Alias for assistant text content. |
 | [llm_types.py](llm_types.py#L188) | `LLMOutput.__str__` | `None` | `str` | Return the assistant content for debug printing and logging. |
-| [llm_types.py](llm_types.py#L215) | `LLMContextCompacted.__str__` | `None` | `str` | Implement `LLMContextCompacted.__str__`. |
-| [llm_types.py](llm_types.py#L251) | `ToolSchema.to_dict` | `None` | `Dict[str, Any]` | Convert this schema to an isolated JSON-ready mapping. |
-| [llm_types.py](llm_types.py#L291) | `Tool.__str__` | `None` | `Any` | Implement `Tool.__str__`. |
+| [llm_types.py](llm_types.py#L222) | `LLMContextCompacted.__str__` | `None` | `str` | Implement `LLMContextCompacted.__str__`. |
+| [llm_types.py](llm_types.py#L258) | `ToolSchema.to_dict` | `None` | `Dict[str, Any]` | Convert this schema to an isolated JSON-ready mapping. |
+| [llm_types.py](llm_types.py#L298) | `Tool.__str__` | `None` | `Any` | Implement `Tool.__str__`. |
 | [memory/base.py](memory/base.py#L30) | `MemoryProvider.search` | `query: str, limit: int, namespace: str` | `list[MemoryItem]` | Return memories relevant to a query. |
 | [memory/base.py](memory/base.py#L33) | `MemoryProvider.add` | `item: MemoryItem, namespace: str` | `None` | Persist one memory item in a namespace. |
 | [rag_module/knowledge/config.py](rag_module/knowledge/config.py#L52) | `KnowledgeConfig.from_environment` | `root: Path \| str \| None` | `'KnowledgeConfig'` | Build configuration from environment variables and defaults. |
@@ -550,7 +547,8 @@ primary model response.
 | [swarm_module/swarm.py](swarm_module/swarm.py#L405) | `AgentSwarm.finalize_tasks` | `None` | `dict[str, str]` | Close unfinished dynamic tasks after any terminal run outcome. |
 | [swarm_module/swarm.py](swarm_module/swarm.py#L417) | `AgentSwarm.request_shutdown` | `None` | `None` | Stop scheduling further runnable Agents in the active graph. |
 | [swarm_module/swarm.py](swarm_module/swarm.py#L432) | `AgentSwarm.total_usage` | `None` | `dict[str, int]` | Aggregate token usage across every registered Agent. |
-| [swarm_module/swarm.py](swarm_module/swarm.py#L459) | `AgentSwarm.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None` | `dict[str, Any]` | Execute the graph with an optional cooperative Agent control. |
+| [swarm_module/swarm.py](swarm_module/swarm.py#L459) | `AgentSwarm.agent_usage` | `None` | `dict[str, dict[str, int]]` | Project token usage for every currently registered Agent. |
+| [swarm_module/swarm.py](swarm_module/swarm.py#L492) | `AgentSwarm.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None` | `dict[str, Any]` | Execute the graph with an optional cooperative Agent control. |
 | [swarm_module/task_bus.py](swarm_module/task_bus.py#L71) | `TaskReport.as_dict` | `None` | `dict[str, Any]` | Return a JSON-ready representation of the structured report. |
 | [swarm_module/task_bus.py](swarm_module/task_bus.py#L101) | `TaskBus.create_assignment` | `recipient: str, reply_to: str, objective: str, handoff: str, expected_artifacts: Iterable[str], task_id: str, plan_task_id: str` | `TaskAssignment` | Create and enqueue one immutable subagent work package. |
 | [swarm_module/task_bus.py](swarm_module/task_bus.py#L153) | `TaskBus.claim_assignment` | `task_id: str` | `TaskAssignment` | Mark one queued assignment running and return its work package. |
@@ -580,18 +578,27 @@ primary model response.
 | [tests/test_execution_controller.py](tests/test_execution_controller.py#L197) | `_fetch_in_thread` | `fetcher: LLMFetcher, controller: ExecutionController, errors: list[BaseException]` | `None` | Implement `_fetch_in_thread`. |
 | [tests/test_execution_controller.py](tests/test_execution_controller.py#L208) | `_advance_stream` | `stream: object, errors: list[BaseException]` | `None` | Implement `_advance_stream`. |
 | [tests/test_execution_controller.py](tests/test_execution_controller.py#L215) | `_run_tool_batch` | `executor: ToolExecutor, controller: ExecutionController, handler: object, errors: list[BaseException], arguments: dict[str, object] \| None` | `None` | Implement `_run_tool_batch`. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L20) | `ToolCallValidationTests.setUp` | `None` | `None` | Implement `ToolCallValidationTests.setUp`. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L29) | `ToolCallValidationTests._execute` | `call: LLMToolCall` | `object` | Implement `ToolCallValidationTests._execute`. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L33) | `ToolCallValidationTests.test_missing_required_field_returns_model_visible_error` | `None` | `None` | Implement `ToolCallValidationTests.test_missing_required_field_returns_model_visible_error`. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L39) | `ToolCallValidationTests.test_wrong_type_and_unknown_name_return_model_visible_errors` | `None` | `None` | Implement `ToolCallValidationTests.test_wrong_type_and_unknown_name_return_model_visible_errors`. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L48) | `ToolCallValidationTests.test_compact_schema_rejects_unexpected_field` | `None` | `None` | Implement `ToolCallValidationTests.test_compact_schema_rejects_unexpected_field`. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L58) | `ContextSaveDiagnosticTests.test_agent_chains_handler_save_failure` | `None` | `None` | Implement `ContextSaveDiagnosticTests.test_agent_chains_handler_save_failure`. |
 | [tool_executor.py](tool_executor.py#L59) | `ToolExecutor.execute` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `Any` | Run a single tool handler in the calling thread. |
 | [tool_executor.py](tool_executor.py#L67) | `ToolExecutor.execute_timed` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `ToolExecution` | Run a single tool handler in the calling thread with timing. |
 | [tool_executor.py](tool_executor.py#L98) | `ToolExecutor.execute_batch` | `handlers: List[Callable[..., Any] \| None], arguments_list: List[Dict[str, Any]], controller: ExecutionController \| None` | `List[Any]` | Execute tool handlers in parallel using a thread pool. |
 | [tool_executor.py](tool_executor.py#L130) | `ToolExecutor.execute_batch_timed` | `handlers: List[Callable[..., Any] \| None], arguments_list: List[Dict[str, Any]], controller: ExecutionController \| None` | `List[ToolExecution]` | Execute tool handlers in parallel, measuring each one's duration. |
 | [tool_executor.py](tool_executor.py#L226) | `ToolExecutor.close` | `None` | `None` | Release resources. (No-op — threads clean up on exit.) |
-| [tool_handler.py](tool_handler.py#L23) | `ToolHandler.add_tool` | `tool: Tool` | `bool` | Register a tool. No-op if a tool with the same name exists. |
-| [tool_handler.py](tool_handler.py#L35) | `ToolHandler.remove_tool` | `name: str` | `bool` | Unregister a tool by name. |
-| [tool_handler.py](tool_handler.py#L50) | `ToolHandler.get` | `name: str` | `Tool \| None` | Look up a tool by name. |
-| [tool_handler.py](tool_handler.py#L58) | `ToolHandler.get_handler` | `name: str` | `Any \| None` | Return the callable handler for a named tool. |
-| [tool_handler.py](tool_handler.py#L67) | `ToolHandler.get_handlers_and_arguments` | `calls: List[LLMToolCall]` | `tuple[List[Any \| None], List[Dict[str, Any]]]` | Resolve a list of tool calls into (handlers, arguments). |
-| [tool_handler.py](tool_handler.py#L94) | `ToolHandler.get_all_tool_description` | `None` | `str` | Concatenated ``__str__`` of all registered tools, newline-separated. |
-| [tool_handler.py](tool_handler.py#L98) | `ToolHandler.get_all_tools` | `None` | `List[Tool]` | Return all registered tools as a list. |
+| [tool_handler.py](tool_handler.py#L27) | `ToolHandler.add_tool` | `tool: Tool` | `bool` | Register a tool. No-op if a tool with the same name exists. |
+| [tool_handler.py](tool_handler.py#L39) | `ToolHandler.remove_tool` | `name: str` | `bool` | Unregister a tool by name. |
+| [tool_handler.py](tool_handler.py#L54) | `ToolHandler.get` | `name: str` | `Tool \| None` | Look up a tool by name. |
+| [tool_handler.py](tool_handler.py#L62) | `ToolHandler.get_handler` | `name: str` | `Any \| None` | Return the callable handler for a named tool. |
+| [tool_handler.py](tool_handler.py#L71) | `ToolHandler.get_handlers_and_arguments` | `calls: List[LLMToolCall]` | `tuple[List[Any \| None], List[Dict[str, Any]]]` | Resolve a list of tool calls into (handlers, arguments). |
+| [tool_handler.py](tool_handler.py#L99) | `ToolHandler.get_all_tool_description` | `None` | `str` | Concatenated ``__str__`` of all registered tools, newline-separated. |
+| [tool_handler.py](tool_handler.py#L103) | `ToolHandler.get_all_tools` | `None` | `List[Tool]` | Return all registered tools as a list. |
+| [tool_handler.py](tool_handler.py#L108) | `_reject_tool_call` | `message: str` | `Any` | Return a handler that reports one validation failure to the model. |
+| [tool_handler.py](tool_handler.py#L115) | `_validate_tool_call` | `tool: Tool \| None, call: LLMToolCall` | `str \| None` | Validate one model call before a local handler can observe it. |
+| [tool_handler.py](tool_handler.py#L159) | `_matches_json_type` | `value: Any, expected: str` | `bool` | Return whether a JSON-compatible value matches one primitive type. |
 | [tools/__init__.py](tools/__init__.py#L28) | `__getattr__` | `name: str` | `Any` | Resolve a lazily exported tool factory. |
 | [tools/knowledge_tools.py](tools/knowledge_tools.py#L11) | `create_knowledge_tools` | `knowledge_base: KnowledgeBase \| None` | `list[Tool]` | Create tools for searching and reading the workspace knowledge base. |
 | [tools/obscura_tools.py](tools/obscura_tools.py#L25) | `_get_obscura_bin` | `None` | `str` | Resolve the configured Obscura executable. |
@@ -637,14 +644,14 @@ primary model response.
 | [agent.py](agent.py#L96) | `ContextSaveError` | `None` | `RuntimeError` | Signal that a configured Agent checkpoint could not be committed. |
 | [agent.py](agent.py#L100) | `AgentRunTermination` | `None` | `str, Enum` | Explicit terminal classifications for one completed Agent invocation. |
 | [agent.py](agent.py#L112) | `AgentRunOutcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `object` | Inspectable terminal state for an Agent run. |
-| [agent.py](agent.py#L156) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, enable_stop_turn: bool, default_stream: bool` | `object` | Provide `Agent` behavior. |
+| [agent.py](agent.py#L156) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, enable_stop_turn: bool, default_stream: bool, tool_result_transformer: Callable[[str, str, str], str] \| None` | `object` | Provide `Agent` behavior. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L27) | `ArchiveRetrievalConfig` | `max_results: int, max_chars_per_record: int, min_score: float` | `object` | Hard bounds for local archive retrieval and returned evidence. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L44) | `ArchiveEvidence` | `timeline_start: int, timeline_end: int, role: str, score: float, text: str, matched_terms: tuple[str, ...]` | `object` | A bounded, display-safe projection of one archived context record. |
 | [context_handlers/archive_retrieval.py](context_handlers/archive_retrieval.py#L62) | `ArchiveRetrievalResult` | `query: str, evidence: tuple[ArchiveEvidence, ...], scanned_records: int` | `object` | Result metadata plus bounded evidence suitable for later injection. |
 | [context_handlers/base.py](context_handlers/base.py#L8) | `ContextHandler` | `None` | `ABC` | Manages conversational context and builds API-ready message lists. |
 | [context_handlers/linear.py](context_handlers/linear.py#L24) | `CompactionFetcher` | `None` | `Protocol` | Describe the minimal LLM interface used for context compaction. |
-| [context_handlers/linear.py](context_handlers/linear.py#L98) | `CompactionRequestPreview` | `text: str, system_prompt: str, temperature: float, max_tokens: int, messages: int, omitted: int, threshold: int, round: int` | `object` | One exact, credential-free compaction request plan. |
-| [context_handlers/linear.py](context_handlers/linear.py#L186) | `ContextHandlerLinear` | `compacting_llmfetcher_handler: CompactionFetcher, max_context_threshold: int, compaction_input_char_limit: int, compaction_output_max_tokens: int, event_hook: Optional[Callable[[str, str, dict], None]]` | `ContextHandler` | A simple context handler that stores messages in a flat list. |
+| [context_handlers/linear.py](context_handlers/linear.py#L92) | `CompactionRequestPreview` | `text: str, system_prompt: str, temperature: float, max_tokens: int, messages: int, omitted: int, threshold: int, round: int` | `object` | One exact, credential-free compaction request plan. |
+| [context_handlers/linear.py](context_handlers/linear.py#L194) | `ContextHandlerLinear` | `compacting_llmfetcher_handler: CompactionFetcher, max_context_threshold: int, compaction_input_char_limit: int, compaction_output_max_tokens: int, event_hook: Optional[Callable[[str, str, dict], None]]` | `ContextHandler` | A simple context handler that stores messages in a flat list. |
 | [context_handlers/retrieved.py](context_handlers/retrieved.py#L86) | `RetrievedContextHandler` | `project_knowledge_root: str \| Path \| None, user_knowledge_root: str \| Path \| None, tlb_fetcher: CompactionFetcher, compacting_fetcher: CompactionFetcher, classify_fetcher: CompactionFetcher \| None, max_retrieved_sessions: int, retrieval_trigger: str, archive_scope: str, max_context_threshold: int` | `ContextHandler` | TLB-RAG powered conversation memory over linear context. |
 | [context_handlers/tlb.py](context_handlers/tlb.py#L12) | `PathStatus` | `None` | `Enum` | An enumerate about paths. |
 | [context_handlers/tlb.py](context_handlers/tlb.py#L22) | `WorkingStatus` | `current_focusing: str, other_path_names: List[str], path_status: List[str]` | `object` | Provide `WorkingStatus` behavior. |
@@ -692,12 +699,12 @@ primary model response.
 | [llm_types.py](llm_types.py#L133) | `ToolInfo` | `call: LLMToolCall, result: Optional[str]` | `object` | A tool call paired with its execution result. |
 | [llm_types.py](llm_types.py#L146) | `TokenUsage` | `input_tokens: int, output_tokens: int, total_tokens: int, cached_tokens: int, reasoning_tokens: int` | `object` | Platform-irrelevant token usage summary produced by every LLM handler. |
 | [llm_types.py](llm_types.py#L167) | `LLMOutput` | `content: str, provider: str, backend_name: str, model: str, role: str, reasoning_content: str, tool_calls: List[LLMToolCall], stop_reason: Optional[str], usage: TokenUsage` | `object` | Backend-neutral non-streaming model output. this class will be created by handlers that handle the LLM call. |
-| [llm_types.py](llm_types.py#L195) | `LLMContext` | `role: str, timeline: int, content: str, content_reasoning: str, tool_calls: List[ToolInfo], tags: List[str]` | `object` | A single message in the conversation timeline. |
-| [llm_types.py](llm_types.py#L207) | `LLMContextCompacted` | `abstract_msg: str, source_timeline: List[int], source_uuid: List[str], tags: List[str]` | `object` | Summarised representation of one or more LLMContext entries. |
-| [llm_types.py](llm_types.py#L224) | `ToolParameter` | `name: str, type: str, description: str, required: bool, enum: Optional[List[str]], default: Optional[Any]` | `object` | A single parameter in a tool's JSON Schema. |
-| [llm_types.py](llm_types.py#L236) | `ToolSchema` | `type: str, properties: List[ToolParameter], raw_schema: Optional[Dict[str, Any]]` | `object` | Structured JSON Schema for tool parameters and external tool protocols. |
-| [llm_types.py](llm_types.py#L283) | `Tool` | `name: str, description: str, schemas: ToolSchema, handler: Callable[..., Any]` | `object` | A single tool that an Agent can call. |
-| [llm_types.py](llm_types.py#L299) | `ToolBatch` | `None` | `object` | Provide `ToolBatch` behavior. |
+| [llm_types.py](llm_types.py#L195) | `LLMContext` | `role: str, timeline: int, content: str, content_reasoning: str, tool_calls: List[ToolInfo], tags: List[str], usage: Dict[str, int], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float]` | `object` | A single message in the conversation timeline. |
+| [llm_types.py](llm_types.py#L214) | `LLMContextCompacted` | `abstract_msg: str, source_timeline: List[int], source_uuid: List[str], tags: List[str]` | `object` | Summarised representation of one or more LLMContext entries. |
+| [llm_types.py](llm_types.py#L231) | `ToolParameter` | `name: str, type: str, description: str, required: bool, enum: Optional[List[str]], default: Optional[Any]` | `object` | A single parameter in a tool's JSON Schema. |
+| [llm_types.py](llm_types.py#L243) | `ToolSchema` | `type: str, properties: List[ToolParameter], raw_schema: Optional[Dict[str, Any]]` | `object` | Structured JSON Schema for tool parameters and external tool protocols. |
+| [llm_types.py](llm_types.py#L290) | `Tool` | `name: str, description: str, schemas: ToolSchema, handler: Callable[..., Any]` | `object` | A single tool that an Agent can call. |
+| [llm_types.py](llm_types.py#L306) | `ToolBatch` | `None` | `object` | Provide `ToolBatch` behavior. |
 | [memory/base.py](memory/base.py#L10) | `MemoryItem` | `content: str, score: float, memory_id: str, metadata: dict[str, Any]` | `object` | One retrieved or persisted memory fragment. |
 | [memory/base.py](memory/base.py#L27) | `MemoryProvider` | `None` | `Protocol` | Protocol implemented by vector, hybrid, or remote memory stores. |
 | [rag_module/knowledge/config.py](rag_module/knowledge/config.py#L11) | `KnowledgeConfig` | `root: Path, embedding_model_name: str, local_files_only: bool, result_limit: int, context_limit: int, excerpt_chars: int, embedding_max_chars: int, chunk_max_chars: int, chunk_overlap_chars: int, semantic_candidates: int, strategy_prefix: str, index_filename: str, chroma_dirname: str, collection_name: str, manifest_version: int, semantic_backend: str` | `object` | Stores runtime configuration for knowledge-base indexing and retrieval. |
@@ -730,10 +737,13 @@ primary model response.
 | [tests/test_execution_controller.py](tests/test_execution_controller.py#L18) | `ExecutionControllerTests` | `None` | `unittest.TestCase` | Verify one stop request governs resource cancellation and observation. |
 | [tests/test_execution_controller.py](tests/test_execution_controller.py#L160) | `_BlockingHandler` | `None` | `object` | Minimal provider double whose close wakes a blocked completion call. |
 | [tests/test_execution_controller.py](tests/test_execution_controller.py#L180) | `_StreamingHandler` | `None` | `_BlockingHandler` | Provider double that emits one chunk then blocks on the transport. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L17) | `ToolCallValidationTests` | `None` | `unittest.TestCase` | Ensure malformed model calls become recoverable tool feedback. |
+| [tests/test_tool_validation.py](tests/test_tool_validation.py#L55) | `ContextSaveDiagnosticTests` | `None` | `unittest.TestCase` | Retain the actual context-save failure through the Agent boundary. |
 | [tool_executor.py](tool_executor.py#L13) | `ToolBatchCancelled` | `None` | `RuntimeError` | Signal that force-stop abandoned the active tool batch. |
 | [tool_executor.py](tool_executor.py#L18) | `ToolExecution` | `result: Any, duration_ms: int` | `object` | One tool handler execution: its result and wall-clock duration. |
 | [tool_executor.py](tool_executor.py#L31) | `ToolExecutor` | `max_concurrency: int` | `object` | Execute tool handlers in parallel using a thread pool. |
-| [tool_handler.py](tool_handler.py#L8) | `ToolHandler` | `None` | `object` | Register, look up, and describe ``Tool`` objects. |
+| [tool_handler.py](tool_handler.py#L8) | `ToolCallValidationError` | `None` | `ValueError` | A model-requested tool call does not match a registered Tool contract. |
+| [tool_handler.py](tool_handler.py#L12) | `ToolHandler` | `None` | `object` | Register, look up, and describe ``Tool`` objects. |
 | [tools/obscura_tools.py](tools/obscura_tools.py#L119) | `WebSearchStore` | `path: str \| Path, defaults: dict[str, Any] \| None` | `object` | Persist web-search settings and per-provider usage counters in SQLite. |
 | [tools/obscura_tools.py](tools/obscura_tools.py#L610) | `ObscuraCDPClient` | `host: str, port: int` | `object` | Placeholder configuration for a future Obscura CDP client. |
 | [usage_ledger.py](usage_ledger.py#L17) | `UsageRecord` | `kind: str, usage: TokenUsage` | `object` | Usage reported by one completed LLM call. |
