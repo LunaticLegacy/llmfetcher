@@ -292,15 +292,47 @@ class LLMFetcher:
     # -- request execution helpers ----------------------------------------------
 
     @staticmethod
+    def _is_timeout_exception(exc: Exception) -> bool:
+        """Recognise transport/provider timeouts without importing optional SDKs.
+
+        Typed exceptions and their causal chain are authoritative.  Class-name
+        and message checks are compatibility fallbacks for SDK wrappers that
+        erase the original transport exception.
+        """
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        messages: list[str] = []
+        timeout_type_names = {
+            "Timeout", "TimeoutError", "ReadTimeout", "WriteTimeout",
+            "ConnectTimeout", "PoolTimeout", "ServerTimeoutError",
+            "APITimeoutError",
+        }
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, (TimeoutError, asyncio.TimeoutError)):
+                return True
+            if any(
+                cls.__name__ in timeout_type_names or cls.__name__.endswith("Timeout")
+                for cls in type(current).__mro__
+            ):
+                return True
+            messages.append(str(current).casefold())
+            current = current.__cause__ or current.__context__
+        return any(
+            marker in message
+            for message in messages
+            for marker in ("timeout", "timed out", "deadline exceeded")
+        )
+
+    @staticmethod
     def _normalize_exception(
         backend: LLMBackendConfig, exc: Exception
     ) -> LLMError:
         """Normalise any exception into an ``LLMError`` subclass.
 
-        ``TimeoutError`` and ``asyncio.TimeoutError`` become
-        ``LLMTimeoutError``.  Exceptions whose message contains "timeout"
-        (case-insensitive) are also classified as timeouts.  All other
-        exceptions become a plain ``LLMError``.
+        Typed timeout exceptions, provider/transport timeout classes in the
+        causal chain, and known compatibility wording become
+        ``LLMTimeoutError``. All other exceptions become a plain ``LLMError``.
 
         Args:
             backend: The backend that raised the exception (used for the
@@ -314,9 +346,7 @@ class LLMFetcher:
         message = (
             f"Backend '{backend.name}' ({backend.provider}) failed: {exc}"
         )
-        if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
-            return LLMTimeoutError(message)
-        if "timeout" in str(exc).lower():
+        if LLMFetcher._is_timeout_exception(exc):
             return LLMTimeoutError(message)
         return LLMError(message)
 
