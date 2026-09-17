@@ -249,6 +249,11 @@ class Agent:
 
         # Cumulative token usage across all rounds of the most recent run.
         self.usage: TokenUsage = TokenUsage()
+        # Cumulative token usage across every run this Agent has executed.
+        # Unlike ``usage`` it is never reset when a new lifecycle starts, so
+        # the Session aggregate preserves earlier lifecycles instead of
+        # dropping back to the newest run's totals.
+        self.lifetime_usage: TokenUsage = TokenUsage()
 
         # hook system
         self.hooks: list[ExecutionHook] = []
@@ -504,6 +509,7 @@ class Agent:
             if not isinstance(record, UsageRecord):
                 continue
             add_usage(self.usage, record.usage)
+            add_usage(self.lifetime_usage, record.usage)
             self._emit(
                 "agent", name, "agent:internal_usage",
                 f"Internal {record.kind} LLM call",
@@ -885,8 +891,12 @@ class Agent:
                     raise
                 raise AgentRunStopped(str(exc)) from exc
 
-            # Accumulate token usage across rounds.
-            add_usage(self.usage, copy_usage(result.usage))
+            # Accumulate token usage across rounds and across the Agent's
+            # lifetime; the lifetime total is never reset at the start of a
+            # run, so a new lifecycle cannot erase earlier accounting.
+            step_usage = copy_usage(result.usage)
+            add_usage(self.usage, step_usage)
+            add_usage(self.lifetime_usage, step_usage)
             # ``agent:round`` remains the lifecycle/transcript event.  This
             # separate record is the canonical per-call usage ledger entry,
             # so consumers need not infer hidden calls from round payloads.

@@ -429,13 +429,29 @@ class AgentSwarm:
     # Execution
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cumulative_usage(agent: object) -> object:
+        """Return the Agent counter that survives across lifecycles.
+
+        ``Agent.usage`` is reset at the start of every ``run`` so it only
+        describes the most recent lifecycle. ``Agent.lifetime_usage`` keeps
+        accumulating, so a new lifecycle must never make the Session
+        aggregate drop back to the newest run. Agents without the lifetime
+        counter (older builds, lightweight fakes) fall back to ``usage``.
+        """
+        lifetime = getattr(agent, "lifetime_usage", None)
+        if lifetime is not None:
+            return lifetime
+        return getattr(agent, "usage", None)
+
     def total_usage(self) -> dict[str, int]:
-        """Aggregate token usage across every registered Agent.
+        """Aggregate lifetime token usage across every registered Agent.
 
         Each Agent accumulates its own per-round usage plus internal
-        compaction / graph-memory LLM usage in ``Agent.usage`` after
-        ``run`` completes. This sums them across the coordinator and all
-        (dynamically dispatched) workers.
+        compaction / graph-memory LLM usage in ``Agent.lifetime_usage``,
+        which is never reset by a later ``run``. This sums the lifetime
+        counter across the coordinator and all (dynamically dispatched)
+        workers, so starting a new lifecycle preserves earlier usage.
 
         Returns:
             Dict with ``input``, ``output``, ``total``, ``cached`` and
@@ -446,7 +462,7 @@ class AgentSwarm:
             for agent in self._graph.agent_dict.values():
                 if agent is None:
                     continue
-                usage = getattr(agent, "usage", None)
+                usage = self._cumulative_usage(agent)
                 if usage is None:
                     continue
                 totals["input"] += usage.input_tokens or 0
@@ -460,9 +476,10 @@ class AgentSwarm:
         """Project token usage for every currently registered Agent.
 
         The projection uses the same normalized dimensions as
-        :meth:`total_usage`, so a client can safely sum the individual rows
-        and compare them to the session aggregate.  Dynamic workers remain in
-        the graph after completion and are consequently included.
+        :meth:`total_usage` and likewise reads each Agent's lifetime counter,
+        so a client can safely sum the individual rows and compare them to the
+        session aggregate.  Dynamic workers remain in the graph after
+        completion and are consequently included.
 
         Returns:
             Agent name to non-negative input/output/total/cached/reasoning
@@ -473,7 +490,7 @@ class AgentSwarm:
             for name, agent in self._graph.agent_dict.items():
                 if agent is None:
                     continue
-                usage = getattr(agent, "usage", None)
+                usage = self._cumulative_usage(agent)
                 if usage is None:
                     result[name] = {
                         "input": 0, "output": 0, "total": 0,

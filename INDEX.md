@@ -86,27 +86,27 @@ primary model response.
 | [agent.py](agent.py#L63) | `AgentRunControl.drain_steers` | `None` | `list[str]` | Return and consume queued user steering messages in FIFO order. |
 | [agent.py](agent.py#L132) | `AgentRunOutcome.to_dict` | `None` | `dict[str, Any]` | Return the credential-free terminal fields for lifecycle events. |
 | [agent.py](agent.py#L142) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
-| [agent.py](agent.py#L272) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
-| [agent.py](agent.py#L283) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
-| [agent.py](agent.py#L298) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
-| [agent.py](agent.py#L311) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
-| [agent.py](agent.py#L326) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L335) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L363) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
-| [agent.py](agent.py#L390) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
-| [agent.py](agent.py#L430) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
-| [agent.py](agent.py#L464) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
-| [agent.py](agent.py#L488) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
-| [agent.py](agent.py#L498) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
-| [agent.py](agent.py#L515) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
-| [agent.py](agent.py#L526) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
-| [agent.py](agent.py#L546) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
-| [agent.py](agent.py#L560) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
-| [agent.py](agent.py#L591) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
-| [agent.py](agent.py#L623) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
-| [agent.py](agent.py#L705) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
-| [agent.py](agent.py#L1178) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
-| [agent.py](agent.py#L1182) | `Agent.clear_context` | `None` | `None` | Clear context. |
+| [agent.py](agent.py#L277) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
+| [agent.py](agent.py#L288) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
+| [agent.py](agent.py#L303) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
+| [agent.py](agent.py#L316) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
+| [agent.py](agent.py#L331) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L340) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L368) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
+| [agent.py](agent.py#L395) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
+| [agent.py](agent.py#L435) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
+| [agent.py](agent.py#L469) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
+| [agent.py](agent.py#L493) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
+| [agent.py](agent.py#L503) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
+| [agent.py](agent.py#L521) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
+| [agent.py](agent.py#L532) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
+| [agent.py](agent.py#L552) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
+| [agent.py](agent.py#L566) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
+| [agent.py](agent.py#L597) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
+| [agent.py](agent.py#L629) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
+| [agent.py](agent.py#L711) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
+| [agent.py](agent.py#L1188) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
+| [agent.py](agent.py#L1192) | `Agent.clear_context` | `None` | `None` | Clear context. |
 | [cli.py](cli.py#L58) | `_load_tools` | `names: list[str]` | `list[Tool]` | Import and call tool factories by short name. |
 | [cli.py](cli.py#L94) | `_build_parser` | `None` | `argparse.ArgumentParser` | Implement `_build_parser`. |
 | [cli.py](cli.py#L178) | `_cmd_list_backends` | `None` | `None` | Print every registered backend provider. |
@@ -555,9 +555,10 @@ primary model response.
 | [swarm_module/swarm.py](swarm_module/swarm.py#L396) | `AgentSwarm.view_snapshot` | `None` | `dict[str, Any]` | Return a safe, UI-oriented snapshot of the active graph topology. |
 | [swarm_module/swarm.py](swarm_module/swarm.py#L405) | `AgentSwarm.finalize_tasks` | `None` | `dict[str, str]` | Close unfinished dynamic tasks after any terminal run outcome. |
 | [swarm_module/swarm.py](swarm_module/swarm.py#L417) | `AgentSwarm.request_shutdown` | `None` | `None` | Stop scheduling further runnable Agents in the active graph. |
-| [swarm_module/swarm.py](swarm_module/swarm.py#L432) | `AgentSwarm.total_usage` | `None` | `dict[str, int]` | Aggregate token usage across every registered Agent. |
-| [swarm_module/swarm.py](swarm_module/swarm.py#L459) | `AgentSwarm.agent_usage` | `None` | `dict[str, dict[str, int]]` | Project token usage for every currently registered Agent. |
-| [swarm_module/swarm.py](swarm_module/swarm.py#L492) | `AgentSwarm.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None` | `dict[str, Any]` | Execute the graph with an optional cooperative Agent control. |
+| [swarm_module/swarm.py](swarm_module/swarm.py#L433) | `AgentSwarm._cumulative_usage` | `agent: object` | `object` | Return the Agent counter that survives across lifecycles. |
+| [swarm_module/swarm.py](swarm_module/swarm.py#L447) | `AgentSwarm.total_usage` | `None` | `dict[str, int]` | Aggregate lifetime token usage across every registered Agent. |
+| [swarm_module/swarm.py](swarm_module/swarm.py#L475) | `AgentSwarm.agent_usage` | `None` | `dict[str, dict[str, int]]` | Project token usage for every currently registered Agent. |
+| [swarm_module/swarm.py](swarm_module/swarm.py#L509) | `AgentSwarm.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None` | `dict[str, Any]` | Execute the graph with an optional cooperative Agent control. |
 | [swarm_module/task_bus.py](swarm_module/task_bus.py#L71) | `TaskReport.as_dict` | `None` | `dict[str, Any]` | Return a JSON-ready representation of the structured report. |
 | [swarm_module/task_bus.py](swarm_module/task_bus.py#L101) | `TaskBus.create_assignment` | `recipient: str, reply_to: str, objective: str, handoff: str, expected_artifacts: Iterable[str], task_id: str, plan_task_id: str` | `TaskAssignment` | Create and enqueue one immutable subagent work package. |
 | [swarm_module/task_bus.py](swarm_module/task_bus.py#L153) | `TaskBus.claim_assignment` | `task_id: str` | `TaskAssignment` | Mark one queued assignment running and return its work package. |
@@ -606,6 +607,12 @@ primary model response.
 | [tests/test_tool_validation.py](tests/test_tool_validation.py#L39) | `ToolCallValidationTests.test_wrong_type_and_unknown_name_return_model_visible_errors` | `None` | `None` | Implement `ToolCallValidationTests.test_wrong_type_and_unknown_name_return_model_visible_errors`. |
 | [tests/test_tool_validation.py](tests/test_tool_validation.py#L48) | `ToolCallValidationTests.test_compact_schema_rejects_unexpected_field` | `None` | `None` | Implement `ToolCallValidationTests.test_compact_schema_rejects_unexpected_field`. |
 | [tests/test_tool_validation.py](tests/test_tool_validation.py#L58) | `ContextSaveDiagnosticTests.test_agent_chains_handler_save_failure` | `None` | `None` | Implement `ContextSaveDiagnosticTests.test_agent_chains_handler_save_failure`. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L31) | `_ScriptedFetcher.default_backend_config` | `None` | `LLMBackendConfig` | Implement `_ScriptedFetcher.default_backend_config`. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L34) | `_ScriptedFetcher.fetch` | `**_: object` | `LLMOutput` | Implement `_ScriptedFetcher.fetch`. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L48) | `_make_agent` | `fetcher: _ScriptedFetcher` | `Agent` | Implement `_make_agent`. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L71) | `UsageLifetimeTests.test_lifetime_usage_accumulates_across_runs` | `None` | `None` | The per-run counter resets; the lifetime counter keeps growing. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L90) | `UsageLifetimeTests.test_swarm_total_usage_does_not_drop_on_new_lifecycle` | `None` | `None` | The Session aggregate is monotonic across consecutive runs. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L109) | `UsageLifetimeTests.test_swarm_falls_back_to_usage_without_lifetime_counter` | `None` | `None` | Legacy agents expose their per-run counter instead of dropping out. |
 | [tool_executor.py](tool_executor.py#L59) | `ToolExecutor.execute` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `Any` | Run a single tool handler in the calling thread. |
 | [tool_executor.py](tool_executor.py#L67) | `ToolExecutor.execute_timed` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `ToolExecution` | Run a single tool handler in the calling thread with timing. |
 | [tool_executor.py](tool_executor.py#L98) | `ToolExecutor.execute_batch` | `handlers: List[Callable[..., Any] \| None], arguments_list: List[Dict[str, Any]], controller: ExecutionController \| None` | `List[Any]` | Execute tool handlers in parallel using a thread pool. |
@@ -765,6 +772,9 @@ primary model response.
 | [tests/test_multimodal.py](tests/test_multimodal.py#L20) | `NativeVisionTests` | `None` | `unittest.TestCase` | Provide `NativeVisionTests` behavior. |
 | [tests/test_tool_validation.py](tests/test_tool_validation.py#L17) | `ToolCallValidationTests` | `None` | `unittest.TestCase` | Ensure malformed model calls become recoverable tool feedback. |
 | [tests/test_tool_validation.py](tests/test_tool_validation.py#L55) | `ContextSaveDiagnosticTests` | `None` | `unittest.TestCase` | Retain the actual context-save failure through the Agent boundary. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L20) | `_ScriptedFetcher` | `input_tokens: int, output_tokens: int` | `object` | Return a fixed provider usage for every model round. |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L61) | `_LegacyAgent` | `usage: TokenUsage` | `object` | Agent-shaped fake without ``lifetime_usage`` (older builds / hosts). |
+| [tests/test_usage_lifetime.py](tests/test_usage_lifetime.py#L68) | `UsageLifetimeTests` | `None` | `unittest.TestCase` | A new lifecycle must not erase the Session's earlier usage. |
 | [tool_executor.py](tool_executor.py#L13) | `ToolBatchCancelled` | `None` | `RuntimeError` | Signal that force-stop abandoned the active tool batch. |
 | [tool_executor.py](tool_executor.py#L18) | `ToolExecution` | `result: Any, duration_ms: int` | `object` | One tool handler execution: its result and wall-clock duration. |
 | [tool_executor.py](tool_executor.py#L31) | `ToolExecutor` | `max_concurrency: int` | `object` | Execute tool handlers in parallel using a thread pool. |
