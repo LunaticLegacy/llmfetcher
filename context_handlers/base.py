@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 from ..llm_types import LLMOutput, TokenUsage
+from ..multimodal import UserMessage
 
 
 class ContextHandler(ABC):
@@ -23,6 +24,11 @@ class ContextHandler(ABC):
         visible.
         """
         self._extra_usage: TokenUsage = TokenUsage()
+        # ``save`` remains a boolean compatibility API, but callers need the
+        # original OS/serialization failure to diagnose a rejected checkpoint.
+        # This is transient diagnostic state and is never persisted alongside
+        # conversation content.
+        self.last_save_error: Exception | None = None
 
     @property
     def extra_usage(self) -> TokenUsage:
@@ -52,13 +58,15 @@ class ContextHandler(ABC):
     @abstractmethod
     def add_user_message(
         self,
-        message: str,
+        message: "str | UserMessage",
     ) -> None:
         """
         Append an User input to conversation history.
 
         Args:
-            message: The original user input.
+            message: The original user input. Either plain text or a
+                :class:`~llmfetcher.multimodal.UserMessage` carrying image
+                references; implementations preserve references when present.
         """
 
     @abstractmethod

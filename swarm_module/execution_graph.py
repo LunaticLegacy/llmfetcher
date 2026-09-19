@@ -1472,6 +1472,7 @@ class ExecutionGraph:
         message: str,
         max_rounds: int | None = None,
         control: AgentRunControl | None = None,
+        target_agent: str | None = None,
     ) -> dict[str, Any]:
         """Execute the graph using dependency-driven concurrent scheduling.
 
@@ -1495,6 +1496,9 @@ class ExecutionGraph:
                 Optional cooperative control. A registry implementing
                 ``for_agent(name)`` supplies independent Agent-scoped views;
                 legacy controls are still shared unchanged.
+            target_agent:
+                Optional concrete Agent to execute in isolation. Its normal
+                predecessors and successors are not scheduled for this turn.
 
         Returns:
             Mapping from every executed agent name to its raw output. A failed
@@ -1518,9 +1522,11 @@ class ExecutionGraph:
         with self._topology_lock:
             if not self.agent_dict:
                 return {}
+            if target_agent is not None and target_agent not in self.agent_dict:
+                raise KeyError(f"Unknown Agent: {target_agent}")
         self._shutdown_requested.clear()
 
-        self._emit("graph", "", "graph:start", message)
+        self._emit("graph", "", "graph:start", str(message))
 
         with self._topology_lock:
             remaining_dependencies = {
@@ -1533,11 +1539,14 @@ class ExecutionGraph:
             # browser turns. Their terminal assignment must not turn them
             # into implicit roots on every later ``run`` invocation.
             ready = deque(
-                name
-                for name, dependency_count in remaining_dependencies.items()
-                if dependency_count == 0
-                and task_states.get(self._task_by_agent.get(name, ""))
-                not in {"completed", "failed", "interrupted", "cancelled"}
+                (target_agent,)
+                if target_agent is not None else (
+                    name
+                    for name, dependency_count in remaining_dependencies.items()
+                    if dependency_count == 0
+                    and task_states.get(self._task_by_agent.get(name, ""))
+                    not in {"completed", "failed", "interrupted", "cancelled"}
+                )
             )
 
             if not ready:
@@ -1584,7 +1593,8 @@ class ExecutionGraph:
                 (ready or running or not self._dynamic_ready.empty())
                 and not self._shutdown_requested.is_set()
             ):
-                self._drain_dynamic_ready(ready, remaining_dependencies)
+                if target_agent is None:
+                    self._drain_dynamic_ready(ready, remaining_dependencies)
                 # --- submit ready agents up to the concurrency limit ----
                 while (
                     ready
@@ -1597,14 +1607,20 @@ class ExecutionGraph:
                         is_routing_node = agent_name in self._routing_nodes
                         if agent_name not in self.agent_dict:
                             continue
-                        input_message = self._build_input(
-                            agent_name=agent_name,
-                            initial_message=message,
-                            outputs=outputs,
+                        input_message = (
+                            message if target_agent is not None else self._build_input(
+                                agent_name=agent_name,
+                                initial_message=message,
+                                outputs=outputs,
+                            )
                         )
                         routing_fn = self._routers.get(agent_name)
                         agent_instance = self.agent_dict.get(agent_name)
                         task_id = self._task_by_agent.get(agent_name)
+                        if target_agent is not None:
+                            # A browser-targeted turn is a fresh user turn,
+                            # never a replay of an older task assignment.
+                            task_id = None
 
                     # A targeted stop closes queued work without submitting it
                     # to the executor and immediately informs the coordinator.
@@ -1786,6 +1802,10 @@ class ExecutionGraph:
                         routing_fn = self._routers.get(agent_name)
                         successors = tuple(self._successors.get(agent_name, ()))
                         router_scope = set(self._router_scopes.get(agent_name, successors))
+                    if target_agent is not None:
+                        # A targeted user turn is deliberately not a graph
+                        # traversal.  The selected Agent alone receives it.
+                        continue
                     if routing_fn is not None:
                         output_text = self._output_to_text(outputs[agent_name])
                         selected = list(routing_fn(output_text))
@@ -1811,12 +1831,12 @@ class ExecutionGraph:
 
         # --- final validation: detect deadlocks -------------------------
         with self._topology_lock:
-            never_ran = [
+            never_ran = ([] if target_agent is not None else [
                 n for n in self.agent_dict
                 if n not in outputs
                 and n not in self._routing_nodes
                 and n not in routed_out
-            ]
+            ])
         if never_ran:
             unresolved = {
                 n: remaining_dependencies.get(n, -1)

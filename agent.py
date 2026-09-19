@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .multimodal import UserMessage, ImageToolResult
+
 import threading
 import time
 import json
@@ -167,6 +169,7 @@ class Agent:
         default_max_tokens: int = 32768,
         enable_stop_turn: bool = False,
         default_stream: bool = False,
+        output_reasoning: bool = True,
         tool_result_transformer: Callable[[str, str, str], str] | None = None,
     ):
         """Initialize one tool-using Agent.
@@ -213,6 +216,7 @@ class Agent:
         self.default_max_rounds = default_max_rounds
         self.default_max_tokens = default_max_tokens
         self.default_stream = default_stream
+        self.output_reasoning = output_reasoning
         self.tool_result_transformer = tool_result_transformer
 
         # Handle the tool, and make the tool executor.
@@ -247,6 +251,11 @@ class Agent:
 
         # Cumulative token usage across all rounds of the most recent run.
         self.usage: TokenUsage = TokenUsage()
+        # Cumulative token usage across every run this Agent has executed.
+        # Unlike ``usage`` it is never reset when a new lifecycle starts, so
+        # the Session aggregate preserves earlier lifecycles instead of
+        # dropping back to the newest run's totals.
+        self.lifetime_usage: TokenUsage = TokenUsage()
 
         # hook system
         self.hooks: list[ExecutionHook] = []
@@ -478,7 +487,7 @@ class Agent:
             "context",
             self._agent_name_in_graph,
             event_type,
-            message,
+            str(message),
             data=data,
         )
 
@@ -502,6 +511,7 @@ class Agent:
             if not isinstance(record, UsageRecord):
                 continue
             add_usage(self.usage, record.usage)
+            add_usage(self.lifetime_usage, record.usage)
             self._emit(
                 "agent", name, "agent:internal_usage",
                 f"Internal {record.kind} LLM call",
@@ -572,7 +582,18 @@ class Agent:
         if self.context_path is None:
             return True
         if not self.context_handler.save(self.context_path):
-            raise ContextSaveError(f"Could not save context checkpoint: {self.context_path}")
+            cause = getattr(self.context_handler, "last_save_error", None)
+            detail = (
+                f" ({type(cause).__name__}: {str(cause)[:500]})"
+                if isinstance(cause, Exception)
+                else ""
+            )
+            error = ContextSaveError(
+                f"Could not save context checkpoint: {self.context_path}{detail}"
+            )
+            if isinstance(cause, Exception):
+                raise error from cause
+            raise error
         return True
 
     def _fetch_model_with_force_stop(
@@ -633,6 +654,8 @@ class Agent:
         calls: list[LLMToolCall] = []
         channel = "content"
         tool_payload: list[str] = []
+        tool_stream_index = 0
+        tool_stream_call_id: str | None = None
         controller = control if _supports_force_control(control) else None
         backend = self.llm_fetcher.default_backend_config
         # The fetcher fills this per-call accumulator with the provider's
@@ -652,6 +675,12 @@ class Agent:
             if chunk == "\n<tool_call>\n":
                 channel = "tool_call"
                 tool_payload = []
+                tool_stream_call_id = f"stream_{round_idx}_{tool_stream_index}"
+                tool_stream_index += 1
+                self._emit(
+                    "agent", name, "agent:tool_call_started", "Streaming tool call",
+                    data={"round": round_idx, "call_id": tool_stream_call_id},
+                )
                 continue
             if chunk == "\n</tool_call>\n":
                 channel = "content"
@@ -661,14 +690,36 @@ class Agent:
                     payload = {}
                 if isinstance(payload, dict) and isinstance(payload.get("name"), str):
                     arguments = payload.get("arguments", {})
-                    calls.append(LLMToolCall(
+                    call = LLMToolCall(
                         name=payload["name"],
                         arguments=arguments if isinstance(arguments, dict) else {},
                         call_id=str(payload["call_id"]) if payload.get("call_id") else None,
-                    ))
+                    )
+                    calls.append(call)
+                    self._emit(
+                        "agent", name, "agent:tool_call_ready", "Tool call arguments ready",
+                        data={
+                            "round": round_idx,
+                            "call_id": call.call_id or tool_stream_call_id,
+                            "stream_call_id": tool_stream_call_id,
+                            "name": call.name,
+                            "args": call.arguments,
+                            "arguments": call.arguments,
+                        },
+                    )
+                tool_stream_call_id = None
                 continue
             if channel == "tool_call":
                 tool_payload.append(chunk)
+                self._emit(
+                    "agent", name, "agent:stream_delta", "Streamed tool arguments",
+                    data={
+                        "round": round_idx,
+                        "channel": "tool_arguments",
+                        "call_id": tool_stream_call_id,
+                        "delta": chunk,
+                    },
+                )
                 continue
             target = reasoning if channel == "reasoning" else content
             target.append(chunk)
@@ -752,7 +803,7 @@ class Agent:
             "agent",
             name,
             "agent:start",
-            message,
+            str(message),
             data={
                 "backend": {
                     "name": backend.name,
@@ -815,7 +866,8 @@ class Agent:
                 f"LLM request round {round_idx}",
                 data={
                     "round": round_idx,
-                    "message": message,
+                    "message": str(message),
+                    **({'images': message.images} if isinstance(message, UserMessage) else {}),
                     "msg": message_input,
                     "system_prompt": prompt,
                     "temperature": temperature,
@@ -839,6 +891,7 @@ class Agent:
                     temperature=temperature,
                     context_handler=self.context_handler,
                     max_tokens=resolved_max_tokens,
+                    output_reasoning=self.output_reasoning,
                     tools=self.tool_handler.get_all_tools(),
                     on_request=lambda request: self._emit(
                         "agent", name, "agent:remote_request",
@@ -871,8 +924,12 @@ class Agent:
                     raise
                 raise AgentRunStopped(str(exc)) from exc
 
-            # Accumulate token usage across rounds.
-            add_usage(self.usage, copy_usage(result.usage))
+            # Accumulate token usage across rounds and across the Agent's
+            # lifetime; the lifetime total is never reset at the start of a
+            # run, so a new lifecycle cannot erase earlier accounting.
+            step_usage = copy_usage(result.usage)
+            add_usage(self.usage, step_usage)
+            add_usage(self.lifetime_usage, step_usage)
             # ``agent:round`` remains the lifecycle/transcript event.  This
             # separate record is the canonical per-call usage ledger entry,
             # so consumers need not infer hidden calls from round payloads.
@@ -900,6 +957,7 @@ class Agent:
                 requested_calls = [
                     {
                         "call_id": tool_call.call_id or f"call_{index}",
+                        "stream_call_id": f"stream_{round_idx}_{index}",
                         "name": tool_call.name,
                         "args": tool_call.arguments,
                     }
@@ -919,6 +977,17 @@ class Agent:
                     )
                 )
                 tool_started_at = time.perf_counter()
+                for call in requested_calls:
+                    self._emit(
+                        "agent", name, "agent:tool_started", "Tool execution started",
+                        data={
+                            "round": round_idx,
+                            "call_id": call["call_id"],
+                            "stream_call_id": call.get("stream_call_id"),
+                            "name": call["name"],
+                            "started_at": time.time(),
+                        },
+                    )
                 try:
                     executions = self.tool_executor.execute_batch_timed(
                         handlers,
@@ -950,7 +1019,8 @@ class Agent:
                             call_id,
                             result_text,
                         )
-                    tool_results[call_id] = result_text
+                    tool_results[call_id] = (ImageToolResult(result_text, raw_result.images)
+                                            if isinstance(raw_result, ImageToolResult) else result_text)
                 have_tool_call = True
 
                 # Preserve typed outcomes for event consumers while the model
@@ -966,7 +1036,8 @@ class Agent:
                     completed_calls.append({
                         **call,
                         "ok": result_ok,
-                        "result": raw_result,
+                        "result": ({'text': raw_result.text, 'images': raw_result.images}
+                                   if isinstance(raw_result, ImageToolResult) else raw_result),
                         "duration_ms": execution.duration_ms,
                     })
                 self._emit(
@@ -1100,14 +1171,20 @@ class Agent:
             # persistence and the complete tool batch, preserving one step.
             steers = control.drain_steers() if control is not None else []
             if steers:
+                steer_messages = [str(steer) for steer in steers]
+                steer_ids = [
+                    steer_id for steer_id in
+                    (getattr(steer, "steer_id", None) for steer in steers)
+                    if isinstance(steer_id, str) and steer_id
+                ]
                 for steer in steers:
-                    self.context_handler.add_user_message(message=steer)
+                    self.context_handler.add_user_message(message=str(steer))
                 self._drain_internal_usage(name)
-                message = steers[-1]
+                message = steer_messages[-1]
                 self._emit(
                     "agent", name, "agent:steer_applied",
-                    f"Applied {len(steers)} steering message(s)",
-                    data={"round": round_idx, "messages": steers},
+                    f"Applied {len(steer_messages)} steering message(s)",
+                    data={"round": round_idx, "messages": steer_messages, "steer_ids": steer_ids},
                 )
 
             if not have_tool_call and not steers:

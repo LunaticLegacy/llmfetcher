@@ -17,6 +17,7 @@ import re
 from typing import Iterable, Sequence
 
 from ..llm_types import LLMContext
+from ..multimodal import image_reference_markers
 
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
@@ -150,23 +151,35 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _record_search_text(record: LLMContext) -> str:
-    """Construct the local lexical index text for one raw context record."""
+    """Construct the local lexical index text for one raw context record.
+
+    Image references contribute their byte-free markers so an image-only turn
+    stays lexically discoverable by attachment id without indexing bytes.
+    """
     parts = [record.content, record.content_reasoning]
+    parts.extend(image_reference_markers(record.images))
     for tool_info in record.tool_calls:
         parts.append(tool_info.call.name)
         parts.append(str(tool_info.call.arguments))
+        parts.extend(image_reference_markers(tool_info.images))
         if tool_info.result:
             parts.append(tool_info.result)
     return "\n".join(part for part in parts if part)
 
 
 def _bounded_record_text(record: LLMContext, limit: int) -> str:
-    """Render a source record with one total character cap."""
+    """Render a source record with one total character cap.
+
+    Image bytes never enter the rendered evidence, but each durable reference
+    is surfaced as a marker so a caller can reopen it by attachment id.
+    """
     parts = [f"[{record.role} @ timeline {record.timeline}]", record.content]
+    parts.extend(image_reference_markers(record.images))
     if record.content_reasoning:
         parts.extend(("Reasoning:", record.content_reasoning))
     for tool_info in record.tool_calls:
         parts.append(f"Tool {tool_info.call.name}: {tool_info.call.arguments}")
+        parts.extend(image_reference_markers(tool_info.images))
         if tool_info.result:
             parts.append(f"Result: {tool_info.result}")
     text = "\n".join(part for part in parts if part)

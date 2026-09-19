@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..llm_types import LLMOutput, Tool, ToolParameter, ToolSchema
+from ..multimodal import image_reference_markers
 from .base import ContextHandler
 from .linear import CompactionFetcher, ContextHandlerLinear
 
@@ -183,11 +184,11 @@ class RetrievedContextHandler(ContextHandler):
 
     # -- ContextHandler interface -------------------------------------------
 
-    def add_user_message(self, message: str) -> None:
+    def add_user_message(self, message: "str | UserMessage") -> None:
         self.linear.add_user_message(message)
         self._message_count += 1
         if self._should_retrieve():
-            self.retrieve(message)
+            self.retrieve(str(message))
 
     def add_assistant_message(
         self,
@@ -476,10 +477,20 @@ class RetrievedContextHandler(ContextHandler):
 
         msgs = getattr(self.linear, "messages", [])
         if msgs:
-            parts.append(self._messages_to_text(
-                [{"role": m.role, "content": m.content} for m in msgs
-                 if hasattr(m, "role") and hasattr(m, "content")]
-            ))
+            rendered = []
+            for m in msgs:
+                if not hasattr(m, "role") or not hasattr(m, "content"):
+                    continue
+                rendered.append({
+                    "role": m.role,
+                    "content": m.content,
+                    "images": list(getattr(m, "images", []) or []),
+                    "tool_calls": [
+                        {"name": ti.call.name, "images": list(getattr(ti, "images", []) or [])}
+                        for ti in (getattr(m, "tool_calls", []) or [])
+                    ],
+                })
+            parts.append(self._messages_to_text(rendered))
         elif hasattr(self.linear, "build_messages"):
             parts.append(self._messages_to_text(self.linear.build_messages()))
 
@@ -654,13 +665,13 @@ class RetrievedContextHandler(ContextHandler):
             role = msg.get("role", "")
             content = msg.get("content", "") or ""
             if role == "user":
-                parts.append(f"## User\n\n{content}")
+                parts.append(f"## User\n\n{content}{_image_markers(msg.get('images'))}")
             elif role == "assistant":
-                parts.append(f"## Assistant\n\n{content}")
+                parts.append(f"## Assistant\n\n{content}{_image_markers(msg.get('images'))}")
                 for tc in msg.get("tool_calls", []):
-                    parts.append(f"[Tool: {tc.get('name', '?')}]")
+                    parts.append(f"[Tool: {tc.get('name', '?')}]{_image_markers(tc.get('images'))}")
             elif role == "tool":
-                parts.append(f"[Tool result: {content[:2000]}]")
+                parts.append(f"[Tool result: {content[:2000]}]{_image_markers(msg.get('images'))}")
         return "\n\n".join(parts)
 
     @staticmethod
@@ -692,6 +703,12 @@ class RetrievedContextHandler(ContextHandler):
         slug = re.sub(r"[^\w\s-]", "", text.lower())
         slug = re.sub(r"[-\s]+", "-", slug)
         return slug.strip("-")[:60]
+
+
+def _image_markers(images: Any) -> str:
+    """Render byte-free image provenance markers for one archived message."""
+    markers = image_reference_markers(images)
+    return "\n" + "\n".join(markers) if markers else ""
 
 
 def _render_retrieved_memory(sessions: list[dict[str, Any]]) -> str:

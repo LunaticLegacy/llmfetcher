@@ -6,6 +6,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence, List
 from ..llm_types import LLMOutput, LLMToolCall, Tool
 from ._tool_schemas import to_openai_tool_schemas
 from .base import LLMBackendHandler, ToolDefinition, ToolSchemaDict
+from ..multimodal import openai_image_messages, bounded_resolver
 
 
 class OpenAIHandler(LLMBackendHandler):
@@ -253,7 +254,8 @@ class OpenAIHandler(LLMBackendHandler):
         stream: bool,
         tools: List["Tool"] = None,
     ):
-        messages = self._normalize_messages(messages)
+        messages = self._normalize_messages(openai_image_messages(
+            messages, bounded_resolver(getattr(self.fetcher, 'image_resolver', None))))
         kwargs = {
             "model": self.backend.model,
             "messages": messages,
@@ -271,4 +273,3 @@ class OpenAIHandler(LLMBackendHandler):
             kwargs["stream_options"] = {"include_usage": True}
         kwargs.update(self.backend.extra)
         return self.client.chat.completions.create(**kwargs)
-

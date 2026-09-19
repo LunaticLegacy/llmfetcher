@@ -31,6 +31,7 @@ import uuid
 from ..context_handlers.base import ContextHandler
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
+from ..multimodal import ImageToolResult, UserMessage, validate_images
 from ..llm_types import LLMContext, LLMOutput
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
@@ -194,16 +195,24 @@ class GraphContextHandler(ContextHandler):
 
     # -- ContextHandler interface -------------------------------------------
 
-    def add_user_message(self, message: str) -> None:
-        """Append a user message and trigger retrieval when due."""
+    def add_user_message(self, message: "str | UserMessage") -> None:
+        """Append a user message and trigger retrieval when due.
+
+        Accepts a plain string or a ``UserMessage``; image references are
+        preserved on the pending record so the durable linear history (and
+        its checkpoint) never silently loses them.
+        """
         timeline = self.linear._round + 1
         self._pending.append(LLMContext(
-            role="user", timeline=timeline, content=message,
+            role="user",
+            timeline=timeline,
+            content=str(message),
+            images=validate_images(message.images) if isinstance(message, UserMessage) else [],
         ))
         self.linear.add_user_message(message)
         self._message_count += 1
         if self._should_retrieve():
-            self.retrieve(message)
+            self.retrieve(str(message))
 
     def add_assistant_message(
         self,

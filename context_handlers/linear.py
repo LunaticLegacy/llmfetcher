@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..multimodal import UserMessage, ImageToolResult, validate_images
+
 import json
 import os
 import time
@@ -118,6 +120,7 @@ def read_persisted_context_page(
     *,
     before_timeline: int | None = None,
     limit: int = _CONTEXT_PAGE_SIZE,
+    include_archive: bool = False,
 ) -> tuple[list[LLMContext], int | None, int]:
     """Read one reverse-timeline page without loading the full checkpoint.
 
@@ -125,6 +128,9 @@ def read_persisted_context_page(
         path: Context pointer JSON or legacy full-JSON checkpoint path.
         before_timeline: Exclusive older-than timeline cursor, if supplied.
         limit: Maximum returned entries. Values are bounded to 200.
+        include_archive: Include compacted transcript rows for a read-only
+            history projection.  Keep this ``False`` when hydrating an Agent:
+            archived rows must not be restored into its active model context.
 
     Returns:
         Chronological page entries, the next older cursor or ``None``, and
@@ -144,6 +150,14 @@ def read_persisted_context_page(
         if not isinstance(database_name, str) or Path(database_name).name != database_name:
             raise ValueError("checkpoint database reference is invalid")
         database = target.with_name(database_name)
+        # Compaction atomically moves completed rounds from ``messages`` to
+        # ``archive``.  The two tables are therefore disjoint, but a chat
+        # transcript needs their shared timeline, not only the active tail.
+        source = (
+            "SELECT timeline, payload FROM messages "
+            "UNION ALL SELECT timeline, payload FROM archive"
+            if include_archive else "SELECT timeline, payload FROM messages"
+        )
         where = ""
         values: tuple[object, ...] = ()
         if before_timeline is not None:
@@ -151,15 +165,17 @@ def read_persisted_context_page(
             values = (before_timeline,)
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
         try:
-            total_row = connection.execute("SELECT COUNT(*) FROM messages").fetchone()
+            total_row = connection.execute(
+                f"SELECT COUNT(*) FROM ({source})"
+            ).fetchone()
             rows = connection.execute(
-                "SELECT timeline, payload FROM messages" + where + " ORDER BY timeline DESC LIMIT ?",
+                f"SELECT timeline, payload FROM ({source})" + where + " ORDER BY timeline DESC LIMIT ?",
                 (*values, bounded),
             ).fetchall()
             older = False
             if rows:
                 older = connection.execute(
-                    "SELECT EXISTS(SELECT 1 FROM messages WHERE timeline < ?)",
+                    f"SELECT EXISTS(SELECT 1 FROM ({source}) WHERE timeline < ?)",
                     (rows[-1][0],),
                 ).fetchone()[0] == 1
         finally:
@@ -327,7 +343,7 @@ class ContextHandlerLinear(ContextHandler):
     @override
     def add_user_message(
         self,
-        message: str,
+        message: "str | UserMessage",
     ) -> None:
         """
         Append an User input to conversation history.
@@ -336,13 +352,16 @@ class ContextHandlerLinear(ContextHandler):
         round counter (``_round``).
 
         Args:
-            message: The original user input.
+            message: The original user input; a
+                :class:`~llmfetcher.multimodal.UserMessage` also carries
+                durable image references that are preserved verbatim.
         """
         self._round += 1
         self.messages.append(LLMContext(
             role="user",
             timeline=self._round,
-            content=message,
+            content=str(message),
+            images=validate_images(message.images) if isinstance(message, UserMessage) else [],
         ))
         # A real user turn supersedes any derived resume prompt left by a
         # previous compaction.
@@ -377,7 +396,10 @@ class ContextHandlerLinear(ContextHandler):
         for index, tc in enumerate(message.tool_calls):
             call_id = tc.call_id or f"call_{index}"
             result = bounded_tool_results.get(call_id) if bounded_tool_results else None
-            tool_calls.append(ToolInfo(call=tc, result=result))
+            tool_calls.append(ToolInfo(
+                call=tc, result=str(result) if result is not None else None,
+                images=validate_images(result.images) if isinstance(result, ImageToolResult) else [],
+            ))
 
         self.messages.append(LLMContext(
             role=message.role,
@@ -630,7 +652,8 @@ class ContextHandlerLinear(ContextHandler):
         """
         if not tool_results:
             return {}
-        return {call_id: str(raw_value) for call_id, raw_value in tool_results.items()}
+        return {call_id: raw_value if isinstance(raw_value, ImageToolResult) else str(raw_value)
+                for call_id, raw_value in tool_results.items()}
 
     def compaction_request_preview(self) -> CompactionRequestPreview:
         """Build the exact compaction request parameters without sending them.
@@ -736,9 +759,11 @@ class ContextHandlerLinear(ContextHandler):
             ``True`` on success, ``False`` on write failure.
         """
         if not path:
+            self.last_save_error = ValueError("context checkpoint path is required")
             return False
             
         try:
+            self.last_save_error = None
             generation = checkpoint_generation or uuid.uuid4().hex
             target = Path(path)
             database = target.with_suffix(target.suffix + ".sqlite3")
@@ -785,7 +810,8 @@ class ContextHandlerLinear(ContextHandler):
             self.checkpoint_generation = generation
             self.graph_checkpoint = committed_graph
             return True
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError) as exc:
+            self.last_save_error = exc
             return False
 
     @override
@@ -958,11 +984,12 @@ class ContextHandlerLinear(ContextHandler):
                 call_id=tc["call"].get("call_id"),
                 source=tc["call"].get("source"),
             )
-            tool_calls.append(ToolInfo(call=call, result=tc.get("result")))
+            tool_calls.append(ToolInfo(call=call, result=tc.get("result"), images=validate_images(tc.get('images', []))))
         return LLMContext(
             role=data["role"],
             timeline=data["timeline"],
             content=data.get("content", ""),
+            images=validate_images(data.get('images', [])),
             content_reasoning=data.get("content_reasoning", ""),
             tool_calls=tool_calls,
             tags=data.get("tags", []),
@@ -1044,14 +1071,16 @@ class ContextHandlerLinear(ContextHandler):
                     for i, ti in enumerate(item.tool_calls)
                 ],
             })
-            for ti in item.tool_calls:
+            for i, ti in enumerate(item.tool_calls):
                 if ti.result is not None:
-                    call_id = ti.call.call_id or f"call_{id(ti)}"
+                    call_id = ti.call.call_id or f"call_{i}"
                     messages.append({
                         "role": "tool",
                         "content": str(ti.result),
                         "tool_call_id": call_id,
+                        **({'images': validate_images(ti.images)} if ti.images else {}),
                     })
             return
 
-        messages.append({"role": role, "content": content or ""})
+        messages.append({"role": role, "content": content or "",
+                         **({'images': validate_images(item.images)} if item.images else {})})

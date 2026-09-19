@@ -137,6 +137,7 @@ class LLMFetcher:
         self,
         backends: Optional[Sequence[LLMBackendConfig]] = None,
         default_backend: Optional[str] = None,
+        image_resolver=None,
     ) -> None:
         """Initialise the multi-backend dispatcher.
 
@@ -163,6 +164,7 @@ class LLMFetcher:
                 "At least one LLMBackendConfig is required."
             )
 
+        self.image_resolver = image_resolver
         self.backends: Dict[str, LLMBackendConfig] = {}
         self.backend_order: List[str] = []
         self.handlers: Dict[str, LLMBackendHandler] = {}
@@ -292,15 +294,47 @@ class LLMFetcher:
     # -- request execution helpers ----------------------------------------------
 
     @staticmethod
+    def _is_timeout_exception(exc: Exception) -> bool:
+        """Recognise transport/provider timeouts without importing optional SDKs.
+
+        Typed exceptions and their causal chain are authoritative.  Class-name
+        and message checks are compatibility fallbacks for SDK wrappers that
+        erase the original transport exception.
+        """
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        messages: list[str] = []
+        timeout_type_names = {
+            "Timeout", "TimeoutError", "ReadTimeout", "WriteTimeout",
+            "ConnectTimeout", "PoolTimeout", "ServerTimeoutError",
+            "APITimeoutError",
+        }
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, (TimeoutError, asyncio.TimeoutError)):
+                return True
+            if any(
+                cls.__name__ in timeout_type_names or cls.__name__.endswith("Timeout")
+                for cls in type(current).__mro__
+            ):
+                return True
+            messages.append(str(current).casefold())
+            current = current.__cause__ or current.__context__
+        return any(
+            marker in message
+            for message in messages
+            for marker in ("timeout", "timed out", "deadline exceeded")
+        )
+
+    @staticmethod
     def _normalize_exception(
         backend: LLMBackendConfig, exc: Exception
     ) -> LLMError:
         """Normalise any exception into an ``LLMError`` subclass.
 
-        ``TimeoutError`` and ``asyncio.TimeoutError`` become
-        ``LLMTimeoutError``.  Exceptions whose message contains "timeout"
-        (case-insensitive) are also classified as timeouts.  All other
-        exceptions become a plain ``LLMError``.
+        Typed timeout exceptions, provider/transport timeout classes in the
+        causal chain, and known compatibility wording become
+        ``LLMTimeoutError``. All other exceptions become a plain ``LLMError``.
 
         Args:
             backend: The backend that raised the exception (used for the
@@ -314,9 +348,7 @@ class LLMFetcher:
         message = (
             f"Backend '{backend.name}' ({backend.provider}) failed: {exc}"
         )
-        if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
-            return LLMTimeoutError(message)
-        if "timeout" in str(exc).lower():
+        if LLMFetcher._is_timeout_exception(exc):
             return LLMTimeoutError(message)
         return LLMError(message)
 
@@ -722,6 +754,16 @@ class LLMFetcher:
         """
         handler = self._handler_for_backend(backend)
         provider_tools = handler.prepare_tools(tools)
+        images = [ref for message in messages for ref in message.get('images', [])]
+        # Provider support is an explicit allow-list, never a capability
+        # guess: unsupported backends must reject image input rather than
+        # silently flattening it to text (design: "Unsupported providers
+        # reject image input"). Extend this set only with a handler that
+        # owns native wire conversion.
+        if images and backend.provider not in {'openai', 'anthropic'}:
+            raise ValueError(f'Provider {backend.provider} does not support native image inputs')
+        if len(images) > 20:
+            raise ValueError('Image request exceeds 20 images; compact or start a new conversation')
         snapshot = RemoteRequestSnapshot(
             model=backend.model,
             messages=list(messages),
@@ -774,6 +816,8 @@ class LLMFetcher:
         if context is not None:
             messages.extend(context.build_messages())
         if msg:
-            messages.append({"role": "user", "content": msg})
+            from .multimodal import UserMessage, validate_images
+            messages.append({"role": "user", "content": str(msg),
+                             **({'images': validate_images(msg.images)} if isinstance(msg, UserMessage) and msg.images else {})})
         
         return messages

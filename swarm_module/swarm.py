@@ -429,13 +429,29 @@ class AgentSwarm:
     # Execution
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cumulative_usage(agent: object) -> object:
+        """Return the Agent counter that survives across lifecycles.
+
+        ``Agent.usage`` is reset at the start of every ``run`` so it only
+        describes the most recent lifecycle. ``Agent.lifetime_usage`` keeps
+        accumulating, so a new lifecycle must never make the Session
+        aggregate drop back to the newest run. Agents without the lifetime
+        counter (older builds, lightweight fakes) fall back to ``usage``.
+        """
+        lifetime = getattr(agent, "lifetime_usage", None)
+        if lifetime is not None:
+            return lifetime
+        return getattr(agent, "usage", None)
+
     def total_usage(self) -> dict[str, int]:
-        """Aggregate token usage across every registered Agent.
+        """Aggregate lifetime token usage across every registered Agent.
 
         Each Agent accumulates its own per-round usage plus internal
-        compaction / graph-memory LLM usage in ``Agent.usage`` after
-        ``run`` completes. This sums them across the coordinator and all
-        (dynamically dispatched) workers.
+        compaction / graph-memory LLM usage in ``Agent.lifetime_usage``,
+        which is never reset by a later ``run``. This sums the lifetime
+        counter across the coordinator and all (dynamically dispatched)
+        workers, so starting a new lifecycle preserves earlier usage.
 
         Returns:
             Dict with ``input``, ``output``, ``total``, ``cached`` and
@@ -446,7 +462,7 @@ class AgentSwarm:
             for agent in self._graph.agent_dict.values():
                 if agent is None:
                     continue
-                usage = getattr(agent, "usage", None)
+                usage = self._cumulative_usage(agent)
                 if usage is None:
                     continue
                 totals["input"] += usage.input_tokens or 0
@@ -460,9 +476,10 @@ class AgentSwarm:
         """Project token usage for every currently registered Agent.
 
         The projection uses the same normalized dimensions as
-        :meth:`total_usage`, so a client can safely sum the individual rows
-        and compare them to the session aggregate.  Dynamic workers remain in
-        the graph after completion and are consequently included.
+        :meth:`total_usage` and likewise reads each Agent's lifetime counter,
+        so a client can safely sum the individual rows and compare them to the
+        session aggregate.  Dynamic workers remain in the graph after
+        completion and are consequently included.
 
         Returns:
             Agent name to non-negative input/output/total/cached/reasoning
@@ -473,7 +490,7 @@ class AgentSwarm:
             for name, agent in self._graph.agent_dict.items():
                 if agent is None:
                     continue
-                usage = getattr(agent, "usage", None)
+                usage = self._cumulative_usage(agent)
                 if usage is None:
                     result[name] = {
                         "input": 0, "output": 0, "total": 0,
@@ -494,6 +511,7 @@ class AgentSwarm:
         message: str,
         max_rounds: int | None = None,
         control: AgentRunControl | None = None,
+        target_agent: str | None = None,
     ) -> dict[str, Any]:
         """Execute the graph with an optional cooperative Agent control.
 
@@ -502,6 +520,8 @@ class AgentSwarm:
             max_rounds: Maximum rounds passed to every Agent; ``0`` means
                 unlimited and ``None`` uses each Agent's default.
             control: Optional stop and steering source shared by graph Agents.
+            target_agent: When set, run only this named Agent and do not
+                activate its graph neighbours.  ``None`` runs the workflow.
 
         Returns:
             Mapping of agent name to its raw output; a failed agent maps to an
@@ -512,6 +532,9 @@ class AgentSwarm:
             propagating a scheduler exception.
         """
         try:
-            return self._graph.run(message, max_rounds=max_rounds, control=control)
+            return self._graph.run(
+                message, max_rounds=max_rounds, control=control,
+                target_agent=target_agent,
+            )
         finally:
             self._graph.finalize_tasks()
