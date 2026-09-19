@@ -63,13 +63,13 @@ reporting used by Angelus sessions.
 | [execution_graph.py](execution_graph.py#L1397) | `ExecutionGraph._restore_declarative_mapper` | `agent_name: str, mode: str` | `None` | Install one persisted declarative mapper without emitting an event. |
 | [execution_graph.py](execution_graph.py#L1412) | `ExecutionGraph._restore_declarative_router` | `agent_name: str, targets: list[str]` | `None` | Install one persisted fixed router without emitting an event. |
 | [execution_graph.py](execution_graph.py#L1431) | `ExecutionGraph.dynamic_get_info` | `None` | `str` | Return the current graph state as a structured string. |
-| [execution_graph.py](execution_graph.py#L1470) | `ExecutionGraph.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None` | `dict[str, Any]` | Execute the graph using dependency-driven concurrent scheduling. |
-| [execution_graph.py](execution_graph.py#L1844) | `ExecutionGraph._activate` | `completed_agent: str, successors: Iterable[str], remaining_dependencies: dict[str, int], ready: deque[str]` | `None` | Decrement dependency counts and enqueue ready successors. |
-| [execution_graph.py](execution_graph.py#L1870) | `ExecutionGraph._drain_dynamic_ready` | `ready: deque[str], remaining_dependencies: dict[str, int]` | `None` | Move explicitly dispatched workers into the local scheduler queue. |
-| [execution_graph.py](execution_graph.py#L1912) | `ExecutionGraph._render_assignment` | `assignment: TaskAssignment` | `str` | Render one explicit task package without exposing raw peer output. |
-| [execution_graph.py](execution_graph.py#L1931) | `ExecutionGraph._build_input` | `agent_name: str, initial_message: str, outputs: Mapping[str, Any]` | `str` | Build the input message for one ready agent. |
-| [execution_graph.py](execution_graph.py#L1977) | `ExecutionGraph._output_to_text` | `output: Any` | `str` | Convert an arbitrary agent output into message text. |
-| [execution_graph.py](execution_graph.py#L1990) | `ExecutionGraph._require_agent` | `agent_name: str` | `None` | Ensure that an agent name is registered. |
+| [execution_graph.py](execution_graph.py#L1470) | `ExecutionGraph.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None, target_agent: str \| None` | `dict[str, Any]` | Execute the graph using dependency-driven concurrent scheduling. |
+| [execution_graph.py](execution_graph.py#L1864) | `ExecutionGraph._activate` | `completed_agent: str, successors: Iterable[str], remaining_dependencies: dict[str, int], ready: deque[str]` | `None` | Decrement dependency counts and enqueue ready successors. |
+| [execution_graph.py](execution_graph.py#L1890) | `ExecutionGraph._drain_dynamic_ready` | `ready: deque[str], remaining_dependencies: dict[str, int]` | `None` | Move explicitly dispatched workers into the local scheduler queue. |
+| [execution_graph.py](execution_graph.py#L1932) | `ExecutionGraph._render_assignment` | `assignment: TaskAssignment` | `str` | Render one explicit task package without exposing raw peer output. |
+| [execution_graph.py](execution_graph.py#L1951) | `ExecutionGraph._build_input` | `agent_name: str, initial_message: str, outputs: Mapping[str, Any]` | `str` | Build the input message for one ready agent. |
+| [execution_graph.py](execution_graph.py#L1997) | `ExecutionGraph._output_to_text` | `output: Any` | `str` | Convert an arbitrary agent output into message text. |
+| [execution_graph.py](execution_graph.py#L2010) | `ExecutionGraph._require_agent` | `agent_name: str` | `None` | Ensure that an agent name is registered. |
 | [swarm.py](swarm.py#L66) | `AgentSwarm.add_agent` | `agent_name: str, agent_instance: Agent` | `bool` | Register an ``Agent`` instance as a graph vertex. |
 | [swarm.py](swarm.py#L70) | `AgentSwarm.save` | `path: str \| Path, agent_serializer: Callable[[str, Agent], dict[str, Any]] \| None, callback_serializer: CallbackSerializer \| None` | `Path` | Persist a quiescent Swarm through its execution-graph snapshot. |
 | [swarm.py](swarm.py#L99) | `AgentSwarm.load` | `path: str \| Path, agent_resolver: AgentResolver \| None, callback_resolver: CallbackResolver \| None` | `'AgentSwarm'` | Restore a quiescent Swarm without exposing its private graph field. |
@@ -103,7 +103,7 @@ reporting used by Angelus sessions.
 | [swarm.py](swarm.py#L433) | `AgentSwarm._cumulative_usage` | `agent: object` | `object` | Return the Agent counter that survives across lifecycles. |
 | [swarm.py](swarm.py#L447) | `AgentSwarm.total_usage` | `None` | `dict[str, int]` | Aggregate lifetime token usage across every registered Agent. |
 | [swarm.py](swarm.py#L475) | `AgentSwarm.agent_usage` | `None` | `dict[str, dict[str, int]]` | Project token usage for every currently registered Agent. |
-| [swarm.py](swarm.py#L509) | `AgentSwarm.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None` | `dict[str, Any]` | Execute the graph with an optional cooperative Agent control. |
+| [swarm.py](swarm.py#L509) | `AgentSwarm.run` | `message: str, max_rounds: int \| None, control: AgentRunControl \| None, target_agent: str \| None` | `dict[str, Any]` | Execute the graph with an optional cooperative Agent control. |
 | [task_bus.py](task_bus.py#L71) | `TaskReport.as_dict` | `None` | `dict[str, Any]` | Return a JSON-ready representation of the structured report. |
 | [task_bus.py](task_bus.py#L101) | `TaskBus.create_assignment` | `recipient: str, reply_to: str, objective: str, handoff: str, expected_artifacts: Iterable[str], task_id: str, plan_task_id: str` | `TaskAssignment` | Create and enqueue one immutable subagent work package. |
 | [task_bus.py](task_bus.py#L153) | `TaskBus.claim_assignment` | `task_id: str` | `TaskAssignment` | Mark one queued assignment running and return its work package. |

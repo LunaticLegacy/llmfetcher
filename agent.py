@@ -169,6 +169,7 @@ class Agent:
         default_max_tokens: int = 32768,
         enable_stop_turn: bool = False,
         default_stream: bool = False,
+        output_reasoning: bool = True,
         tool_result_transformer: Callable[[str, str, str], str] | None = None,
     ):
         """Initialize one tool-using Agent.
@@ -215,6 +216,7 @@ class Agent:
         self.default_max_rounds = default_max_rounds
         self.default_max_tokens = default_max_tokens
         self.default_stream = default_stream
+        self.output_reasoning = output_reasoning
         self.tool_result_transformer = tool_result_transformer
 
         # Handle the tool, and make the tool executor.
@@ -652,6 +654,8 @@ class Agent:
         calls: list[LLMToolCall] = []
         channel = "content"
         tool_payload: list[str] = []
+        tool_stream_index = 0
+        tool_stream_call_id: str | None = None
         controller = control if _supports_force_control(control) else None
         backend = self.llm_fetcher.default_backend_config
         # The fetcher fills this per-call accumulator with the provider's
@@ -671,6 +675,12 @@ class Agent:
             if chunk == "\n<tool_call>\n":
                 channel = "tool_call"
                 tool_payload = []
+                tool_stream_call_id = f"stream_{round_idx}_{tool_stream_index}"
+                tool_stream_index += 1
+                self._emit(
+                    "agent", name, "agent:tool_call_started", "Streaming tool call",
+                    data={"round": round_idx, "call_id": tool_stream_call_id},
+                )
                 continue
             if chunk == "\n</tool_call>\n":
                 channel = "content"
@@ -680,14 +690,36 @@ class Agent:
                     payload = {}
                 if isinstance(payload, dict) and isinstance(payload.get("name"), str):
                     arguments = payload.get("arguments", {})
-                    calls.append(LLMToolCall(
+                    call = LLMToolCall(
                         name=payload["name"],
                         arguments=arguments if isinstance(arguments, dict) else {},
                         call_id=str(payload["call_id"]) if payload.get("call_id") else None,
-                    ))
+                    )
+                    calls.append(call)
+                    self._emit(
+                        "agent", name, "agent:tool_call_ready", "Tool call arguments ready",
+                        data={
+                            "round": round_idx,
+                            "call_id": call.call_id or tool_stream_call_id,
+                            "stream_call_id": tool_stream_call_id,
+                            "name": call.name,
+                            "args": call.arguments,
+                            "arguments": call.arguments,
+                        },
+                    )
+                tool_stream_call_id = None
                 continue
             if channel == "tool_call":
                 tool_payload.append(chunk)
+                self._emit(
+                    "agent", name, "agent:stream_delta", "Streamed tool arguments",
+                    data={
+                        "round": round_idx,
+                        "channel": "tool_arguments",
+                        "call_id": tool_stream_call_id,
+                        "delta": chunk,
+                    },
+                )
                 continue
             target = reasoning if channel == "reasoning" else content
             target.append(chunk)
@@ -859,6 +891,7 @@ class Agent:
                     temperature=temperature,
                     context_handler=self.context_handler,
                     max_tokens=resolved_max_tokens,
+                    output_reasoning=self.output_reasoning,
                     tools=self.tool_handler.get_all_tools(),
                     on_request=lambda request: self._emit(
                         "agent", name, "agent:remote_request",
@@ -924,6 +957,7 @@ class Agent:
                 requested_calls = [
                     {
                         "call_id": tool_call.call_id or f"call_{index}",
+                        "stream_call_id": f"stream_{round_idx}_{index}",
                         "name": tool_call.name,
                         "args": tool_call.arguments,
                     }
@@ -943,6 +977,17 @@ class Agent:
                     )
                 )
                 tool_started_at = time.perf_counter()
+                for call in requested_calls:
+                    self._emit(
+                        "agent", name, "agent:tool_started", "Tool execution started",
+                        data={
+                            "round": round_idx,
+                            "call_id": call["call_id"],
+                            "stream_call_id": call.get("stream_call_id"),
+                            "name": call["name"],
+                            "started_at": time.time(),
+                        },
+                    )
                 try:
                     executions = self.tool_executor.execute_batch_timed(
                         handlers,
