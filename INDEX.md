@@ -107,29 +107,30 @@ primary model response.
 | [agent.py](agent.py#L61) | `AgentRunControl.should_stop` | `None` | `bool` | Return whether the Agent should stop at the current safe boundary. |
 | [agent.py](agent.py#L65) | `AgentRunControl.drain_steers` | `None` | `list[str]` | Return and consume queued user steering messages in FIFO order. |
 | [agent.py](agent.py#L134) | `AgentRunOutcome.to_dict` | `None` | `dict[str, Any]` | Return the credential-free terminal fields for lifecycle events. |
-| [agent.py](agent.py#L144) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
-| [agent.py](agent.py#L281) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
-| [agent.py](agent.py#L292) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
-| [agent.py](agent.py#L307) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
-| [agent.py](agent.py#L320) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
-| [agent.py](agent.py#L335) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L344) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L372) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
-| [agent.py](agent.py#L399) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
-| [agent.py](agent.py#L439) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
-| [agent.py](agent.py#L473) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
-| [agent.py](agent.py#L497) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
-| [agent.py](agent.py#L508) | `Agent._request_index` | `request: Any, round_idx: int` | `dict[str, Any]` | Build a durable, content-free index for one remote LLM request. |
-| [agent.py](agent.py#L552) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
-| [agent.py](agent.py#L570) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
-| [agent.py](agent.py#L581) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
-| [agent.py](agent.py#L601) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
-| [agent.py](agent.py#L615) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
-| [agent.py](agent.py#L646) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
-| [agent.py](agent.py#L678) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
-| [agent.py](agent.py#L790) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
-| [agent.py](agent.py#L1280) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
-| [agent.py](agent.py#L1284) | `Agent.clear_context` | `None` | `None` | Clear context. |
+| [agent.py](agent.py#L215) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
+| [agent.py](agent.py#L352) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
+| [agent.py](agent.py#L363) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
+| [agent.py](agent.py#L378) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
+| [agent.py](agent.py#L391) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
+| [agent.py](agent.py#L406) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L415) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
+| [agent.py](agent.py#L443) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
+| [agent.py](agent.py#L470) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
+| [agent.py](agent.py#L510) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
+| [agent.py](agent.py#L544) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
+| [agent.py](agent.py#L568) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
+| [agent.py](agent.py#L579) | `Agent._request_index` | `request: Any, round_idx: int` | `RequestIndex` | Build a durable, content-free index for one remote LLM request. |
+| [agent.py](agent.py#L631) | `Agent._request_content` | `request: Any, round_idx: int` | `RequestContent` | Build a capped, readable preview of one dispatch-ready request. |
+| [agent.py](agent.py#L669) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
+| [agent.py](agent.py#L687) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
+| [agent.py](agent.py#L698) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
+| [agent.py](agent.py#L718) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
+| [agent.py](agent.py#L732) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
+| [agent.py](agent.py#L763) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
+| [agent.py](agent.py#L795) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
+| [agent.py](agent.py#L907) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
+| [agent.py](agent.py#L1407) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
+| [agent.py](agent.py#L1411) | `Agent.clear_context` | `None` | `None` | Clear context. |
 | [cli.py](cli.py#L58) | `_load_tools` | `names: list[str]` | `list[Tool]` | Import and call tool factories by short name. |
 | [cli.py](cli.py#L94) | `_build_parser` | `None` | `argparse.ArgumentParser` | Implement `_build_parser`. |
 | [cli.py](cli.py#L178) | `_cmd_list_backends` | `None` | `None` | Print every registered backend provider. |
@@ -204,7 +205,10 @@ primary model response.
 | [agent.py](agent.py#L100) | `ContextSaveError` | `None` | `RuntimeError` | Signal that a configured Agent checkpoint could not be committed. |
 | [agent.py](agent.py#L104) | `AgentRunTermination` | `None` | `str, Enum` | Explicit terminal classifications for one completed Agent invocation. |
 | [agent.py](agent.py#L116) | `AgentRunOutcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `object` | Inspectable terminal state for an Agent run. |
-| [agent.py](agent.py#L160) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, enable_stop_turn: bool, default_stream: bool, output_reasoning: bool, tool_result_transformer: Callable[[str, str, str], str] \| None` | `object` | Provide `Agent` behavior. |
+| [agent.py](agent.py#L145) | `RequestIndex` | `request_id: str, round: int, model: str, stream: bool, message_count: int, message_roles: dict[str, int], source_ids: list[str], input_characters: int, estimated_input_tokens: int, input_sha256: str, tool_count: int, tool_schema_hashes: list[str], temperature: Any, max_tokens: Any` | `object` | Content-free index for one remote LLM request. |
+| [agent.py](agent.py#L182) | `RequestContentMessage` | `role: str, content: str, characters: int, truncated: bool` | `object` | One capped context message retained only for the console ledger. |
+| [agent.py](agent.py#L199) | `RequestContent` | `round: int, model: str, messages: list[RequestContentMessage], omitted_messages: int` | `object` | Capped, readable preview of one dispatch-ready request. |
+| [agent.py](agent.py#L231) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, enable_stop_turn: bool, default_stream: bool, output_reasoning: bool, tool_result_transformer: Callable[[str, str, str], str] \| None` | `object` | Provide `Agent` behavior. |
 | [events.py](events.py#L16) | `ExecutionEvent` | `timestamp: float, source: str, agent_name: str, event_type: str, message: str, data: Any` | `object` | Immutable event emitted during swarm execution. |
 | [llm_fetcher.py](llm_fetcher.py#L53) | `StreamUsageCapture` | `None` | `object` | Per-call mutable capture of raw provider usage from one stream. |
 | [llm_fetcher.py](llm_fetcher.py#L103) | `LLMFetcher` | `backends: Optional[Sequence[LLMBackendConfig]], default_backend: Optional[str], image_resolver: Any` | `object` | Route chat requests across one or more configured LLM backends. |
