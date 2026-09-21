@@ -5,7 +5,9 @@ from .multimodal import UserMessage, ImageToolResult
 import threading
 import time
 import json
-from dataclasses import dataclass
+import hashlib
+import uuid
+from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import List, Any, Optional, Dict, Protocol, Callable
 from pathlib import Path
@@ -137,6 +139,77 @@ class AgentRunOutcome:
             "detail": self.detail,
             "has_output": self.output is not None,
         }
+
+
+@dataclass(frozen=True)
+class RequestIndex:
+    """Content-free index for one remote LLM request.
+
+    Args:
+        request_id: Opaque identifier distinct from any provider response id.
+        round: One-based Agent round the request belongs to.
+        model: Provider model identifier the request targeted.
+        stream: Whether the request asked for a streaming response.
+        message_count: Number of context messages sent.
+        message_roles: Count of messages per role.
+        source_ids: Durable provenance identifiers copied from messages.
+        input_characters: Total characters across message content.
+        estimated_input_tokens: Rough token estimate used for sizing only.
+        input_sha256: Hash of the canonical serialized message body.
+        tool_count: Number of registered tools sent.
+        tool_schema_hashes: Truncated hash per serialized tool schema.
+        temperature: Sampling temperature supplied to the provider.
+        max_tokens: Completion budget supplied to the provider.
+    """
+
+    request_id: str
+    round: int
+    model: str
+    stream: bool
+    message_count: int
+    message_roles: dict[str, int]
+    source_ids: list[str]
+    input_characters: int
+    estimated_input_tokens: int
+    input_sha256: str
+    tool_count: int
+    tool_schema_hashes: list[str]
+    temperature: Any
+    max_tokens: Any
+
+
+@dataclass(frozen=True)
+class RequestContentMessage:
+    """One capped context message retained only for the console ledger.
+
+    Args:
+        role: Message role supplied to the model.
+        content: Capped textual rendering of the message content.
+        characters: Full character count before capping.
+        truncated: Whether ``content`` was shortened for the ledger.
+    """
+
+    role: str
+    content: str
+    characters: int
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class RequestContent:
+    """Capped, readable preview of one dispatch-ready request.
+
+    Args:
+        round: One-based Agent round the request belongs to.
+        model: Provider model identifier the request targeted.
+        messages: Capped tail of context messages sent to the provider.
+        omitted_messages: Count of earlier messages dropped from that tail.
+    """
+
+    round: int
+    model: str
+    messages: list[RequestContentMessage]
+    omitted_messages: int
 
 
 def _tool_result_text(value: Any) -> str:
@@ -502,6 +575,97 @@ class Agent:
             "reasoning": usage.reasoning_tokens or 0,
         }
 
+    @staticmethod
+    def _request_index(request: Any, round_idx: int) -> RequestIndex:
+        """Build a durable, content-free index for one remote LLM request.
+
+        The request body is intentionally never copied into the lifecycle
+        event.  Operators can inspect composition, provenance identifiers,
+        schema hashes, and sizing without persisting prompts or tool payloads.
+        """
+        messages = request.messages if isinstance(getattr(request, "messages", None), list) else []
+        encoded = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
+        roles: dict[str, int] = {}
+        source_ids: list[str] = []
+        characters = 0
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "unknown")
+            roles[role] = roles.get(role, 0) + 1
+            for key in ("record_id", "sequence", "timeline"):
+                value = message.get(key)
+                if value is not None:
+                    source_ids.append(f"{key}:{value}")
+            content = message.get("content", "")
+            characters += len(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str))
+        tool_hashes = []
+        for tool in getattr(request, "tools", []) or []:
+            serialized = json.dumps(tool, ensure_ascii=False, sort_keys=True, default=str)
+            tool_hashes.append(hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16])
+        return RequestIndex(
+            request_id=uuid.uuid4().hex,
+            round=round_idx,
+            model=str(getattr(request, "model", "")),
+            stream=bool(getattr(request, "stream", False)),
+            message_count=len(messages),
+            message_roles=roles,
+            source_ids=list(dict.fromkeys(source_ids)),
+            input_characters=characters,
+            estimated_input_tokens=max(0, round(characters / 4)),
+            input_sha256=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+            tool_count=len(tool_hashes),
+            tool_schema_hashes=tool_hashes,
+            temperature=getattr(request, "temperature", None),
+            max_tokens=getattr(request, "max_tokens", None),
+        )
+
+    # The calls ledger renders a readable per-round request preview.  A later
+    # round resends the whole running context, so persisting every message
+    # verbatim would grow the journal quadratically; each message is capped and
+    # only the newest tail window is retained.
+    _REQUEST_CONTENT_MESSAGE_LIMIT = 32
+    _REQUEST_CONTENT_CHARACTER_LIMIT = 2000
+
+    @classmethod
+    def _request_content(cls, request: Any, round_idx: int) -> RequestContent:
+        """Build a capped, readable preview of one dispatch-ready request.
+
+        The companion index from ``_request_index`` never carries content; this
+        payload is the only request body allowed to reach the ledger, and it is
+        deliberately emitted as a sibling top-level key so the console
+        ``events()`` projection (which reads only ``request``) stays index-only.
+
+        Args:
+            request: Provider-prepared ``RemoteRequestSnapshot`` for one attempt.
+            round_idx: One-based round the request belongs to.
+
+        Returns:
+            ``model`` plus a capped tail of ``messages`` and the count of
+            earlier messages dropped from that tail.
+        """
+        raw_messages = getattr(request, "messages", None)
+        messages = [message for message in raw_messages
+                    if isinstance(message, dict)] if isinstance(raw_messages, list) else []
+        kept = messages[-cls._REQUEST_CONTENT_MESSAGE_LIMIT:]
+        rendered: list[dict[str, Any]] = []
+        for message in kept:
+            content = message.get("content", "")
+            text = content if isinstance(content, str) else json.dumps(
+                content, ensure_ascii=False, default=str)
+            rendered.append(RequestContentMessage(
+                role=str(message.get("role") or "unknown"),
+                content=text[:cls._REQUEST_CONTENT_CHARACTER_LIMIT],
+                characters=len(text),
+                truncated=len(text) > cls._REQUEST_CONTENT_CHARACTER_LIMIT,
+            ))
+        return RequestContent(
+            round=round_idx,
+            model=str(getattr(request, "model", "")),
+            messages=rendered,
+            omitted_messages=max(0, len(messages) - len(kept)),
+        )
+
     def _drain_internal_usage(self, name: str) -> None:
         """Publish and aggregate each hidden LLM call once, if supported."""
         drain = getattr(self.context_handler, "drain_usage_records", None)
@@ -866,7 +1030,10 @@ class Agent:
                 f"LLM request round {round_idx}",
                 data={
                     "round": round_idx,
+                    # The journal hook overwrites ``message`` with the event
+                    # description, so keep the real user text under its own key.
                     "message": str(message),
+                    "user_message": str(message),
                     **({'images': message.images} if isinstance(message, UserMessage) else {}),
                     "msg": message_input,
                     "system_prompt": prompt,
@@ -896,7 +1063,14 @@ class Agent:
                     on_request=lambda request: self._emit(
                         "agent", name, "agent:remote_request",
                         f"Remote request prepared for round {round_idx}",
-                        data={"round": round_idx, "request": request.to_dict()},
+                        data={
+                            "round": round_idx,
+                            "request": asdict(self._request_index(request, round_idx)),
+                            # Sibling of ``request``: events() reads only
+                            # ``request``, so this never reaches the trace and a
+                            # legacy ``request.messages`` body stays ignored.
+                            "request_content": asdict(self._request_content(request, round_idx)),
+                        },
                     ),
                     on_retry=lambda retry_index: self._emit(
                         "agent", name, "agent:retry",
