@@ -28,7 +28,13 @@ class AnthropicHandler(LLMBackendHandler):
     def convert_messages(self, messages: list[dict[str, str]]) -> tuple[list[dict[str, JSONValue]], Optional[str]]:
         anthropic_messages: list[dict[str, JSONValue]] = []
         system_message: Optional[str] = None
+        pending_tool_results: list[dict[str, JSONValue]] = []
         resolver = bounded_resolver(getattr(self.fetcher, 'image_resolver', None))
+
+        def flush_tool_results() -> None:
+            if pending_tool_results:
+                anthropic_messages.append({"role": "user", "content": pending_tool_results.copy()})
+                pending_tool_results.clear()
 
         for msg in messages:
             role = msg.get("role", "")
@@ -43,27 +49,25 @@ class AnthropicHandler(LLMBackendHandler):
                 continue
             if role == "tool":
                 tool_call_id = msg.get("tool_call_id", "")
-                anthropic_messages.append(
+                pending_tool_results.append(
                     {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_call_id,
-                                "content": content,
-                            }
-                        ],
+                        "type": "tool_result",
+                        "tool_use_id": tool_call_id,
+                        "content": content,
                     }
                 )
             elif role == 'assistant' and msg.get('tool_calls'):
+                flush_tool_results()
                 blocks = [{'type': 'text', 'text': content}] if content else []
                 blocks.extend({'type': 'tool_use', 'id': call['id'],
                                'name': call['name'], 'input': call.get('arguments', {})}
                               for call in msg['tool_calls'])
                 anthropic_messages.append({'role': 'assistant', 'content': blocks})
             else:
+                flush_tool_results()
                 anthropic_messages.append({"role": role, "content": content})
 
+        flush_tool_results()
         return anthropic_messages, system_message
 
     def prepare_tools(
