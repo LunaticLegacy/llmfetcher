@@ -19,6 +19,7 @@ from ..llm_types import (
     LLMContextCompacted,
     LLMOutput,
     LLMToolCall,
+    TokenUsage,
     ToolInfo,
 )
 from ..usage_ledger import UsageRecord, copy_usage, drain_records
@@ -478,13 +479,29 @@ class ContextHandlerLinear(ContextHandler):
             },
         )
         try:
-            result: LLMOutput = self.llm_handler.fetch(
+            stream_usage = TokenUsage()
+            chunks: list[str] = []
+            for chunk in self.llm_handler.fetch_stream(
                 msg=request_preview.text,
                 system_prompt=request_preview.system_prompt,
                 temperature=request_preview.temperature,
                 max_tokens=request_preview.max_tokens,
                 context_handler=None,
+                usage_sink=stream_usage,
                 controller=controller,
+            ):
+                chunks.append(chunk)
+                self._emit_compaction_event(
+                    "context:compact_delta",
+                    "Context compaction model output",
+                    {"round": round_index, "channel": "content", "delta": chunk},
+                )
+            result = LLMOutput(
+                content="".join(chunks),
+                provider=self.llm_handler.default_backend_config.provider,
+                backend_name=self.llm_handler.default_backend_config.name,
+                model=self.llm_handler.default_backend_config.model,
+                usage=stream_usage,
             )
         except Exception as exc:
             self.last_compaction_error = f"Compaction model request failed: {exc}"
