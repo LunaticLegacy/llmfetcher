@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
 from ..llm_types import LLMOutput, TokenUsage
 from ..multimodal import UserMessage
+
+if TYPE_CHECKING:
+    from ..execution.control import ExecutionController
 
 
 class ContextHandler(ABC):
@@ -55,6 +58,19 @@ class ContextHandler(ABC):
         self._extra_usage.cached_tokens += usage.cached_tokens or 0
         self._extra_usage.reasoning_tokens += usage.reasoning_tokens or 0
 
+    def compact(self, *, controller: "ExecutionController | None" = None) -> bool:
+        """Compact this handler through its linear context implementation.
+
+        Composed handlers may override this hook to flush their own indexes
+        after the linear compaction succeeds. Keeping the operation on the
+        context-handler interface lets automatic and manual compaction share
+        the same implementation and cancellation contract.
+        """
+        linear = getattr(self, "linear", None)
+        if linear is None or linear is self:
+            raise NotImplementedError("context handler does not support compaction")
+        return bool(linear.compact(controller=controller))
+
     @abstractmethod
     def add_user_message(
         self,
@@ -79,6 +95,7 @@ class ContextHandler(ABC):
         model_duration_ms: Optional[int] = None,
         round_duration_ms: Optional[int] = None,
         created_at: Optional[float] = None,
+        controller: "ExecutionController | None" = None,
     ) -> None:
         """Record an LLM response into the conversation history.
 

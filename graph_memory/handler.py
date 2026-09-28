@@ -33,6 +33,7 @@ from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retriev
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
 from ..multimodal import ImageToolResult, UserMessage, validate_images
 from ..llm_types import LLMContext, LLMOutput
+from ..execution.control import ExecutionController
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
 from .retriever import GraphRetriever, GraphRetrievalResult, RetrievalConfig
@@ -193,6 +194,14 @@ class GraphContextHandler(ContextHandler):
         self._last_retrieved_gen = self._compaction_generation
         return result
 
+    def compact(self, *, controller: ExecutionController | None = None) -> bool:
+        """Compact the linear context and flush pending graph evidence."""
+        compacted = self.linear.compact(controller=controller)
+        if compacted:
+            self._compaction_generation += 1
+            self._flush_pending()
+        return compacted
+
     # -- ContextHandler interface -------------------------------------------
 
     def add_user_message(self, message: "str | UserMessage") -> None:
@@ -223,6 +232,7 @@ class GraphContextHandler(ContextHandler):
         model_duration_ms: Optional[int] = None,
         round_duration_ms: Optional[int] = None,
         created_at: Optional[float] = None,
+        controller: ExecutionController | None = None,
     ) -> None:
         """Append an assistant output, detect compaction and flush the graph."""
         # Snapshot before the linear handler may compact the history.
@@ -244,6 +254,7 @@ class GraphContextHandler(ContextHandler):
             model_duration_ms=model_duration_ms,
             round_duration_ms=round_duration_ms,
             created_at=created_at,
+            controller=controller,
         )
         now = (len(self.linear.messages), self.linear.abstract is not None)
         compacted = prev[0] > 0 and now[0] == 0 and now[1]

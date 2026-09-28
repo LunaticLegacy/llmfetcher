@@ -22,6 +22,7 @@ from ..llm_types import (
     ToolInfo,
 )
 from ..usage_ledger import UsageRecord, copy_usage, drain_records
+from ..execution.control import ExecutionController
 
 class CompactionFetcher(Protocol):
     """Describe the minimal LLM interface used for context compaction."""
@@ -35,6 +36,7 @@ class CompactionFetcher(Protocol):
         context_handler: Optional[ContextHandler] = None,
         backend_name: Optional[str] = None,
         tools: Any = None,
+        controller: ExecutionController | None = None,
     ) -> LLMOutput:
         """Generate one compacted context response.
 
@@ -377,6 +379,7 @@ class ContextHandlerLinear(ContextHandler):
         model_duration_ms: Optional[int] = None,
         round_duration_ms: Optional[int] = None,
         created_at: Optional[float] = None,
+        controller: ExecutionController | None = None,
     ) -> None:
         """Append an LLM output to the conversation history.
 
@@ -417,9 +420,9 @@ class ContextHandlerLinear(ContextHandler):
         context_size: int = self._estimate_context_size()
         # print(f"Current context size: {context_size} / {self.compress_threshold} | {100 * context_size / self.compress_threshold}%")
         if context_size > self.compress_threshold:
-            self.compact()
+            self.compact(controller=controller)
 
-    def compact(self) -> bool:
+    def compact(self, *, controller: ExecutionController | None = None) -> bool:
         """Compress the conversation history into a single abstract.
 
         Sends the current messages to the LLM with the compaction
@@ -481,6 +484,7 @@ class ContextHandlerLinear(ContextHandler):
                 temperature=request_preview.temperature,
                 max_tokens=request_preview.max_tokens,
                 context_handler=None,
+                controller=controller,
             )
         except Exception as exc:
             self.last_compaction_error = f"Compaction model request failed: {exc}"

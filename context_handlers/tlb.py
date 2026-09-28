@@ -7,6 +7,7 @@ from .base import ContextHandler
 from ..rag_module_tlb.core import TLBRAGHandler
 from ..llm_fetcher import LLMFetcher
 from ..llm_types import LLMOutput
+from ..execution.control import ExecutionController
 
 
 class PathStatus(Enum):
@@ -67,6 +68,7 @@ class TLBContextHandler(ContextHandler):
         model_duration_ms: Optional[int] = None,
         round_duration_ms: Optional[int] = None,
         created_at: Optional[float] = None,
+        controller: ExecutionController | None = None,
     ) -> None:
         """Record an LLM response into the conversation history.
 

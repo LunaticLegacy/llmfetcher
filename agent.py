@@ -760,6 +760,22 @@ class Agent:
             raise error
         return True
 
+    def compact_context(self, *, control: AgentRunControl | None = None) -> bool:
+        """Run the same cancellable compactor used by automatic compaction.
+
+        Hosts use this entry point for an explicit user request. The context
+        handler remains the owner of summary parsing and durable state, so an
+        explicit compaction cannot drift from automatic behavior.
+        """
+        controller = control if _supports_force_control(control) else None
+        compact = getattr(self.context_handler, "compact", None)
+        if not callable(compact):
+            raise RuntimeError("context handler does not support compaction")
+        compacted = bool(compact(controller=controller))
+        if compacted:
+            self._save_context()
+        return compacted
+
     def _fetch_model_with_force_stop(
         self,
         *,
@@ -1277,6 +1293,7 @@ class Agent:
                 model_duration_ms=model_duration_ms,
                 round_duration_ms=round_duration_ms,
                 created_at=response_completed_at,
+                controller=(control if _supports_force_control(control) else None),
             )
             self._drain_internal_usage(name)
 
