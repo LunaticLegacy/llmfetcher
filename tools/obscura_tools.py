@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import platform
-import signal
 import sqlite3
 import subprocess
 import sys
@@ -16,6 +15,7 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 
 from ..llm_types import Tool, ToolSchema, ToolParameter
 from ..execution import current_execution_controller
+from .process_runtime import attach_process_tree, close_process_tree, popen_platform_kwargs, terminate_process_tree
 
 
 # ---------------------------------------------------------------------------
@@ -49,13 +49,7 @@ def _get_obscura_bin() -> str:
 
 def _kill_process_group(process: subprocess.Popen[str]) -> None:
     """Terminate one CLI tool process and all children it started."""
-    try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        try:
-            process.kill()
-        except (OSError, ProcessLookupError):
-            pass
+    terminate_process_tree(process)
 
 
 def _run_cli(command: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -69,8 +63,9 @@ def _run_cli(command: list[str], timeout: int) -> subprocess.CompletedProcess[st
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        start_new_session=True,
+        **popen_platform_kwargs(),
     )
+    attach_process_tree(process)
     unregister = (
         controller.register_force_canceller(lambda _request: _kill_process_group(process))
         if controller is not None
@@ -85,6 +80,7 @@ def _run_cli(command: list[str], timeout: int) -> subprocess.CompletedProcess[st
     finally:
         if unregister is not None:
             unregister()
+        close_process_tree(process)
 
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 

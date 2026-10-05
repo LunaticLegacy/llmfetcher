@@ -32,11 +32,13 @@ into the shared `LLMOutput` / `TokenUsage` contract.
 | [_tool_schemas.py](_tool_schemas.py#L20) | `to_openai_tool_schemas` | `tools: Optional[Sequence[ToolDefinition]]` | `Optional[list[ToolSchemaDict]]` | Normalize runtime tools or legacy schemas into OpenAI-compatible payloads. |
 | [_tool_schemas.py](_tool_schemas.py#L36) | `to_anthropic_tool_schemas` | `tools: Optional[Sequence[ToolDefinition]]` | `Optional[list[ToolSchemaDict]]` | Normalize runtime tools or legacy schemas into Anthropic tool payloads. |
 | [anthropic.py](anthropic.py#L28) | `AnthropicHandler.convert_messages` | `messages: list[dict[str, str]]` | `tuple[list[dict[str, JSONValue]], Optional[str]]` | Implement `AnthropicHandler.convert_messages`. |
-| [anthropic.py](anthropic.py#L69) | `AnthropicHandler.prepare_tools` | `tools: Optional[Sequence[ToolDefinition]]` | `Optional[list[ToolSchemaDict]]` | Prepare tools for Anthropic's `input_schema` tool format. |
-| [anthropic.py](anthropic.py#L76) | `AnthropicHandler._normalize_anthropic_blocks` | `blocks: Iterable[object \| Mapping[str, JSONValue]]` | `tuple[str, str, list[LLMToolCall]]` | Implement `AnthropicHandler._normalize_anthropic_blocks`. |
-| [anthropic.py](anthropic.py#L108) | `AnthropicHandler.create_completion` | `messages: Any, temperature: float, max_tokens: int, stream: bool, tools: Any` | `Any` | Implement `AnthropicHandler.create_completion`. |
-| [anthropic.py](anthropic.py#L132) | `AnthropicHandler.normalize_completion_response` | `response: Any` | `LLMOutput` | Implement `AnthropicHandler.normalize_completion_response`. |
-| [anthropic.py](anthropic.py#L147) | `AnthropicHandler.iter_stream_text` | `response: Any, output_reasoning: bool, usage_capture: Any` | `Iterable[str]` | Implement `AnthropicHandler.iter_stream_text`. |
+| [anthropic.py](anthropic.py#L72) | `AnthropicHandler.prepare_tools` | `tools: Optional[Sequence[ToolDefinition]]` | `Optional[list[ToolSchemaDict]]` | Prepare tools for Anthropic's `input_schema` tool format. |
+| [anthropic.py](anthropic.py#L80) | `AnthropicHandler._wire_tool_name` | `name: str` | `str` | Implement `AnthropicHandler._wire_tool_name`. |
+| [anthropic.py](anthropic.py#L88) | `AnthropicHandler.prepare_tools_with_mapping` | `tools: Any` | `Any` | Implement `AnthropicHandler.prepare_tools_with_mapping`. |
+| [anthropic.py](anthropic.py#L108) | `AnthropicHandler._normalize_anthropic_blocks` | `blocks: Iterable[object \| Mapping[str, JSONValue]]` | `tuple[str, str, list[LLMToolCall]]` | Implement `AnthropicHandler._normalize_anthropic_blocks`. |
+| [anthropic.py](anthropic.py#L140) | `AnthropicHandler.create_completion` | `messages: Any, temperature: float, max_tokens: int, stream: bool, tools: Any` | `Any` | Implement `AnthropicHandler.create_completion`. |
+| [anthropic.py](anthropic.py#L166) | `AnthropicHandler.normalize_completion_response` | `response: Any` | `LLMOutput` | Implement `AnthropicHandler.normalize_completion_response`. |
+| [anthropic.py](anthropic.py#L181) | `AnthropicHandler.iter_stream_text` | `response: Any, output_reasoning: bool, usage_capture: Any, wire_name_to_internal_name: Optional[dict[str, str]]` | `Iterable[str]` | Implement `AnthropicHandler.iter_stream_text`. |
 | [base.py](base.py#L30) | `_UsageLike.model_dump` | `None` | `JSONObject` | Implement `_UsageLike.model_dump`. |
 | [base.py](base.py#L58) | `LLMBackendHandler.supports_backend` | `backend: LLMBackendConfig` | `bool` | Args: cls: The class to check. Should be a subclass of `LLMBackendHandler`. backend: The backend configuration to check. |
 | [base.py](base.py#L70) | `LLMBackendHandler.from_backend` | `fetcher: 'LLMFetcher', backend: LLMBackendConfig` | `'LLMBackendHandler'` | Create an instance from a backend config. |
@@ -46,17 +48,18 @@ into the shared `LLMOutput` / `TokenUsage` contract.
 | [base.py](base.py#L123) | `LLMBackendHandler.normalize_completion_response` | `response: Any` | `LLMOutput` | Implement `LLMBackendHandler.normalize_completion_response`. |
 | [base.py](base.py#L127) | `LLMBackendHandler.iter_stream_text` | `response: Any, output_reasoning: bool, usage_capture: Any` | `Iterable[str]` | Yield normalized text chunks, optionally capturing raw usage. |
 | [base.py](base.py#L150) | `LLMBackendHandler.prepare_tools` | `tools: Optional[Sequence[ToolDefinition]]` | `Optional[list[ToolSchemaDict]]` | Convert registry tools or prebuilt schemas into this provider's shape. |
-| [base.py](base.py#L167) | `LLMBackendHandler.build_chat_history` | `messages: list[dict[str, str]], tools: Optional[list[ToolSchemaDict]]` | `Any` | Implement `LLMBackendHandler.build_chat_history`. |
-| [base.py](base.py#L174) | `LLMBackendHandler.generation_config` | `temperature: float, max_tokens: int` | `JSONObject` | Generate a JSON object for the LLM backend to use as a generation configuration. Optional for inhereting classes. |
-| [base.py](base.py#L181) | `LLMBackendHandler.abort_active_request` | `None` | `bool` | Close this handler's client to interrupt an in-flight request. |
-| [base.py](base.py#L201) | `LLMBackendHandler.result_text` | `result: Any` | `str` | Implement `LLMBackendHandler.result_text`. |
-| [base.py](base.py#L204) | `LLMBackendHandler._read_field` | `value: object \| Mapping[str, JSONValue] \| None, name: str, default: object \| JSONValue \| None` | `object \| JSONValue \| None` | Read a field from a value. |
-| [base.py](base.py#L222) | `LLMBackendHandler._coerce_content_to_text` | `content: str \| Sequence[JSONValue] \| object \| None` | `str` | Implement `LLMBackendHandler._coerce_content_to_text`. |
-| [base.py](base.py#L245) | `LLMBackendHandler._usage_to_dict` | `usage: _UsageLike \| Mapping[str, JSONValue] \| None` | `JSONObject` | Deprecated: use _normalize_usage() instead. Kept for subclasses that may override this method. |
-| [base.py](base.py#L271) | `LLMBackendHandler.normalize_usage` | `usage: _UsageLike \| Mapping[str, JSONValue] \| None` | `TokenUsage` | Normalize a provider-specific usage response into a platform-irrelevant TokenUsage. |
-| [base.py](base.py#L309) | `LLMBackendHandler._parse_arguments` | `arguments: str \| Mapping[str, JSONValue] \| None` | `JSONObject` | Implement `LLMBackendHandler._parse_arguments`. |
-| [base.py](base.py#L320) | `LLMBackendHandler._extract_content` | `delta: object \| Mapping[str, JSONValue] \| None` | `Optional[str]` | Implement `LLMBackendHandler._extract_content`. |
-| [base.py](base.py#L332) | `LLMBackendHandler._extract_reasoning` | `delta: object \| Mapping[str, JSONValue] \| None` | `Optional[str]` | Implement `LLMBackendHandler._extract_reasoning`. |
+| [base.py](base.py#L167) | `LLMBackendHandler.prepare_tools_with_mapping` | `tools: Any` | `Any` | Prepare tools plus request-local wire-name mappings. |
+| [base.py](base.py#L171) | `LLMBackendHandler.build_chat_history` | `messages: list[dict[str, str]], tools: Optional[list[ToolSchemaDict]]` | `Any` | Implement `LLMBackendHandler.build_chat_history`. |
+| [base.py](base.py#L178) | `LLMBackendHandler.generation_config` | `temperature: float, max_tokens: int` | `JSONObject` | Generate a JSON object for the LLM backend to use as a generation configuration. Optional for inhereting classes. |
+| [base.py](base.py#L185) | `LLMBackendHandler.abort_active_request` | `None` | `bool` | Close this handler's client to interrupt an in-flight request. |
+| [base.py](base.py#L205) | `LLMBackendHandler.result_text` | `result: Any` | `str` | Implement `LLMBackendHandler.result_text`. |
+| [base.py](base.py#L208) | `LLMBackendHandler._read_field` | `value: object \| Mapping[str, JSONValue] \| None, name: str, default: object \| JSONValue \| None` | `object \| JSONValue \| None` | Read a field from a value. |
+| [base.py](base.py#L226) | `LLMBackendHandler._coerce_content_to_text` | `content: str \| Sequence[JSONValue] \| object \| None` | `str` | Implement `LLMBackendHandler._coerce_content_to_text`. |
+| [base.py](base.py#L249) | `LLMBackendHandler._usage_to_dict` | `usage: _UsageLike \| Mapping[str, JSONValue] \| None` | `JSONObject` | Deprecated: use _normalize_usage() instead. Kept for subclasses that may override this method. |
+| [base.py](base.py#L275) | `LLMBackendHandler.normalize_usage` | `usage: _UsageLike \| Mapping[str, JSONValue] \| None` | `TokenUsage` | Normalize a provider-specific usage response into a platform-irrelevant TokenUsage. |
+| [base.py](base.py#L313) | `LLMBackendHandler._parse_arguments` | `arguments: str \| Mapping[str, JSONValue] \| None` | `JSONObject` | Implement `LLMBackendHandler._parse_arguments`. |
+| [base.py](base.py#L324) | `LLMBackendHandler._extract_content` | `delta: object \| Mapping[str, JSONValue] \| None` | `Optional[str]` | Implement `LLMBackendHandler._extract_content`. |
+| [base.py](base.py#L336) | `LLMBackendHandler._extract_reasoning` | `delta: object \| Mapping[str, JSONValue] \| None` | `Optional[str]` | Implement `LLMBackendHandler._extract_reasoning`. |
 | [deepseek.py](deepseek.py#L58) | `DeepSeekHandler.supports_backend` | `backend: LLMBackendConfig` | `bool` | Recognise DeepSeek behind an OpenAI-compatible configuration. |
 | [deepseek.py](deepseek.py#L86) | `DeepSeekHandler._message_reasoning` | `message: object \| Mapping[str, object] \| None` | `str` | DeepSeek exposes reasoning exclusively via ``reasoning_content``. |
 | [deepseek.py](deepseek.py#L98) | `DeepSeekHandler._delta_reasoning` | `delta: object \| Mapping[str, object] \| None` | `Optional[str]` | Read ``reasoning_content`` from one streamed delta (and only that). |
@@ -86,12 +89,14 @@ into the shared `LLMOutput` / `TokenUsage` contract.
 | [onnxruntime.py](onnxruntime.py#L429) | `OnnxRuntimeGenAIHandler.iter_stream_text` | `response: Any, output_reasoning: bool` | `Iterable[str]` | Implement `OnnxRuntimeGenAIHandler.iter_stream_text`. |
 | [openai.py](openai.py#L24) | `OpenAIHandler._normalize_messages` | `messages: list[dict[str, Any]]` | `list[dict[str, Any]]` | Convert backend-neutral ``tool_calls`` to OpenAI format. |
 | [openai.py](openai.py#L54) | `OpenAIHandler.prepare_tools` | `tools: Optional[Sequence[ToolDefinition]]` | `Optional[list[ToolSchemaDict]]` | Prepare tools for OpenAI-compatible chat-completion APIs. |
-| [openai.py](openai.py#L61) | `OpenAIHandler._normalize_openai_tool_calls` | `message: object \| Mapping[str, Any] \| None` | `list[LLMToolCall]` | Implement `OpenAIHandler._normalize_openai_tool_calls`. |
-| [openai.py](openai.py#L79) | `OpenAIHandler._message_reasoning` | `message: object \| Mapping[str, Any] \| None` | `str` | Extract reasoning text from a non-streamed assistant message. |
-| [openai.py](openai.py#L96) | `OpenAIHandler._delta_reasoning` | `delta: object \| Mapping[str, Any] \| None` | `Optional[str]` | Extract reasoning text from a single streamed delta. |
-| [openai.py](openai.py#L120) | `OpenAIHandler.normalize_completion_response` | `response: Any` | `LLMOutput` | Implement `OpenAIHandler.normalize_completion_response`. |
-| [openai.py](openai.py#L139) | `OpenAIHandler.iter_stream_text` | `response: Any, output_reasoning: bool, usage_capture: Any` | `Iterable[str]` | Implement `OpenAIHandler.iter_stream_text`. |
-| [openai.py](openai.py#L248) | `OpenAIHandler.create_completion` | `messages: Any, temperature: float, max_tokens: int, stream: bool, tools: List['Tool']` | `Any` | Implement `OpenAIHandler.create_completion`. |
+| [openai.py](openai.py#L63) | `OpenAIHandler._wire_tool_name` | `name: str` | `str` | Implement `OpenAIHandler._wire_tool_name`. |
+| [openai.py](openai.py#L71) | `OpenAIHandler.prepare_tools_with_mapping` | `tools: Any` | `Any` | Implement `OpenAIHandler.prepare_tools_with_mapping`. |
+| [openai.py](openai.py#L95) | `OpenAIHandler._normalize_openai_tool_calls` | `message: object \| Mapping[str, Any] \| None` | `list[LLMToolCall]` | Implement `OpenAIHandler._normalize_openai_tool_calls`. |
+| [openai.py](openai.py#L113) | `OpenAIHandler._message_reasoning` | `message: object \| Mapping[str, Any] \| None` | `str` | Extract reasoning text from a non-streamed assistant message. |
+| [openai.py](openai.py#L130) | `OpenAIHandler._delta_reasoning` | `delta: object \| Mapping[str, Any] \| None` | `Optional[str]` | Extract reasoning text from a single streamed delta. |
+| [openai.py](openai.py#L154) | `OpenAIHandler.normalize_completion_response` | `response: Any` | `LLMOutput` | Implement `OpenAIHandler.normalize_completion_response`. |
+| [openai.py](openai.py#L173) | `OpenAIHandler.iter_stream_text` | `response: Any, output_reasoning: bool, usage_capture: Any, wire_name_to_internal_name: Optional[dict[str, str]]` | `Iterable[str]` | Implement `OpenAIHandler.iter_stream_text`. |
+| [openai.py](openai.py#L283) | `OpenAIHandler.create_completion` | `messages: Any, temperature: float, max_tokens: int, stream: bool, tools: List['Tool']` | `Any` | Implement `OpenAIHandler.create_completion`. |
 | [openvino.py](openvino.py#L14) | `_OpenVINOChatHistory.append` | `item: dict[str, JSONValue]` | `None` | Implement `_OpenVINOChatHistory.append`. |
 | [openvino.py](openvino.py#L16) | `_OpenVINOChatHistory.set_tools` | `tools: Sequence[ToolSchemaDict]` | `None` | Implement `_OpenVINOChatHistory.set_tools`. |
 | [openvino.py](openvino.py#L18) | `_OpenVINOChatHistory.set_extra_context` | `extra_context: JSONValue` | `None` | Implement `_OpenVINOChatHistory.set_extra_context`. |

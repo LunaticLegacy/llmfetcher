@@ -16,33 +16,38 @@ Angelus superproject.
 
 | Source | Function / method | Input types | Output type | Semantics |
 |---|---|---|---|---|
-| [test_execution_controller.py](test_execution_controller.py#L21) | `ExecutionControllerTests.test_graceful_stop_wakes_waiters_without_closing_resources` | `None` | `None` | Graceful mode shares the request path but preserves active I/O. |
-| [test_execution_controller.py](test_execution_controller.py#L33) | `ExecutionControllerTests.test_force_stop_escalates_and_closes_existing_and_late_resources` | `None` | `None` | Force mode upgrades graceful intent and closes every registered resource. |
-| [test_execution_controller.py](test_execution_controller.py#L46) | `ExecutionControllerTests.test_force_stop_closes_active_fetcher_transport` | `None` | `None` | A fetch request registers its transport and exits as cancellation. |
-| [test_execution_controller.py](test_execution_controller.py#L71) | `ExecutionControllerTests.test_force_stop_closes_an_active_stream` | `None` | `None` | The stream keeps its registration until its generator is closed. |
-| [test_execution_controller.py](test_execution_controller.py#L96) | `ExecutionControllerTests.test_force_stop_cancels_a_tool_batch_and_binds_its_controller` | `None` | `None` | A running tool can close its resource through the bound controller. |
-| [test_execution_controller.py](test_execution_controller.py#L130) | `ExecutionControllerTests.test_force_stop_kills_a_shell_tool_process_group` | `None` | `None` | Shell tools register their spawned process group with the controller. |
-| [test_execution_controller.py](test_execution_controller.py#L167) | `_BlockingHandler.prepare_tools` | `tools: object` | `object` | Implement `_BlockingHandler.prepare_tools`. |
-| [test_execution_controller.py](test_execution_controller.py#L170) | `_BlockingHandler.create_completion` | `**_kwargs: object` | `object` | Implement `_BlockingHandler.create_completion`. |
-| [test_execution_controller.py](test_execution_controller.py#L175) | `_BlockingHandler.abort_active_request` | `None` | `int` | Implement `_BlockingHandler.abort_active_request`. |
-| [test_execution_controller.py](test_execution_controller.py#L187) | `_StreamingHandler.create_completion` | `**_kwargs: object` | `object` | Implement `_StreamingHandler.create_completion`. |
-| [test_execution_controller.py](test_execution_controller.py#L190) | `_StreamingHandler.iter_stream_text` | `_raw: object, **_kwargs: object` | `Any` | Implement `_StreamingHandler.iter_stream_text`. |
-| [test_execution_controller.py](test_execution_controller.py#L197) | `_fetch_in_thread` | `fetcher: LLMFetcher, controller: ExecutionController, errors: list[BaseException]` | `None` | Implement `_fetch_in_thread`. |
-| [test_execution_controller.py](test_execution_controller.py#L208) | `_advance_stream` | `stream: object, errors: list[BaseException]` | `None` | Implement `_advance_stream`. |
-| [test_execution_controller.py](test_execution_controller.py#L215) | `_run_tool_batch` | `executor: ToolExecutor, controller: ExecutionController, handler: object, errors: list[BaseException], arguments: dict[str, object] \| None` | `None` | Implement `_run_tool_batch`. |
+| [test_execution_controller.py](test_execution_controller.py#L22) | `ExecutionControllerTests.test_graceful_stop_wakes_waiters_without_closing_resources` | `None` | `None` | Graceful mode shares the request path but preserves active I/O. |
+| [test_execution_controller.py](test_execution_controller.py#L34) | `ExecutionControllerTests.test_force_stop_escalates_and_closes_existing_and_late_resources` | `None` | `None` | Force mode upgrades graceful intent and closes every registered resource. |
+| [test_execution_controller.py](test_execution_controller.py#L47) | `ExecutionControllerTests.test_force_stop_closes_active_fetcher_transport` | `None` | `None` | A fetch request registers its transport and exits as cancellation. |
+| [test_execution_controller.py](test_execution_controller.py#L72) | `ExecutionControllerTests.test_force_stop_closes_an_active_stream` | `None` | `None` | The stream keeps its registration until its generator is closed. |
+| [test_execution_controller.py](test_execution_controller.py#L97) | `ExecutionControllerTests.test_force_stop_cancels_a_tool_batch_and_binds_its_controller` | `None` | `None` | A running tool can close its resource through the bound controller. |
+| [test_execution_controller.py](test_execution_controller.py#L131) | `ExecutionControllerTests.test_force_stop_kills_a_shell_tool_process_group` | `None` | `None` | Shell tools register their spawned process group with the controller. |
+| [test_execution_controller.py](test_execution_controller.py#L171) | `_BlockingHandler.prepare_tools` | `tools: object` | `object` | Implement `_BlockingHandler.prepare_tools`. |
+| [test_execution_controller.py](test_execution_controller.py#L174) | `_BlockingHandler.create_completion` | `**_kwargs: object` | `object` | Implement `_BlockingHandler.create_completion`. |
+| [test_execution_controller.py](test_execution_controller.py#L179) | `_BlockingHandler.abort_active_request` | `None` | `int` | Implement `_BlockingHandler.abort_active_request`. |
+| [test_execution_controller.py](test_execution_controller.py#L191) | `_StreamingHandler.create_completion` | `**_kwargs: object` | `object` | Implement `_StreamingHandler.create_completion`. |
+| [test_execution_controller.py](test_execution_controller.py#L194) | `_StreamingHandler.iter_stream_text` | `_raw: object, **_kwargs: object` | `Any` | Implement `_StreamingHandler.iter_stream_text`. |
+| [test_execution_controller.py](test_execution_controller.py#L201) | `_fetch_in_thread` | `fetcher: LLMFetcher, controller: ExecutionController, errors: list[BaseException]` | `None` | Implement `_fetch_in_thread`. |
+| [test_execution_controller.py](test_execution_controller.py#L212) | `_advance_stream` | `stream: object, errors: list[BaseException]` | `None` | Implement `_advance_stream`. |
+| [test_execution_controller.py](test_execution_controller.py#L219) | `_run_tool_batch` | `executor: ToolExecutor, controller: ExecutionController, handler: object, errors: list[BaseException], arguments: dict[str, object] \| None` | `None` | Implement `_run_tool_batch`. |
 | [test_multimodal.py](test_multimodal.py#L21) | `NativeVisionTests.context` | `None` | `Any` | Implement `NativeVisionTests.context`. |
 | [test_multimodal.py](test_multimodal.py#L29) | `NativeVisionTests.handler` | `None` | `Any` | Implement `NativeVisionTests.handler`. |
 | [test_multimodal.py](test_multimodal.py#L37) | `NativeVisionTests.test_openai_both_dispatch_modes_and_tool_order` | `None` | `Any` | Implement `NativeVisionTests.test_openai_both_dispatch_modes_and_tool_order`. |
 | [test_multimodal.py](test_multimodal.py#L50) | `NativeVisionTests.test_anthropic_native_tool_use_and_image_result` | `None` | `Any` | Implement `NativeVisionTests.test_anthropic_native_tool_use_and_image_result`. |
-| [test_multimodal.py](test_multimodal.py#L60) | `NativeVisionTests.test_checkpoint_and_archive_keep_only_references` | `None` | `Any` | Implement `NativeVisionTests.test_checkpoint_and_archive_keep_only_references`. |
-| [test_multimodal.py](test_multimodal.py#L74) | `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported` | `None` | `Any` | Implement `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported`. |
-| [test_multimodal.py](test_multimodal.py#L85) | `NativeVisionTests.test_validation_missing_resolver_and_request_budget` | `None` | `Any` | Implement `NativeVisionTests.test_validation_missing_resolver_and_request_budget`. |
-| [test_multimodal.py](test_multimodal.py#L100) | `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint` | `None` | `Any` | Implement `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint`. |
-| [test_multimodal.py](test_multimodal.py#L111) | `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes` | `None` | `Any` | Implement `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes`. |
-| [test_multimodal.py](test_multimodal.py#L116) | `NativeVisionTests.test_graph_handler_preserves_image_references` | `None` | `Any` | Implement `NativeVisionTests.test_graph_handler_preserves_image_references`. |
-| [test_multimodal.py](test_multimodal.py#L126) | `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable` | `None` | `Any` | Implement `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable`. |
-| [test_multimodal.py](test_multimodal.py#L137) | `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers`. |
-| [test_multimodal.py](test_multimodal.py#L146) | `NativeVisionTests.test_retrieved_archival_keeps_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_retrieved_archival_keeps_reference_markers`. |
+| [test_multimodal.py](test_multimodal.py#L61) | `NativeVisionTests.test_anthropic_tool_names_are_openai_compatible` | `None` | `Any` | Implement `NativeVisionTests.test_anthropic_tool_names_are_openai_compatible`. |
+| [test_multimodal.py](test_multimodal.py#L72) | `NativeVisionTests.test_anthropic_groups_multiple_tool_results_in_one_user_message` | `None` | `Any` | Implement `NativeVisionTests.test_anthropic_groups_multiple_tool_results_in_one_user_message`. |
+| [test_multimodal.py](test_multimodal.py#L89) | `NativeVisionTests.test_checkpoint_and_archive_keep_only_references` | `None` | `Any` | Implement `NativeVisionTests.test_checkpoint_and_archive_keep_only_references`. |
+| [test_multimodal.py](test_multimodal.py#L103) | `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported` | `None` | `Any` | Implement `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported`. |
+| [test_multimodal.py](test_multimodal.py#L114) | `NativeVisionTests.test_validation_missing_resolver_and_request_budget` | `None` | `Any` | Implement `NativeVisionTests.test_validation_missing_resolver_and_request_budget`. |
+| [test_multimodal.py](test_multimodal.py#L129) | `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint` | `None` | `Any` | Implement `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint`. |
+| [test_multimodal.py](test_multimodal.py#L140) | `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes` | `None` | `Any` | Implement `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes`. |
+| [test_multimodal.py](test_multimodal.py#L145) | `NativeVisionTests.test_graph_handler_preserves_image_references` | `None` | `Any` | Implement `NativeVisionTests.test_graph_handler_preserves_image_references`. |
+| [test_multimodal.py](test_multimodal.py#L155) | `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable` | `None` | `Any` | Implement `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable`. |
+| [test_multimodal.py](test_multimodal.py#L166) | `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers`. |
+| [test_multimodal.py](test_multimodal.py#L175) | `NativeVisionTests.test_retrieved_archival_keeps_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_retrieved_archival_keeps_reference_markers`. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L12) | `OpenAIToolNameTests.test_invalid_names_are_normalized_and_reversible` | `None` | `None` | Implement `OpenAIToolNameTests.test_invalid_names_are_normalized_and_reversible`. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L24) | `OpenAIToolNameTests.test_valid_names_are_preserved` | `None` | `None` | Implement `OpenAIToolNameTests.test_valid_names_are_preserved`. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L34) | `OpenAIToolNameTests.test_wire_name_collision_is_rejected` | `None` | `None` | Implement `OpenAIToolNameTests.test_wire_name_collision_is_rejected`. |
 | [test_tool_validation.py](test_tool_validation.py#L20) | `ToolCallValidationTests.setUp` | `None` | `None` | Implement `ToolCallValidationTests.setUp`. |
 | [test_tool_validation.py](test_tool_validation.py#L29) | `ToolCallValidationTests._execute` | `call: LLMToolCall` | `object` | Implement `ToolCallValidationTests._execute`. |
 | [test_tool_validation.py](test_tool_validation.py#L33) | `ToolCallValidationTests.test_missing_required_field_returns_model_visible_error` | `None` | `None` | Implement `ToolCallValidationTests.test_missing_required_field_returns_model_visible_error`. |
@@ -60,10 +65,11 @@ Angelus superproject.
 
 | Source | Class | Constructor / field input types | Base(s) | Semantics |
 |---|---|---|---|---|
-| [test_execution_controller.py](test_execution_controller.py#L18) | `ExecutionControllerTests` | `None` | `unittest.TestCase` | Verify one stop request governs resource cancellation and observation. |
-| [test_execution_controller.py](test_execution_controller.py#L160) | `_BlockingHandler` | `None` | `object` | Minimal provider double whose close wakes a blocked completion call. |
-| [test_execution_controller.py](test_execution_controller.py#L180) | `_StreamingHandler` | `None` | `_BlockingHandler` | Provider double that emits one chunk then blocks on the transport. |
+| [test_execution_controller.py](test_execution_controller.py#L19) | `ExecutionControllerTests` | `None` | `unittest.TestCase` | Verify one stop request governs resource cancellation and observation. |
+| [test_execution_controller.py](test_execution_controller.py#L164) | `_BlockingHandler` | `None` | `object` | Minimal provider double whose close wakes a blocked completion call. |
+| [test_execution_controller.py](test_execution_controller.py#L184) | `_StreamingHandler` | `None` | `_BlockingHandler` | Provider double that emits one chunk then blocks on the transport. |
 | [test_multimodal.py](test_multimodal.py#L20) | `NativeVisionTests` | `None` | `unittest.TestCase` | Provide `NativeVisionTests` behavior. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L11) | `OpenAIToolNameTests` | `None` | `unittest.TestCase` | Provide `OpenAIToolNameTests` behavior. |
 | [test_tool_validation.py](test_tool_validation.py#L17) | `ToolCallValidationTests` | `None` | `unittest.TestCase` | Ensure malformed model calls become recoverable tool feedback. |
 | [test_tool_validation.py](test_tool_validation.py#L55) | `ContextSaveDiagnosticTests` | `None` | `unittest.TestCase` | Retain the actual context-save failure through the Agent boundary. |
 | [test_usage_lifetime.py](test_usage_lifetime.py#L20) | `_ScriptedFetcher` | `input_tokens: int, output_tokens: int` | `object` | Return a fixed provider usage for every model round. |

@@ -28,7 +28,13 @@ class AnthropicHandler(LLMBackendHandler):
     def convert_messages(self, messages: list[dict[str, str]]) -> tuple[list[dict[str, JSONValue]], Optional[str]]:
         anthropic_messages: list[dict[str, JSONValue]] = []
         system_message: Optional[str] = None
+        pending_tool_results: list[dict[str, JSONValue]] = []
         resolver = bounded_resolver(getattr(self.fetcher, 'image_resolver', None))
+
+        def flush_tool_results() -> None:
+            if pending_tool_results:
+                anthropic_messages.append({"role": "user", "content": list(pending_tool_results)})
+                pending_tool_results.clear()
 
         for msg in messages:
             role = msg.get("role", "")
@@ -39,31 +45,28 @@ class AnthropicHandler(LLMBackendHandler):
                     raise ValueError('Images require user or tool messages')
                 content = ([{'type': 'text', 'text': content}] if content else []) + images
             if role == "system":
+                flush_tool_results()
                 system_message = content
                 continue
             if role == "tool":
                 tool_call_id = msg.get("tool_call_id", "")
-                anthropic_messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_call_id,
-                                "content": content,
-                            }
-                        ],
-                    }
-                )
+                pending_tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_call_id,
+                    "content": content,
+                })
             elif role == 'assistant' and msg.get('tool_calls'):
+                flush_tool_results()
                 blocks = [{'type': 'text', 'text': content}] if content else []
                 blocks.extend({'type': 'tool_use', 'id': call['id'],
                                'name': call['name'], 'input': call.get('arguments', {})}
                               for call in msg['tool_calls'])
                 anthropic_messages.append({'role': 'assistant', 'content': blocks})
             else:
+                flush_tool_results()
                 anthropic_messages.append({"role": role, "content": content})
 
+        flush_tool_results()
         return anthropic_messages, system_message
 
     def prepare_tools(
@@ -72,6 +75,35 @@ class AnthropicHandler(LLMBackendHandler):
     ) -> Optional[list[ToolSchemaDict]]:
         """Prepare tools for Anthropic's `input_schema` tool format."""
         return to_anthropic_tool_schemas(tools)
+
+    @staticmethod
+    def _wire_tool_name(name: str) -> str:
+        if name and all(ch.isascii() and (ch.isalnum() or ch in "_-") for ch in name):
+            return name
+        encoded = []
+        for ch in name:
+            encoded.append(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else f"__x{ord(ch):x}__")
+        return "".join(encoded) or "tool"
+
+    def prepare_tools_with_mapping(self, tools):
+        schemas = to_anthropic_tool_schemas(tools)
+        if not schemas:
+            return schemas, {}, {}
+        internal_to_wire: dict[str, str] = {}
+        wire_to_internal: dict[str, str] = {}
+        normalized: list[ToolSchemaDict] = []
+        for schema in schemas:
+            if not isinstance(schema, dict) or not isinstance(schema.get("name"), str):
+                normalized.append(schema)
+                continue
+            internal = schema["name"]
+            wire = self._wire_tool_name(internal)
+            if wire in wire_to_internal and wire_to_internal[wire] != internal:
+                raise ValueError(f"Anthropic tool name collision: {internal} and {wire_to_internal[wire]} -> {wire}")
+            internal_to_wire[internal] = wire
+            wire_to_internal[wire] = internal
+            normalized.append({**schema, "name": wire})
+        return normalized, internal_to_wire, wire_to_internal
 
     def _normalize_anthropic_blocks(
         self,
@@ -119,14 +151,16 @@ class AnthropicHandler(LLMBackendHandler):
             "model": self.backend.model,
             "messages": anthropic_messages,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "stream": stream,
         }
         if system_prompt:
             kwargs["system"] = system_prompt
         if tools:
             kwargs["tools"] = tools
-        kwargs.update(self.backend.extra)
+        # Anthropic's official 1.x Messages API removed the temperature
+        # parameter.  Filter it from compatibility extras as well so a
+        # profile cannot reintroduce the unsupported keyword.
+        kwargs.update({key: value for key, value in self.backend.extra.items() if key != "temperature"})
         return self.client.messages.create(**kwargs)
 
     def normalize_completion_response(self, response) -> LLMOutput:
@@ -150,6 +184,7 @@ class AnthropicHandler(LLMBackendHandler):
         *,
         output_reasoning: bool,
         usage_capture=None,
+        wire_name_to_internal_name: Optional[dict[str, str]] = None,
     ) -> Iterable[str]:
         in_thinking = False
         streamed_tool_calls: dict[int, dict[str, object | None]] = {}
@@ -317,7 +352,7 @@ class AnthropicHandler(LLMBackendHandler):
                 elif not isinstance(raw_arguments, dict):
                     arguments = {}
                 payload = {
-                    "name": name,
+                    "name": (wire_name_to_internal_name or {}).get(name, name),
                     "arguments": arguments,
                 }
                 call_id = entry.get("call_id")

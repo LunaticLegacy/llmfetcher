@@ -1,23 +1,17 @@
 import os
 import re
-import signal
 import shlex
 import subprocess
 from typing import Any, Callable, Dict, List, Optional
 
 from ..execution import current_execution_controller
 from ..llm_types import Tool, ToolSchema, ToolParameter
+from .process_runtime import attach_process_tree, close_process_tree, popen_platform_kwargs, terminate_process_tree
 
 
 def _kill_process_group(process: subprocess.Popen) -> None:
     """Terminate a shell command and descendants when possible."""
-    try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        try:
-            process.kill()
-        except (OSError, ProcessLookupError):
-            pass
+    terminate_process_tree(process)
 
 
 def create_shell_tools(
@@ -50,6 +44,12 @@ def create_shell_tools(
         "/etc/passwd", "/etc/shadow",
         "sudo ", "su ",
     ]
+    if os.name == "nt":
+        DANGEROUS_PATTERNS.extend([
+            "del /s", "erase /s", "rmdir /s", "rd /s", "format ",
+            "diskpart", "cipher /w", "reg delete", "bcdedit",
+            "takeown ", "icacls ", "powershell -encodedcommand",
+        ])
 
     def _shell(**kwargs: Any) -> str:
         command: str = kwargs["command"]
@@ -68,7 +68,11 @@ def create_shell_tools(
             real_sandbox = os.path.realpath(sandbox_cwd)
             if requested_cwd:
                 real_requested = os.path.realpath(requested_cwd)
-                if os.path.commonpath([real_sandbox, real_requested]) != real_sandbox:
+                try:
+                    inside_sandbox = os.path.commonpath([real_sandbox, real_requested]) == real_sandbox
+                except ValueError:
+                    inside_sandbox = False
+                if not inside_sandbox:
                     return f"Error: working directory must be within sandbox ({sandbox_cwd})"
                 exec_cwd = real_requested
             else:
@@ -84,9 +88,12 @@ def create_shell_tools(
 
         # Security check 2: Whitelist validation (if configured)
         if allowed_commands:
+            separator_pattern = r"\s*(?:&&|\|\||[|;\n])\s*"
+            if os.name == "nt":
+                separator_pattern = r"\s*(?:&&|\|\||[|;&\n])\s*"
             command_segments = [
                 segment.strip()
-                for segment in re.split(r"\s*(?:&&|\|\||[|;\n])\s*", command)
+                for segment in re.split(separator_pattern, command)
                 if segment.strip()
             ]
             if not command_segments:
@@ -94,15 +101,16 @@ def create_shell_tools(
 
             for segment in command_segments:
                 try:
-                    cmd_parts = shlex.split(segment)
+                    cmd_parts = shlex.split(segment, posix=os.name != "nt")
                 except ValueError as exc:
                     return f"Error: invalid shell syntax: {exc}"
                 while cmd_parts and "=" in cmd_parts[0] and not cmd_parts[0].startswith("="):
                     cmd_parts.pop(0)
                 if not cmd_parts:
                     continue
-                base_cmd = os.path.basename(cmd_parts[0])
-                if not any(base_cmd == allowed for allowed in allowed_commands):
+                base_cmd = os.path.basename(cmd_parts[0].strip('"\'')).lower()
+                allowed = {str(item).lower() for item in allowed_commands}
+                if not any(base_cmd == item or base_cmd.removesuffix(".exe") == item.removesuffix(".exe") for item in allowed):
                     return f"Error: command '{base_cmd}' not in allowed list: {allowed_commands}"
 
         if force_stopped():
@@ -111,6 +119,9 @@ def create_shell_tools(
         proc = None
         unregister_canceller: Callable[[], None] | None = None
         try:
+            popen_options = popen_platform_kwargs()
+            if os.name == "nt":
+                popen_options["executable"] = os.environ.get("ComSpec")
             proc = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
@@ -118,13 +129,14 @@ def create_shell_tools(
                 shell=True,
                 text=True,
                 cwd=exec_cwd,
-                start_new_session=True,
+                **popen_options,
                 env={
                     key: value
                     for key, value in os.environ.items()
                     if key not in ["SSH_AUTH_SOCK", "GPG_AGENT_INFO"]
                 },
             )
+            attach_process_tree(proc)
             if register_process:
                 register_process(proc)
             if controller is not None:
@@ -146,6 +158,8 @@ def create_shell_tools(
                 unregister_canceller()
             if proc is not None and unregister_process:
                 unregister_process(proc)
+            if proc is not None:
+                close_process_tree(proc)
 
         if force_stopped():
             return "Error: command force-stopped during execution"

@@ -6,6 +6,7 @@ import unittest
 import threading
 import shlex
 import sys
+import os
 
 from llmfetcher.execution import ExecutionController, StopMode
 from llmfetcher.execution import current_execution_controller
@@ -136,7 +137,10 @@ class ExecutionControllerTests(unittest.TestCase):
         shell = create_shell_tools(
             register_process=lambda _process: process_started.set(),
         )[0].handler
-        command = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(5)"'
+        if os.name == "nt":
+            command = f'"{sys.executable}" -c "import time; time.sleep(5)"'
+        else:
+            command = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(5)"'
 
         worker = threading.Thread(
             target=lambda: _run_tool_batch(
