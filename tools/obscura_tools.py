@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote_plus, urlparse
@@ -142,9 +143,18 @@ class WebSearchStore:
         connection.execute("PRAGMA busy_timeout = 10000")
         return connection
 
+    @contextmanager
+    def _connection(self):
+        """Yield one connection and always close it on Windows and POSIX."""
+        connection = self._connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
     def _migrate(self) -> None:
         """Create settings and usage tables without disturbing Agent data."""
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS web_search_settings "
                 "(id INTEGER PRIMARY KEY CHECK (id = 1), settings_json TEXT NOT NULL, updated_at REAL NOT NULL)"
@@ -159,7 +169,7 @@ class WebSearchStore:
 
     def get_settings(self) -> dict[str, Any]:
         """Return saved search settings merged with safe defaults."""
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute("SELECT settings_json FROM web_search_settings WHERE id = 1").fetchone()
         saved = json.loads(row["settings_json"]) if row else {}
         return {**self.defaults, **saved}
@@ -180,7 +190,7 @@ class WebSearchStore:
             "max_results": max(1, min(int(values.get("max_results", current["max_results"])), 10)),
             "timeout": max(3, min(int(values.get("timeout", current["timeout"])), 60)),
         }
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 "INSERT INTO web_search_settings(id, settings_json, updated_at) VALUES(1, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET settings_json=excluded.settings_json, updated_at=excluded.updated_at",
@@ -191,7 +201,7 @@ class WebSearchStore:
     def record(self, provider: str, ok: bool, result_count: int, duration_ms: int) -> None:
         """Add one provider attempt to today's durable usage aggregate."""
         day = time.strftime("%Y-%m-%d", time.localtime())
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute(
                 "INSERT INTO web_search_usage(provider, day, calls, successes, failures, results, duration_ms) "
                 "VALUES (?, ?, 1, ?, ?, ?, ?) ON CONFLICT(provider, day) DO UPDATE SET "
@@ -203,7 +213,7 @@ class WebSearchStore:
     def usage(self, days: int = 30) -> list[dict[str, Any]]:
         """Return provider usage totals for the requested recent day window."""
         cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - max(1, days) * 86400))
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT provider, SUM(calls) calls, SUM(successes) successes, SUM(failures) failures, "
                 "SUM(results) results, SUM(duration_ms) duration_ms FROM web_search_usage WHERE day >= ? "
