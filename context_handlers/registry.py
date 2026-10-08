@@ -17,14 +17,14 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .base import ContextHandler
-from .linear import ContextHandlerLinear
+from .linear import CompactionFetcher, ContextHandlerLinear
 from .sage import SageContext
 from .storage import ContextStorage
 
 
 def _create_linear(
     *,
-    fetcher,
+    fetcher: CompactionFetcher,
     max_context_threshold: int,
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
@@ -40,7 +40,7 @@ def _create_linear(
 
 def _create_sage(
     *,
-    fetcher,
+    fetcher: CompactionFetcher,
     max_context_threshold: int,
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
@@ -56,7 +56,7 @@ def _create_sage(
 
 def _create_graph(
     *,
-    fetcher,
+    fetcher: CompactionFetcher,
     max_context_threshold: int,
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
@@ -138,7 +138,7 @@ def context_handler_specs() -> tuple[ContextHandlerSpec, ...]:
 def create_context_handler(
     name: str,
     *,
-    fetcher,
+    fetcher: CompactionFetcher,
     max_context_threshold: int = 262144,
     compaction_output_max_tokens: int = 8192,
     storage: ContextStorage | None = None,
