@@ -199,9 +199,20 @@ class GraphContextHandler(ContextHandler):
         self._last_retrieved_gen = self._compaction_generation
         return result
 
-    def compact(self, *, controller: ExecutionController | None = None) -> bool:
-        """Compact the linear context and flush pending graph evidence."""
-        compacted = self.linear.compact(controller=controller)
+    def compact(
+        self,
+        *,
+        controller: ExecutionController | None = None,
+        keep_recent: int = 0,
+    ) -> bool:
+        """Compact the linear context and flush pending graph evidence.
+
+        Args:
+            controller: Optional cancellation source for the compaction call.
+            keep_recent: Number of newest active entries the composed linear
+                handler keeps verbatim instead of summarising.
+        """
+        compacted = self.linear.compact(controller=controller, keep_recent=keep_recent)
         if compacted:
             self._compaction_generation += 1
             self._flush_pending()

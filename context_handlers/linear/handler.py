@@ -281,13 +281,28 @@ class ContextHandlerLinear(ContextHandler):
         if context_size > self.compress_threshold:
             self.compact(controller=controller)
 
-    def compact(self, *, controller: ExecutionController | None = None) -> bool:
+    def compact(
+        self,
+        *,
+        controller: ExecutionController | None = None,
+        keep_recent: int = 0,
+    ) -> bool:
         """Compress the conversation history into a single abstract.
 
         Sends the current messages to the LLM with the compaction
-        schema prompt, parses the response, and replaces all messages
-        with the compacted ``LLMContextCompacted`` (stored in
+        schema prompt, parses the response, and replaces the summarised
+        messages with the compacted ``LLMContextCompacted`` (stored in
         ``self.abstract``).
+
+        Args:
+            controller: Optional cancellation source for the compactor call.
+            keep_recent: Number of newest active entries to keep verbatim
+                instead of summarising them. Retained entries stay in the
+                active transcript and are excluded from the abstract's
+                ``source_timeline``. ``0`` archives the whole active
+                transcript (the original behaviour), and so does any value at
+                or above its length, because at least one entry is always
+                summarised.
 
         Returns:
             ``True`` on successful compaction, ``False`` otherwise
@@ -312,13 +327,24 @@ class ContextHandlerLinear(ContextHandler):
         started_at = time.time()
         round_index = self._round
 
+        # Retaining a verbatim tail moves the summarise/archive boundary: only
+        # the entries before it are summarised and archived, so the newest
+        # turns stay intact in the active transcript.  At least one entry is
+        # always summarised, otherwise compaction would report success while
+        # archiving nothing and the next round would compact again forever.
+        keep = max(0, min(int(keep_recent), len(self.messages) - 1))
+        boundary = len(self.messages) - keep
+        archived_messages = self.messages[:boundary]
+        retained_messages = self.messages[boundary:]
+
         # Provenance is owned by the context handler, never by the model.
         # The next abstract includes the preceding abstract in its prompt, so
-        # retain its full source range as well as the active raw messages.
+        # retain its full source range plus the timelines this abstract
+        # actually replaces; a retained tail is not part of that range.
         source_timelines: List[int] = []
         if self.abstract is not None:
             source_timelines.extend(self.abstract.source_timeline)
-        source_timelines.extend(m.timeline for m in self.messages)
+        source_timelines.extend(m.timeline for m in archived_messages)
 
         request_preview = self.compaction_request_preview()
         compaction_input = request_preview.text
@@ -410,33 +436,37 @@ class ContextHandlerLinear(ContextHandler):
             )
             return False
 
-        # Count archived messages before the active buffer is cleared.
-        archived_count = len(self.messages)
+        # Count archived messages from the boundary computed before the
+        # compactor ran.
+        archived_count = len(archived_messages)
         self.abstract = LLMContextCompacted(
             abstract_msg=abstract_msg,
             source_timeline=source_timelines,
         )
         # Only archive after the compactor response has been parsed.  A
         # failed compaction must leave the active context wholly intact.
-        self.archive.extend(self.messages)
-        self.messages.clear()
+        self.archive.extend(archived_messages)
+        self.messages = retained_messages
 
-        # Compaction archives every active message, which would otherwise
-        # leave the next request as system-only (agent prompt + compacted
-        # abstract) and some providers return an empty completion for a
-        # request with no user turn (rejected as EMPTY_RESPONSE).  Mark the
-        # handler so the next build_messages() appends a derived resume
-        # user turn.  The resume prompt is intentionally NOT stored in
+        # Archiving every active message would otherwise leave the next
+        # request as system-only (agent prompt + compacted abstract) and some
+        # providers return an empty completion for a request with no user turn
+        # (rejected as EMPTY_RESPONSE).  Mark the handler so the next
+        # build_messages() appends a derived resume user turn - but only when
+        # nothing was retained, since a verbatim tail already supplies the
+        # user-visible turn.  The resume prompt is intentionally NOT stored in
         # ``messages``: it must not consume a timeline slot, must not be
         # re-archived by a later compaction, and must not be persisted.
-        self._pending_resume = True
+        self._pending_resume = not self.messages
         self._emit_compaction_event(
             "context:compact_success",
             f"Context compaction completed (round {round_index}): "
-            f"{archived_count} message(s) -> 1 abstract",
+            f"{archived_count} message(s) -> 1 abstract "
+            f"({len(retained_messages)} retained)",
             {
                 "round": round_index,
                 "archived_messages": archived_count,
+                "retained_messages": len(retained_messages),
                 "abstract_characters": len(abstract_msg),
                 "source_timeline": source_timelines,
                 "duration_ms": round((time.time() - started_at) * 1000),

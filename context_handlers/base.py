@@ -58,18 +58,29 @@ class ContextHandler(ABC):
         self._extra_usage.cached_tokens += usage.cached_tokens or 0
         self._extra_usage.reasoning_tokens += usage.reasoning_tokens or 0
 
-    def compact(self, *, controller: "ExecutionController | None" = None) -> bool:
+    def compact(
+        self,
+        *,
+        controller: "ExecutionController | None" = None,
+        keep_recent: int = 0,
+    ) -> bool:
         """Compact this handler through its linear context implementation.
 
         Composed handlers may override this hook to flush their own indexes
         after the linear compaction succeeds. Keeping the operation on the
         context-handler interface lets automatic and manual compaction share
         the same implementation and cancellation contract.
+
+        Args:
+            controller: Optional cancellation source for the compaction call.
+            keep_recent: Number of newest active entries to keep verbatim
+                instead of summarising them; ``0`` summarises the whole
+                active transcript.
         """
         linear = getattr(self, "linear", None)
         if linear is None or linear is self:
             raise NotImplementedError("context handler does not support compaction")
-        return bool(linear.compact(controller=controller))
+        return bool(linear.compact(controller=controller, keep_recent=keep_recent))
 
     @abstractmethod
     def add_user_message(

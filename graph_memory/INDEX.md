@@ -71,16 +71,16 @@ linear context.
 | [handler.py](handler.py#L168) | `GraphContextHandler.record_usage` | `usage: Optional[Any]` | `None` | Forward one internal LLM call's usage to the inner linear handler. |
 | [handler.py](handler.py#L172) | `GraphContextHandler.drain_usage_records` | `None` | `list[UsageRecord]` | Drain child internal-call records in the order their components run. |
 | [handler.py](handler.py#L186) | `GraphContextHandler.retrieve` | `query: str` | `GraphRetrievalResult` | Run hybrid graph retrieval and store the rendered context block. |
-| [handler.py](handler.py#L202) | `GraphContextHandler.compact` | `controller: ExecutionController \| None` | `bool` | Compact the linear context and flush pending graph evidence. |
-| [handler.py](handler.py#L212) | `GraphContextHandler.add_user_message` | `message: 'str \| UserMessage'` | `None` | Append a user message and trigger retrieval when due. |
-| [handler.py](handler.py#L231) | `GraphContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[dict[str, str]], usage: Optional[dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float], controller: ExecutionController \| None` | `None` | Append an assistant output, detect compaction and flush the graph. |
-| [handler.py](handler.py#L271) | `GraphContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: graph memory block (user), then linear history. |
-| [handler.py](handler.py#L282) | `GraphContextHandler.save` | `path: str \| Path` | `bool` | Save the conversation AND the companion graph file. |
-| [handler.py](handler.py#L324) | `GraphContextHandler.load` | `path: str \| Path` | `bool` | Restore the conversation and its companion graph. |
-| [handler.py](handler.py#L395) | `GraphContextHandler.clear_context` | `None` | `bool` | Clear the session but keep the long-term memory graph. |
-| [handler.py](handler.py#L403) | `GraphContextHandler._retrieve_archive_evidence` | `query: str` | `str` | Render small, provenance-labelled raw evidence for a new query. |
-| [handler.py](handler.py#L436) | `GraphContextHandler._should_retrieve` | `None` | `bool` | Decide whether this newly stored user message should retrieve. |
-| [handler.py](handler.py#L453) | `GraphContextHandler._flush_pending` | `None` | `None` | Ingest buffered messages into the graph and clear the buffer. |
+| [handler.py](handler.py#L202) | `GraphContextHandler.compact` | `controller: ExecutionController \| None, keep_recent: int` | `bool` | Compact the linear context and flush pending graph evidence. |
+| [handler.py](handler.py#L223) | `GraphContextHandler.add_user_message` | `message: 'str \| UserMessage'` | `None` | Append a user message and trigger retrieval when due. |
+| [handler.py](handler.py#L242) | `GraphContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[dict[str, str]], usage: Optional[dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float], controller: ExecutionController \| None` | `None` | Append an assistant output, detect compaction and flush the graph. |
+| [handler.py](handler.py#L282) | `GraphContextHandler.build_messages` | `None` | `list[dict[str, Any]]` | Build messages: graph memory block (user), then linear history. |
+| [handler.py](handler.py#L293) | `GraphContextHandler.save` | `path: str \| Path` | `bool` | Save the conversation AND the companion graph file. |
+| [handler.py](handler.py#L335) | `GraphContextHandler.load` | `path: str \| Path` | `bool` | Restore the conversation and its companion graph. |
+| [handler.py](handler.py#L406) | `GraphContextHandler.clear_context` | `None` | `bool` | Clear the session but keep the long-term memory graph. |
+| [handler.py](handler.py#L414) | `GraphContextHandler._retrieve_archive_evidence` | `query: str` | `str` | Render small, provenance-labelled raw evidence for a new query. |
+| [handler.py](handler.py#L447) | `GraphContextHandler._should_retrieve` | `None` | `bool` | Decide whether this newly stored user message should retrieve. |
+| [handler.py](handler.py#L464) | `GraphContextHandler._flush_pending` | `None` | `None` | Ingest buffered messages into the graph and clear the buffer. |
 | [models.py](models.py#L42) | `EntityNode.to_dict` | `None` | `dict[str, Any]` | Implement `EntityNode.to_dict`. |
 | [models.py](models.py#L46) | `EntityNode.from_dict` | `data: dict[str, Any]` | `'EntityNode'` | Implement `EntityNode.from_dict`. |
 | [models.py](models.py#L86) | `RelationEdge.key` | `None` | `tuple[str, str]` | Undirected canonical edge key (sorted pair). |
