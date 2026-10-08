@@ -56,7 +56,41 @@ class OpenAIHandler(LLMBackendHandler):
         tools: Optional[Sequence[ToolDefinition]],
     ) -> Optional[list[ToolSchemaDict]]:
         """Prepare tools for OpenAI-compatible chat-completion APIs."""
-        return to_openai_tool_schemas(tools)
+        openai_schema: Optional[list[ToolSchemaDict]] = to_openai_tool_schemas(tools)
+        return openai_schema
+
+    @staticmethod
+    def _wire_tool_name(name: str) -> str:
+        if name and all(ch.isascii() and (ch.isalnum() or ch in "_-") for ch in name):
+            return name
+        encoded = []
+        for ch in name:
+            encoded.append(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else f"__x{ord(ch):x}__")
+        return "".join(encoded) or "tool"
+
+    def prepare_tools_with_mapping(self, tools):
+        schemas = to_openai_tool_schemas(tools)
+        if not schemas:
+            return schemas, {}, {}
+        internal_to_wire: dict[str, str] = {}
+        wire_to_internal: dict[str, str] = {}
+        normalized: list[ToolSchemaDict] = []
+        for schema in schemas:
+            if not isinstance(schema, dict):
+                normalized.append(schema)
+                continue
+            function = schema.get("function")
+            if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+                normalized.append(schema)
+                continue
+            internal = function["name"]
+            wire = self._wire_tool_name(internal)
+            if wire in wire_to_internal and wire_to_internal[wire] != internal:
+                raise ValueError(f"OpenAI tool name collision: {internal} and {wire_to_internal[wire]} -> {wire}")
+            internal_to_wire[internal] = wire
+            wire_to_internal[wire] = internal
+            normalized.append({**schema, "function": {**function, "name": wire}})
+        return normalized, internal_to_wire, wire_to_internal
 
     def _normalize_openai_tool_calls(self, message: object | Mapping[str, Any] | None) -> list[LLMToolCall]:
         raw_calls = self._read_field(message, "tool_calls", None) or []
@@ -142,6 +176,7 @@ class OpenAIHandler(LLMBackendHandler):
         *,
         output_reasoning: bool,
         usage_capture=None,
+        wire_name_to_internal_name: Optional[dict[str, str]] = None,
     ) -> Iterable[str]:
         in_thinking = False
         streamed_tool_calls: dict[int, dict[str, Any]] = {}
@@ -236,7 +271,7 @@ class OpenAIHandler(LLMBackendHandler):
                     raw_arguments = "".join(entry["arguments_fragments"]).strip()
                 arguments = self._parse_arguments(raw_arguments)
                 payload = {
-                    "name": entry["name"],
+                    "name": (wire_name_to_internal_name or {}).get(entry["name"], entry["name"]),
                     "arguments": arguments,
                 }
                 if entry["call_id"]:

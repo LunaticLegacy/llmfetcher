@@ -547,8 +547,9 @@ class LLMFetcher:
                 for attempt_index in range(attempts):
                     try:
                         self._raise_if_force_stopped(controller)
-                        handler, snapshot = self._prepare_backend_request(
+                        handler, snapshot, tool_name_map = self._prepare_backend_request(
                             backend, messages, temperature, max_tokens, tools, False,
+                            include_tool_name_map=True,
                         )
                         active_handler = handler
                         if on_request is not None:
@@ -563,7 +564,10 @@ class LLMFetcher:
                             tools=snapshot.tools,
                         )
                         self._raise_if_force_stopped(controller)
-                        return handler.normalize_completion_response(raw)
+                        result = handler.normalize_completion_response(raw)
+                        for call in result.tool_calls:
+                            call.name = tool_name_map[1].get(call.name, call.name)
+                        return result
                     except Exception as exc:
                         self._raise_if_force_stopped(controller)
                         error = self._normalize_exception(backend, exc)
@@ -679,8 +683,9 @@ class LLMFetcher:
                 for attempt_index in range(attempts):
                     try:
                         self._raise_if_force_stopped(controller)
-                        handler, snapshot = self._prepare_backend_request(
+                        handler, snapshot, tool_name_map = self._prepare_backend_request(
                             backend, messages, temperature, max_tokens, tools, True,
+                            include_tool_name_map=True,
                         )
                         active_handler = handler
                         if on_request is not None:
@@ -696,6 +701,7 @@ class LLMFetcher:
                         for text in handler.iter_stream_text(
                             raw, output_reasoning=output_reasoning,
                             usage_capture=capture,
+                            **({"wire_name_to_internal_name": tool_name_map[1]} if tool_name_map[1] else {}),
                         ):
                             self._raise_if_force_stopped(controller)
                             yielded_any = True
@@ -738,7 +744,9 @@ class LLMFetcher:
         max_tokens: int,
         tools: Optional[Sequence[ToolDefinition]],
         stream: bool,
-    ) -> tuple[LLMBackendHandler, RemoteRequestSnapshot]:
+        *,
+        include_tool_name_map: bool = False,
+    ) -> tuple[LLMBackendHandler, RemoteRequestSnapshot] | tuple[LLMBackendHandler, RemoteRequestSnapshot, tuple[dict[str, str], dict[str, str]]]:
         """Prepare one backend's tool schemas and safe request snapshot.
 
         Args:
@@ -748,12 +756,20 @@ class LLMFetcher:
             max_tokens: Completion-token cap selected for the request.
             tools: Optional model-visible tools requiring provider preparation.
             stream: Whether this request would use provider streaming.
+            include_tool_name_map: When true, also return the request-local
+                internal-to-wire and wire-to-internal Tool-name maps.
 
         Returns:
-            Prepared backend handler and its credential-free request snapshot.
+            Prepared backend handler and its credential-free request snapshot,
+            plus the Tool-name maps when ``include_tool_name_map`` is set.
         """
         handler = self._handler_for_backend(backend)
-        provider_tools = handler.prepare_tools(tools)
+        prepare_with_mapping = getattr(handler, "prepare_tools_with_mapping", None)
+        if callable(prepare_with_mapping):
+            provider_tools, internal_to_wire, wire_name_to_internal_name = prepare_with_mapping(tools)
+        else:
+            provider_tools = handler.prepare_tools(tools)
+            internal_to_wire, wire_name_to_internal_name = {}, {}
         images = [ref for message in messages for ref in message.get('images', [])]
         # Provider support is an explicit allow-list, never a capability
         # guess: unsupported backends must reject image input rather than
@@ -773,6 +789,8 @@ class LLMFetcher:
             stream=stream,
             tools=list(provider_tools or []),
         )
+        if include_tool_name_map:
+            return handler, snapshot, (internal_to_wire, wire_name_to_internal_name)
         return handler, snapshot
 
     @staticmethod

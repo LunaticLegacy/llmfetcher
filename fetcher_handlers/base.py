@@ -164,6 +164,10 @@ class LLMBackendHandler(ABC):
         """
         raise NotImplementedError
 
+    def prepare_tools_with_mapping(self, tools):
+        """Prepare tools plus request-local wire-name mappings."""
+        return self.prepare_tools(tools), {}, {}
+
     def build_chat_history(
         self,
         messages: list[dict[str, str]],

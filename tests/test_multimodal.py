@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from llmfetcher.multimodal import UserMessage, ImageToolResult, bounded_resolver
-from llmfetcher.llm_types import LLMBackendConfig, LLMOutput, LLMToolCall
+from llmfetcher.llm_types import LLMBackendConfig, LLMOutput, LLMToolCall, Tool, ToolSchema
 from llmfetcher.llm_fetcher import LLMFetcher
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
 from llmfetcher.fetcher_handlers.openai import OpenAIHandler
@@ -56,6 +56,17 @@ class NativeVisionTests(unittest.TestCase):
             self.assertEqual(wire[1]['content'][0]['type'], 'tool_use')
             self.assertEqual(wire[2]['content'][0]['tool_use_id'], 'a')
             self.assertEqual(wire[2]['content'][0]['content'][1]['type'], 'image')
+
+    def test_anthropic_tool_names_are_openai_compatible(self):
+        handler = self.handler(AnthropicHandler)
+        tools = [Tool('plugin.gzctf.gzctf_login', 'login', ToolSchema(), lambda: None)]
+
+        schemas, internal_to_wire, wire_to_internal = handler.prepare_tools_with_mapping(tools)
+
+        wire_name = schemas[0]['name']
+        self.assertRegex(wire_name, r'^[a-zA-Z0-9_-]+$')
+        self.assertEqual(wire_name, internal_to_wire[tools[0].name])
+        self.assertEqual(tools[0].name, wire_to_internal[wire_name])
 
     def test_checkpoint_and_archive_keep_only_references(self):
         context = self.context()

@@ -44,15 +44,19 @@ Angelus superproject.
 | [test_multimodal.py](test_multimodal.py#L29) | `NativeVisionTests.handler` | `None` | `Any` | Implement `NativeVisionTests.handler`. |
 | [test_multimodal.py](test_multimodal.py#L37) | `NativeVisionTests.test_openai_both_dispatch_modes_and_tool_order` | `None` | `Any` | Implement `NativeVisionTests.test_openai_both_dispatch_modes_and_tool_order`. |
 | [test_multimodal.py](test_multimodal.py#L50) | `NativeVisionTests.test_anthropic_native_tool_use_and_image_result` | `None` | `Any` | Implement `NativeVisionTests.test_anthropic_native_tool_use_and_image_result`. |
-| [test_multimodal.py](test_multimodal.py#L60) | `NativeVisionTests.test_checkpoint_and_archive_keep_only_references` | `None` | `Any` | Implement `NativeVisionTests.test_checkpoint_and_archive_keep_only_references`. |
-| [test_multimodal.py](test_multimodal.py#L74) | `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported` | `None` | `Any` | Implement `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported`. |
-| [test_multimodal.py](test_multimodal.py#L85) | `NativeVisionTests.test_validation_missing_resolver_and_request_budget` | `None` | `Any` | Implement `NativeVisionTests.test_validation_missing_resolver_and_request_budget`. |
-| [test_multimodal.py](test_multimodal.py#L100) | `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint` | `None` | `Any` | Implement `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint`. |
-| [test_multimodal.py](test_multimodal.py#L111) | `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes` | `None` | `Any` | Implement `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes`. |
-| [test_multimodal.py](test_multimodal.py#L116) | `NativeVisionTests.test_graph_handler_preserves_image_references` | `None` | `Any` | Implement `NativeVisionTests.test_graph_handler_preserves_image_references`. |
-| [test_multimodal.py](test_multimodal.py#L126) | `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable` | `None` | `Any` | Implement `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable`. |
-| [test_multimodal.py](test_multimodal.py#L137) | `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers`. |
-| [test_multimodal.py](test_multimodal.py#L146) | `NativeVisionTests.test_retrieved_archival_keeps_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_retrieved_archival_keeps_reference_markers`. |
+| [test_multimodal.py](test_multimodal.py#L60) | `NativeVisionTests.test_anthropic_tool_names_are_openai_compatible` | `None` | `Any` | Implement `NativeVisionTests.test_anthropic_tool_names_are_openai_compatible`. |
+| [test_multimodal.py](test_multimodal.py#L71) | `NativeVisionTests.test_checkpoint_and_archive_keep_only_references` | `None` | `Any` | Implement `NativeVisionTests.test_checkpoint_and_archive_keep_only_references`. |
+| [test_multimodal.py](test_multimodal.py#L85) | `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported` | `None` | `Any` | Implement `NativeVisionTests.test_preview_never_resolves_bytes_and_rejects_unsupported`. |
+| [test_multimodal.py](test_multimodal.py#L96) | `NativeVisionTests.test_validation_missing_resolver_and_request_budget` | `None` | `Any` | Implement `NativeVisionTests.test_validation_missing_resolver_and_request_budget`. |
+| [test_multimodal.py](test_multimodal.py#L111) | `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint` | `None` | `Any` | Implement `NativeVisionTests.test_image_only_turn_survives_linear_checkpoint`. |
+| [test_multimodal.py](test_multimodal.py#L122) | `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes` | `None` | `Any` | Implement `NativeVisionTests.test_compaction_preview_keeps_marker_never_bytes`. |
+| [test_multimodal.py](test_multimodal.py#L127) | `NativeVisionTests.test_graph_handler_preserves_image_references` | `None` | `Any` | Implement `NativeVisionTests.test_graph_handler_preserves_image_references`. |
+| [test_multimodal.py](test_multimodal.py#L137) | `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable` | `None` | `Any` | Implement `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable`. |
+| [test_multimodal.py](test_multimodal.py#L148) | `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers`. |
+| [test_multimodal.py](test_multimodal.py#L157) | `NativeVisionTests.test_retrieved_archival_keeps_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_retrieved_archival_keeps_reference_markers`. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L12) | `OpenAIToolNameTests.test_invalid_names_are_normalized_and_reversible` | `None` | `None` | Implement `OpenAIToolNameTests.test_invalid_names_are_normalized_and_reversible`. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L24) | `OpenAIToolNameTests.test_valid_names_are_preserved` | `None` | `None` | Implement `OpenAIToolNameTests.test_valid_names_are_preserved`. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L34) | `OpenAIToolNameTests.test_wire_name_collision_is_rejected` | `None` | `None` | Implement `OpenAIToolNameTests.test_wire_name_collision_is_rejected`. |
 | [test_sage_context.py](test_sage_context.py#L31) | `_ScriptedCompactor.default_backend_config` | `None` | `LLMBackendConfig` | Describe the single backend this compactor reports as. |
 | [test_sage_context.py](test_sage_context.py#L35) | `_ScriptedCompactor.fetch_stream` | `**_: object` | `Any` | Yield the scripted summary body as one streamed chunk. |
 | [test_sage_context.py](test_sage_context.py#L40) | `_assistant` | `content: str` | `LLMOutput` | Build one assistant output with the fields the handler requires. |
@@ -90,6 +94,7 @@ Angelus superproject.
 | [test_image_budget_compaction.py](test_image_budget_compaction.py#L10) | `FakeContext` | `count: Any` | `object` | Provide `FakeContext` behavior. |
 | [test_image_budget_compaction.py](test_image_budget_compaction.py#L26) | `ImageBudgetCompactionTests` | `None` | `unittest.TestCase` | Provide `ImageBudgetCompactionTests` behavior. |
 | [test_multimodal.py](test_multimodal.py#L20) | `NativeVisionTests` | `None` | `unittest.TestCase` | Provide `NativeVisionTests` behavior. |
+| [test_openai_tool_names.py](test_openai_tool_names.py#L11) | `OpenAIToolNameTests` | `None` | `unittest.TestCase` | Provide `OpenAIToolNameTests` behavior. |
 | [test_sage_context.py](test_sage_context.py#L23) | `_ScriptedCompactor` | `raw: str` | `object` | Yield one scripted compaction body per summary request. |
 | [test_sage_context.py](test_sage_context.py#L45) | `SageContextTests` | `None` | `unittest.TestCase` | Create/read/update/delete over the tree index and its checkpoint. |
 | [test_tool_validation.py](test_tool_validation.py#L17) | `ToolCallValidationTests` | `None` | `unittest.TestCase` | Ensure malformed model calls become recoverable tool feedback. |
