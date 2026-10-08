@@ -31,6 +31,7 @@ import uuid
 from ..context_handlers.base import ContextHandler
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
+from ..context_handlers.storage import ContextStorage
 from ..multimodal import ImageToolResult, UserMessage, validate_images
 from ..llm_types import LLMContext, LLMOutput
 from ..execution.control import ExecutionController
@@ -68,6 +69,8 @@ class GraphContextHandler(ContextHandler):
             from the compactor (forwarded to the linear handler).
         graph_save_suffix: Suffix appended to the context file path when
             persisting the graph (default ``".graph.json"``).
+        storage: Optional durable row store for the composed linear handler;
+            defaults to its SQLite implementation.
     """
 
     def __init__(
@@ -83,12 +86,14 @@ class GraphContextHandler(ContextHandler):
         max_context_threshold: int = 262144,
         compaction_output_max_tokens: int = 8192,
         graph_save_suffix: str = ".graph.json",
+        storage: ContextStorage | None = None,
     ) -> None:
         super().__init__()
         self.linear = ContextHandlerLinear(
             compacting_fetcher,
             max_context_threshold=max_context_threshold,
             compaction_output_max_tokens=compaction_output_max_tokens,
+            storage=storage,
         )
         self.store = store if store is not None else GraphStore()
         self.builder = GraphBuilder(self.store, fetcher=extraction_fetcher)

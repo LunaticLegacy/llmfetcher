@@ -16,6 +16,11 @@ Angelus superproject.
 
 | Source | Function / method | Input types | Output type | Semantics |
 |---|---|---|---|---|
+| [test_context_handler_registry.py](test_context_handler_registry.py#L23) | `_Fetcher.default_backend_config` | `None` | `LLMBackendConfig` | Describe the one backend this fetcher reports. |
+| [test_context_handler_registry.py](test_context_handler_registry.py#L31) | `ContextHandlerRegistryTests.test_catalog_is_sorted_and_fully_described` | `None` | `None` | Every selectable handler carries a title and a description. |
+| [test_context_handler_registry.py](test_context_handler_registry.py#L42) | `ContextHandlerRegistryTests.test_default_handler_is_registered` | `None` | `None` | The fallback a host uses before a user chooses must exist. |
+| [test_context_handler_registry.py](test_context_handler_registry.py#L46) | `ContextHandlerRegistryTests.test_each_entry_builds_its_handler` | `None` | `None` | A registry entry must be constructible from the shared config. |
+| [test_context_handler_registry.py](test_context_handler_registry.py#L59) | `ContextHandlerRegistryTests.test_unknown_name_reports_the_available_ids` | `None` | `None` | A bad profile value must fail loudly and list the options. |
 | [test_execution_controller.py](test_execution_controller.py#L21) | `ExecutionControllerTests.test_graceful_stop_wakes_waiters_without_closing_resources` | `None` | `None` | Graceful mode shares the request path but preserves active I/O. |
 | [test_execution_controller.py](test_execution_controller.py#L33) | `ExecutionControllerTests.test_force_stop_escalates_and_closes_existing_and_late_resources` | `None` | `None` | Force mode upgrades graceful intent and closes every registered resource. |
 | [test_execution_controller.py](test_execution_controller.py#L46) | `ExecutionControllerTests.test_force_stop_closes_active_fetcher_transport` | `None` | `None` | A fetch request registers its transport and exits as cancellation. |
@@ -77,6 +82,8 @@ Angelus superproject.
 
 | Source | Class | Constructor / field input types | Base(s) | Semantics |
 |---|---|---|---|---|
+| [test_context_handler_registry.py](test_context_handler_registry.py#L19) | `_Fetcher` | `None` | `object` | Stand in for the compaction fetcher every handler is built with. |
+| [test_context_handler_registry.py](test_context_handler_registry.py#L28) | `ContextHandlerRegistryTests` | `None` | `unittest.TestCase` | The registry is the single list a host offers and builds from. |
 | [test_execution_controller.py](test_execution_controller.py#L18) | `ExecutionControllerTests` | `None` | `unittest.TestCase` | Verify one stop request governs resource cancellation and observation. |
 | [test_execution_controller.py](test_execution_controller.py#L160) | `_BlockingHandler` | `None` | `object` | Minimal provider double whose close wakes a blocked completion call. |
 | [test_execution_controller.py](test_execution_controller.py#L180) | `_StreamingHandler` | `None` | `_BlockingHandler` | Provider double that emits one chunk then blocks on the transport. |
