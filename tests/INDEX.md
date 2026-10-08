@@ -48,6 +48,18 @@ Angelus superproject.
 | [test_multimodal.py](test_multimodal.py#L126) | `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable` | `None` | `Any` | Implement `NativeVisionTests.test_graph_builder_keeps_image_only_turn_reachable`. |
 | [test_multimodal.py](test_multimodal.py#L137) | `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_archive_retrieval_surfaces_reference_markers`. |
 | [test_multimodal.py](test_multimodal.py#L146) | `NativeVisionTests.test_retrieved_archival_keeps_reference_markers` | `None` | `Any` | Implement `NativeVisionTests.test_retrieved_archival_keeps_reference_markers`. |
+| [test_sage_context.py](test_sage_context.py#L31) | `_ScriptedCompactor.default_backend_config` | `None` | `LLMBackendConfig` | Describe the single backend this compactor reports as. |
+| [test_sage_context.py](test_sage_context.py#L35) | `_ScriptedCompactor.fetch_stream` | `**_: object` | `Any` | Yield the scripted summary body as one streamed chunk. |
+| [test_sage_context.py](test_sage_context.py#L40) | `_assistant` | `content: str` | `LLMOutput` | Build one assistant output with the fields the handler requires. |
+| [test_sage_context.py](test_sage_context.py#L48) | `SageContextTests.test_append_indexes_a_chain_in_history_order` | `None` | `None` | Appending turns extends one ordered chain. |
+| [test_sage_context.py](test_sage_context.py#L64) | `SageContextTests.test_path_to_returns_the_root_first_chain` | `None` | `None` | Traversal walks parents from the root down. |
+| [test_sage_context.py](test_sage_context.py#L76) | `SageContextTests.test_compaction_reindexes_the_tree_onto_the_abstract` | `None` | `None` | A successful compaction collapses the index to the abstract. |
+| [test_sage_context.py](test_sage_context.py#L91) | `SageContextTests.test_failed_compaction_leaves_the_index_unchanged` | `None` | `None` | An unusable summary must not disturb the active index. |
+| [test_sage_context.py](test_sage_context.py#L101) | `SageContextTests.test_save_and_load_restore_history_and_index` | `None` | `None` | A reload rebuilds the same chain from the durable checkpoint. |
+| [test_sage_context.py](test_sage_context.py#L119) | `SageContextTests.test_replace_active_context_reindexes_the_replacement_rows` | `None` | `None` | Editing the active window rebuilds the index from the new rows. |
+| [test_sage_context.py](test_sage_context.py#L142) | `SageContextTests.test_clear_context_empties_history_and_index` | `None` | `None` | Clearing resets the transcript, the timeline and the tree. |
+| [test_sage_context.py](test_sage_context.py#L155) | `SageContextTests.test_save_failure_surfaces_the_composed_cause` | `None` | `None` | ``Agent`` reads ``last_save_error`` here, so it must be mirrored. |
+| [test_sage_context.py](test_sage_context.py#L163) | `SageContextTests.test_usage_is_forwarded_to_the_composed_handler` | `None` | `None` | Internal-call usage and drain records belong to the composed handler. |
 | [test_tool_validation.py](test_tool_validation.py#L20) | `ToolCallValidationTests.setUp` | `None` | `None` | Implement `ToolCallValidationTests.setUp`. |
 | [test_tool_validation.py](test_tool_validation.py#L29) | `ToolCallValidationTests._execute` | `call: LLMToolCall` | `object` | Implement `ToolCallValidationTests._execute`. |
 | [test_tool_validation.py](test_tool_validation.py#L33) | `ToolCallValidationTests.test_missing_required_field_returns_model_visible_error` | `None` | `None` | Implement `ToolCallValidationTests.test_missing_required_field_returns_model_visible_error`. |
@@ -71,6 +83,8 @@ Angelus superproject.
 | [test_image_budget_compaction.py](test_image_budget_compaction.py#L10) | `FakeContext` | `count: Any` | `object` | Provide `FakeContext` behavior. |
 | [test_image_budget_compaction.py](test_image_budget_compaction.py#L26) | `ImageBudgetCompactionTests` | `None` | `unittest.TestCase` | Provide `ImageBudgetCompactionTests` behavior. |
 | [test_multimodal.py](test_multimodal.py#L20) | `NativeVisionTests` | `None` | `unittest.TestCase` | Provide `NativeVisionTests` behavior. |
+| [test_sage_context.py](test_sage_context.py#L23) | `_ScriptedCompactor` | `raw: str` | `object` | Yield one scripted compaction body per summary request. |
+| [test_sage_context.py](test_sage_context.py#L45) | `SageContextTests` | `None` | `unittest.TestCase` | Create/read/update/delete over the tree index and its checkpoint. |
 | [test_tool_validation.py](test_tool_validation.py#L17) | `ToolCallValidationTests` | `None` | `unittest.TestCase` | Ensure malformed model calls become recoverable tool feedback. |
 | [test_tool_validation.py](test_tool_validation.py#L55) | `ContextSaveDiagnosticTests` | `None` | `unittest.TestCase` | Retain the actual context-save failure through the Agent boundary. |
 | [test_usage_lifetime.py](test_usage_lifetime.py#L20) | `_ScriptedFetcher` | `input_tokens: int, output_tokens: int` | `object` | Return a fixed provider usage for every model round. |

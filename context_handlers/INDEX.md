@@ -8,6 +8,7 @@ nearest index owns every `context_handlers/*.py` source; the top-level
 |---|---|
 | `base.py` | `ContextHandler` abstract contract: message assembly, checkpoint save/load, compaction hooks, and an `extra_usage` counter for internal LLM calls. |
 | [`linear/`](linear/INDEX.md) | `ContextHandlerLinear` durable linear transcript: state orchestration (`handler.py`), serialization (`codec.py`), compaction planning (`compaction.py`), message rendering (`rendering.py`) and bounded paging (`paging.py`). |
+| [`sage/`](sage/INDEX.md) | `SageContext` indexes the active transcript as a set of context trees (`tree.py`); durable rows, compaction and reads are delegated to a composed linear handler. |
 | [`storage.py`](storage.py) | `ContextStorage` port plus the schema-3 SQLite row store (`SQLiteContextStorage`) and `is_sqlite_context_pointer`. The only place that knows table names or issues SQL. |
 | `retrieved.py` | `RetrievedContextHandler` composes durable linear history with a provider-backed retrieval channel. |
 | `archive_retrieval.py` | Bounded lexical retrieval over raw archived `LLMContext` values: `ArchiveRetrievalConfig`, `ArchiveEvidence`, `ArchiveRetrievalResult`, `retrieve_archive`. No file I/O or LLM calls. |
@@ -18,8 +19,8 @@ nearest index owns every `context_handlers/*.py` source; the top-level
 
 - Compaction is a prompt-size optimisation, never a deletion policy: archived
   raw turns stay retrievable through `archive_retrieval.py`.
-- Only the linear handler owns durable transcript persistence; retrieved and
-  TLB handlers delegate storage to the linear handler.
+- Only the linear handler owns durable transcript persistence; retrieved, TLB
+  and Sage handlers delegate storage to the linear handler.
 - Retrieval composition must not leak internal tool/transcript state into the
   primary Agent's visible model rounds.
 
@@ -69,14 +70,6 @@ nearest index owns every `context_handlers/*.py` source; the top-level
 | [retrieved.py](retrieved.py#L705) | `RetrievedContextHandler._slugify` | `text: str` | `str` | Implement `RetrievedContextHandler._slugify`. |
 | [retrieved.py](retrieved.py#L711) | `_image_markers` | `images: Any` | `str` | Render byte-free image provenance markers for one archived message. |
 | [retrieved.py](retrieved.py#L717) | `_render_retrieved_memory` | `sessions: list[dict[str, Any]]` | `str` | Render retrieved sessions as a user-role context block (P0-I). |
-| [sage.py](sage.py#L30) | `SageContext.compact` | `controller: ExecutionController \| None` | `bool` | Implement how to summarize the information. |
-| [sage.py](sage.py#L36) | `SageContext.add_user_message` | `message: str \| UserMessage` | `None` | Implement `SageContext.add_user_message`. |
-| [sage.py](sage.py#L48) | `SageContext.add_assistant_message` | `message: LLMOutput, tool_results: Dict[str, str] \| None, usage: Dict[str, int] \| None, model_duration_ms: int \| None, round_duration_ms: int \| None, created_at: float \| None, controller: ExecutionController \| None` | `None` | Implement `SageContext.add_assistant_message`. |
-| [sage.py](sage.py#L88) | `SageContext.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
-| [sage.py](sage.py#L98) | `SageContext.save` | `path: str \| Path` | `bool` | Save context from disk. |
-| [sage.py](sage.py#L110) | `SageContext.load` | `path: str \| Path` | `bool` | Load context from disk. |
-| [sage.py](sage.py#L122) | `SageContext.clear_context` | `None` | `bool` | Clear context. |
-| [sage.py](sage.py#L132) | `SageContext._bounded_tool_results` | `tool_results: Optional[Dict[str, str]]` | `Dict[str, str]` | Copy complete tool output into the in-memory conversation history. |
 | [storage.py](storage.py#L36) | `is_sqlite_context_pointer` | `pointer: Any` | `bool` | Return whether a parsed checkpoint is a schema-3 SQLite pointer. |
 | [storage.py](storage.py#L63) | `ContextStorage.append_rows` | `database: Path, messages: Sequence[tuple[int, str]], archive: Sequence[tuple[int, str]]` | `None` | Append or replace serialized active and archived rows atomically. |
 | [storage.py](storage.py#L82) | `ContextStorage.replace_active` | `database: Path, rows: Sequence[tuple[int, str]]` | `None` | Replace every active row, leaving archived rows untouched. |
@@ -109,7 +102,6 @@ nearest index owns every `context_handlers/*.py` source; the top-level
 | [archive_retrieval.py](archive_retrieval.py#L63) | `ArchiveRetrievalResult` | `query: str, evidence: tuple[ArchiveEvidence, ...], scanned_records: int` | `object` | Result metadata plus bounded evidence suitable for later injection. |
 | [base.py](base.py#L12) | `ContextHandler` | `None` | `ABC` | Manages conversational context and builds API-ready message lists. |
 | [retrieved.py](retrieved.py#L88) | `RetrievedContextHandler` | `project_knowledge_root: str \| Path \| None, user_knowledge_root: str \| Path \| None, tlb_fetcher: CompactionFetcher, compacting_fetcher: CompactionFetcher, classify_fetcher: CompactionFetcher \| None, max_retrieved_sessions: int, retrieval_trigger: str, archive_scope: str, max_context_threshold: int` | `ContextHandler` | TLB-RAG powered conversation memory over linear context. |
-| [sage.py](sage.py#L22) | `SageContext` | `None` | `ContextHandler` | Provide `SageContext` behavior. |
 | [storage.py](storage.py#L22) | `PersistedContextPage` | `rows: list[dict[str, Any]], next_before: int \| None, total: int` | `object` | One bounded page returned from durable context storage. |
 | [storage.py](storage.py#L56) | `ContextStorage` | `None` | `Protocol` | Storage contract used by durable context handlers. |
 | [storage.py](storage.py#L153) | `SQLiteContextStorage` | `None` | `object` | SQLite implementation of :class:`ContextStorage`. |
