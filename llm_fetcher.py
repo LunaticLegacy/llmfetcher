@@ -762,7 +762,8 @@ class LLMFetcher:
         # owns native wire conversion.
         if images and backend.provider not in {'openai', 'anthropic'}:
             raise ValueError(f'Provider {backend.provider} does not support native image inputs')
-        if len(images) > 20:
+        from .multimodal import MAX_REQUEST_IMAGES
+        if len(images) > MAX_REQUEST_IMAGES:
             raise ValueError('Image request exceeds 20 images; compact or start a new conversation')
         snapshot = RemoteRequestSnapshot(
             model=backend.model,

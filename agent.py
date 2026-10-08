@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .multimodal import UserMessage, ImageToolResult
+from .multimodal import UserMessage, ImageToolResult, MAX_REQUEST_IMAGES
 
 import threading
 import time
@@ -776,6 +776,32 @@ class Agent:
             self._save_context()
         return compacted
 
+    def _compact_for_image_budget(self, *, control: AgentRunControl | None = None) -> bool:
+        """Compact before the next request reaches the image-count guard.
+
+        Keep the newest image-bearing message visible after compaction. This
+        matters for screenshots: the model has not yet seen the latest tool
+        result when the request budget is reached.
+        """
+        messages = self.context_handler.build_messages()
+        count = sum(len(message.get("images", ())) for message in messages)
+        if count < MAX_REQUEST_IMAGES:
+            return False
+        recent_images = next(
+            (message["images"] for message in reversed(messages) if message.get("images")),
+            [],
+        )[-8:]
+        if not self.compact_context(control=control):
+            linear = getattr(self.context_handler, "linear", self.context_handler)
+            reason = getattr(linear, "last_compaction_error", None) or "unknown error"
+            raise RuntimeError(f"Image budget compaction failed: {reason}")
+        if recent_images:
+            self.context_handler.add_user_message(UserMessage(
+                "Most recent image retained after context compaction.", recent_images,
+            ))
+            self._save_context()
+        return True
+
     def _fetch_model_with_force_stop(
         self,
         *,
@@ -1033,6 +1059,12 @@ class Agent:
             round_idx += 1
             if verbose:
                 print("=" * 10 + "  ROUND " + str(round_idx) + "=" * 10)
+
+            # Screenshots and reopened images accumulate in durable context.
+            # Compact while there is still room for the newest image to be
+            # carried into the next request instead of failing at dispatch.
+            self._compact_for_image_budget(control=control)
+            self._drain_internal_usage(name)
 
             round_started_at = time.perf_counter()
             message_input: str = ""

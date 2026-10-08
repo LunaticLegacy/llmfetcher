@@ -10,6 +10,7 @@ class ImageReference(TypedDict):
 
 
 ImageResolver = Callable[[ImageReference], dict[str, str]]
+MAX_REQUEST_IMAGES = 20
 
 
 def bounded_resolver(resolver):
@@ -23,7 +24,7 @@ def bounded_resolver(resolver):
         payload = resolver(ref)
         count += 1
         total += len(payload['data']) * 3 // 4
-        if count > 20 or total > 20 * 1024 * 1024:
+        if count > MAX_REQUEST_IMAGES or total > 20 * 1024 * 1024:
             raise ValueError('Image request exceeds 20 images or 20 MiB; compact or start a new conversation')
         return payload
     return resolve

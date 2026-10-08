@@ -126,11 +126,13 @@ primary model response.
 | [agent.py](agent.py#L698) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
 | [agent.py](agent.py#L718) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
 | [agent.py](agent.py#L732) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
-| [agent.py](agent.py#L763) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
-| [agent.py](agent.py#L795) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
-| [agent.py](agent.py#L907) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
-| [agent.py](agent.py#L1407) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
-| [agent.py](agent.py#L1411) | `Agent.clear_context` | `None` | `None` | Clear context. |
+| [agent.py](agent.py#L763) | `Agent.compact_context` | `control: AgentRunControl \| None` | `bool` | Run the same cancellable compactor used by automatic compaction. |
+| [agent.py](agent.py#L779) | `Agent._compact_for_image_budget` | `control: AgentRunControl \| None` | `bool` | Compact before the next request reaches the image-count guard. |
+| [agent.py](agent.py#L805) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
+| [agent.py](agent.py#L837) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
+| [agent.py](agent.py#L949) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
+| [agent.py](agent.py#L1456) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
+| [agent.py](agent.py#L1460) | `Agent.clear_context` | `None` | `None` | Clear context. |
 | [cli.py](cli.py#L58) | `_load_tools` | `names: list[str]` | `list[Tool]` | Import and call tool factories by short name. |
 | [cli.py](cli.py#L94) | `_build_parser` | `None` | `argparse.ArgumentParser` | Implement `_build_parser`. |
 | [cli.py](cli.py#L178) | `_cmd_list_backends` | `None` | `None` | Print every registered backend provider. |
@@ -158,8 +160,8 @@ primary model response.
 | [llm_fetcher.py](llm_fetcher.py#L458) | `LLMFetcher.fetch` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, context_handler: Optional[ContextHandler], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], on_request: Optional[Callable[[RemoteRequestSnapshot], None]], on_retry: Optional[Callable[[int], None]], controller: ExecutionController \| None` | `LLMOutput` | Execute a non-streaming completion with backend fallback and retry. |
 | [llm_fetcher.py](llm_fetcher.py#L585) | `LLMFetcher.fetch_stream` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, output_reasoning: bool, context_handler: Optional[ContextHandler], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], on_request: Optional[Callable[[RemoteRequestSnapshot], None]], on_retry: Optional[Callable[[int], None]], usage_sink: Optional[TokenUsage], controller: ExecutionController \| None` | `Generator[str, None]` | Execute a streaming completion with backend fallback and retry. |
 | [llm_fetcher.py](llm_fetcher.py#L733) | `LLMFetcher._prepare_backend_request` | `backend: LLMBackendConfig, messages: List[JsonObject], temperature: float, max_tokens: int, tools: Optional[Sequence[ToolDefinition]], stream: bool` | `tuple[LLMBackendHandler, RemoteRequestSnapshot]` | Prepare one backend's tool schemas and safe request snapshot. |
-| [llm_fetcher.py](llm_fetcher.py#L778) | `LLMFetcher._max_attempts` | `backend: LLMBackendConfig` | `int` | Return the number of times to attempt a request for a backend. |
-| [llm_fetcher.py](llm_fetcher.py#L793) | `LLMFetcher._build_messages` | `msg: str, system_prompt: Optional[str], context: Optional[ContextHandler]` | `List[Dict[str, Any]]` | Build the message list, delegating to a context handler when available. |
+| [llm_fetcher.py](llm_fetcher.py#L779) | `LLMFetcher._max_attempts` | `backend: LLMBackendConfig` | `int` | Return the number of times to attempt a request for a backend. |
+| [llm_fetcher.py](llm_fetcher.py#L794) | `LLMFetcher._build_messages` | `msg: str, system_prompt: Optional[str], context: Optional[ContextHandler]` | `List[Dict[str, Any]]` | Build the message list, delegating to a context handler when available. |
 | [llm_types.py](llm_types.py#L43) | `RemoteRequestSnapshot.to_dict` | `None` | `JsonObject` | Return the JSON-safe event payload used by application hosts. |
 | [llm_types.py](llm_types.py#L106) | `LLMBackendConfig.__str__` | `None` | `str` | Render the backend config in a compact human-readable form. |
 | [llm_types.py](llm_types.py#L162) | `TokenUsage.cache_hit_rate` | `None` | `float` | Fraction of input tokens served from the provider's prompt cache. |
@@ -168,13 +170,13 @@ primary model response.
 | [llm_types.py](llm_types.py#L225) | `LLMContextCompacted.__str__` | `None` | `str` | Implement `LLMContextCompacted.__str__`. |
 | [llm_types.py](llm_types.py#L261) | `ToolSchema.to_dict` | `None` | `Dict[str, Any]` | Convert this schema to an isolated JSON-ready mapping. |
 | [llm_types.py](llm_types.py#L301) | `Tool.__str__` | `None` | `Any` | Implement `Tool.__str__`. |
-| [multimodal.py](multimodal.py#L15) | `bounded_resolver` | `resolver: Any` | `Any` | Enforce a per-request decoded-size budget before any network call. |
-| [multimodal.py](multimodal.py#L32) | `validate_images` | `images: list[ImageReference]` | `list[ImageReference]` | Copy references and reject inline bytes and transport-specific fields. |
-| [multimodal.py](multimodal.py#L53) | `UserMessage.__post_init__` | `None` | `Any` | Implement `UserMessage.__post_init__`. |
-| [multimodal.py](multimodal.py#L56) | `UserMessage.__str__` | `None` | `Any` | Implement `UserMessage.__str__`. |
-| [multimodal.py](multimodal.py#L65) | `image_reference_markers` | `images: Any` | `list[str]` | Render bounded, byte-free provenance markers for image references. |
-| [multimodal.py](multimodal.py#L85) | `image_blocks` | `images: Any, resolver: Any, provider: Any` | `Any` | Resolve local references at the wire boundary, never for previews. |
-| [multimodal.py](multimodal.py#L109) | `openai_image_messages` | `messages: Any, resolver: Any` | `Any` | Place tool images after all tool replies, preserving protocol ordering. |
+| [multimodal.py](multimodal.py#L16) | `bounded_resolver` | `resolver: Any` | `Any` | Enforce a per-request decoded-size budget before any network call. |
+| [multimodal.py](multimodal.py#L33) | `validate_images` | `images: list[ImageReference]` | `list[ImageReference]` | Copy references and reject inline bytes and transport-specific fields. |
+| [multimodal.py](multimodal.py#L54) | `UserMessage.__post_init__` | `None` | `Any` | Implement `UserMessage.__post_init__`. |
+| [multimodal.py](multimodal.py#L57) | `UserMessage.__str__` | `None` | `Any` | Implement `UserMessage.__str__`. |
+| [multimodal.py](multimodal.py#L66) | `image_reference_markers` | `images: Any` | `list[str]` | Render bounded, byte-free provenance markers for image references. |
+| [multimodal.py](multimodal.py#L86) | `image_blocks` | `images: Any, resolver: Any, provider: Any` | `Any` | Resolve local references at the wire boundary, never for previews. |
+| [multimodal.py](multimodal.py#L110) | `openai_image_messages` | `messages: Any, resolver: Any` | `Any` | Place tool images after all tool replies, preserving protocol ordering. |
 | [tool_executor.py](tool_executor.py#L59) | `ToolExecutor.execute` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `Any` | Run a single tool handler in the calling thread. |
 | [tool_executor.py](tool_executor.py#L67) | `ToolExecutor.execute_timed` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `ToolExecution` | Run a single tool handler in the calling thread with timing. |
 | [tool_executor.py](tool_executor.py#L98) | `ToolExecutor.execute_batch` | `handlers: List[Callable[..., Any] \| None], arguments_list: List[Dict[str, Any]], controller: ExecutionController \| None` | `List[Any]` | Execute tool handlers in parallel using a thread pool. |
@@ -229,8 +231,8 @@ primary model response.
 | [llm_types.py](llm_types.py#L293) | `Tool` | `name: str, description: str, schemas: ToolSchema, handler: Callable[..., Any]` | `object` | A single tool that an Agent can call. |
 | [llm_types.py](llm_types.py#L309) | `ToolBatch` | `None` | `object` | Provide `ToolBatch` behavior. |
 | [multimodal.py](multimodal.py#L6) | `ImageReference` | `attachment_id: str, media_type: str, detail: NotRequired[Literal['auto', 'low', 'high']]` | `TypedDict` | Provide `ImageReference` behavior. |
-| [multimodal.py](multimodal.py#L49) | `UserMessage` | `text: str, images: list[ImageReference]` | `object` | Provide `UserMessage` behavior. |
-| [multimodal.py](multimodal.py#L61) | `ImageToolResult` | `None` | `UserMessage` | Tool feedback containing native image inputs and explanatory text. |
+| [multimodal.py](multimodal.py#L50) | `UserMessage` | `text: str, images: list[ImageReference]` | `object` | Provide `UserMessage` behavior. |
+| [multimodal.py](multimodal.py#L62) | `ImageToolResult` | `None` | `UserMessage` | Tool feedback containing native image inputs and explanatory text. |
 | [tool_executor.py](tool_executor.py#L13) | `ToolBatchCancelled` | `None` | `RuntimeError` | Signal that force-stop abandoned the active tool batch. |
 | [tool_executor.py](tool_executor.py#L18) | `ToolExecution` | `result: Any, duration_ms: int` | `object` | One tool handler execution: its result and wall-clock duration. |
 | [tool_executor.py](tool_executor.py#L31) | `ToolExecutor` | `max_concurrency: int` | `object` | Execute tool handlers in parallel using a thread pool. |

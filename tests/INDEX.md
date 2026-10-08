@@ -30,6 +30,11 @@ Angelus superproject.
 | [test_execution_controller.py](test_execution_controller.py#L197) | `_fetch_in_thread` | `fetcher: LLMFetcher, controller: ExecutionController, errors: list[BaseException]` | `None` | Implement `_fetch_in_thread`. |
 | [test_execution_controller.py](test_execution_controller.py#L208) | `_advance_stream` | `stream: object, errors: list[BaseException]` | `None` | Implement `_advance_stream`. |
 | [test_execution_controller.py](test_execution_controller.py#L215) | `_run_tool_batch` | `executor: ToolExecutor, controller: ExecutionController, handler: object, errors: list[BaseException], arguments: dict[str, object] \| None` | `None` | Implement `_run_tool_batch`. |
+| [test_image_budget_compaction.py](test_image_budget_compaction.py#L18) | `FakeContext.build_messages` | `None` | `Any` | Implement `FakeContext.build_messages`. |
+| [test_image_budget_compaction.py](test_image_budget_compaction.py#L21) | `FakeContext.add_user_message` | `message: Any` | `Any` | Implement `FakeContext.add_user_message`. |
+| [test_image_budget_compaction.py](test_image_budget_compaction.py#L27) | `ImageBudgetCompactionTests.test_compacts_at_limit_and_replays_latest_image` | `None` | `Any` | Implement `ImageBudgetCompactionTests.test_compacts_at_limit_and_replays_latest_image`. |
+| [test_image_budget_compaction.py](test_image_budget_compaction.py#L44) | `ImageBudgetCompactionTests.test_no_compaction_below_limit` | `None` | `Any` | Implement `ImageBudgetCompactionTests.test_no_compaction_below_limit`. |
+| [test_image_budget_compaction.py](test_image_budget_compaction.py#L49) | `ImageBudgetCompactionTests.test_failed_compaction_preserves_images` | `None` | `Any` | Implement `ImageBudgetCompactionTests.test_failed_compaction_preserves_images`. |
 | [test_multimodal.py](test_multimodal.py#L21) | `NativeVisionTests.context` | `None` | `Any` | Implement `NativeVisionTests.context`. |
 | [test_multimodal.py](test_multimodal.py#L29) | `NativeVisionTests.handler` | `None` | `Any` | Implement `NativeVisionTests.handler`. |
 | [test_multimodal.py](test_multimodal.py#L37) | `NativeVisionTests.test_openai_both_dispatch_modes_and_tool_order` | `None` | `Any` | Implement `NativeVisionTests.test_openai_both_dispatch_modes_and_tool_order`. |
@@ -63,6 +68,8 @@ Angelus superproject.
 | [test_execution_controller.py](test_execution_controller.py#L18) | `ExecutionControllerTests` | `None` | `unittest.TestCase` | Verify one stop request governs resource cancellation and observation. |
 | [test_execution_controller.py](test_execution_controller.py#L160) | `_BlockingHandler` | `None` | `object` | Minimal provider double whose close wakes a blocked completion call. |
 | [test_execution_controller.py](test_execution_controller.py#L180) | `_StreamingHandler` | `None` | `_BlockingHandler` | Provider double that emits one chunk then blocks on the transport. |
+| [test_image_budget_compaction.py](test_image_budget_compaction.py#L10) | `FakeContext` | `count: Any` | `object` | Provide `FakeContext` behavior. |
+| [test_image_budget_compaction.py](test_image_budget_compaction.py#L26) | `ImageBudgetCompactionTests` | `None` | `unittest.TestCase` | Provide `ImageBudgetCompactionTests` behavior. |
 | [test_multimodal.py](test_multimodal.py#L20) | `NativeVisionTests` | `None` | `unittest.TestCase` | Provide `NativeVisionTests` behavior. |
 | [test_tool_validation.py](test_tool_validation.py#L17) | `ToolCallValidationTests` | `None` | `unittest.TestCase` | Ensure malformed model calls become recoverable tool feedback. |
 | [test_tool_validation.py](test_tool_validation.py#L55) | `ContextSaveDiagnosticTests` | `None` | `unittest.TestCase` | Retain the actual context-save failure through the Agent boundary. |
