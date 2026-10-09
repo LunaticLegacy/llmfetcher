@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 import uuid
 
-from ..context_handlers.base import ContextHandler
+from ..context_handlers.base import ContextHandler, checkpoint_lock
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
 from ..multimodal import ImageToolResult, UserMessage, validate_images
@@ -301,8 +301,14 @@ class GraphContextHandler(ContextHandler):
             ``True`` only when both the linear context and the graph were
             persisted successfully.
         """
-        self._flush_pending()
         target = Path(path)
+        with checkpoint_lock(target):
+            return self._save_locked(target)
+
+    def _save_locked(self, target: Path) -> bool:
+        """Persist the graph and linear checkpoint under one shared lock."""
+        self.last_save_error = None
+        self._flush_pending()
         generation = uuid.uuid4().hex
         graph_name = f"{target.name}{self.graph_save_suffix}.{generation}"
         graph_path = target.with_name(graph_name)
@@ -310,6 +316,7 @@ class GraphContextHandler(ContextHandler):
         # its reference, making the primary atomic replacement the pair's
         # transaction boundary.
         if not self.store.save(graph_path):
+            self.last_save_error = getattr(self.store, "last_save_error", None) or self.linear.last_save_error
             return False
         committed = self.linear.save(
             target,
@@ -317,6 +324,7 @@ class GraphContextHandler(ContextHandler):
             graph_checkpoint=graph_name,
         )
         if not committed:
+            self.last_save_error = self.linear.last_save_error
             return False
         # Once the primary file references the new immutable graph, older
         # generations and crash-orphans are no longer reachable. Bound local

@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, override
 
-from .base import ContextHandler
+from .base import ContextHandler, checkpoint_lock
 from ..llm_types import (
     LLMContext,
     LLMContextCompacted,
@@ -820,11 +820,26 @@ class ContextHandlerLinear(ContextHandler):
         if not path:
             self.last_save_error = ValueError("context checkpoint path is required")
             return False
+        target = Path(path)
+        with checkpoint_lock(target):
+            return self._save_locked(
+                target,
+                checkpoint_generation=checkpoint_generation,
+                graph_checkpoint=graph_checkpoint,
+            )
+
+    def _save_locked(
+        self,
+        target: Path,
+        *,
+        checkpoint_generation: str | None = None,
+        graph_checkpoint: str | None = None,
+    ) -> bool:
+        """Persist while the per-checkpoint writer lock is held."""
             
         try:
             self.last_save_error = None
             generation = checkpoint_generation or uuid.uuid4().hex
-            target = Path(path)
             database = target.with_suffix(target.suffix + ".sqlite3")
             self._save_sqlite_rows(database)
             data: Dict[str, Any] = {
@@ -858,7 +873,19 @@ class ContextHandlerLinear(ContextHandler):
                     temp_file.write(serialized)
                     temp_file.flush()
                     os.fsync(temp_file.fileno())
-                os.replace(temp_path, target)
+                replace_error: OSError | None = None
+                for attempt in range(5):
+                    try:
+                        os.replace(temp_path, target)
+                        replace_error = None
+                        break
+                    except PermissionError as exc:
+                        replace_error = exc
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+                if replace_error is not None:
+                    raise replace_error
             except OSError:
                 if temp_path is not None:
                     try:
