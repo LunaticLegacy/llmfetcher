@@ -1,9 +1,25 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from pathlib import Path
+import threading
 
 from ..llm_types import LLMOutput, TokenUsage
 from ..multimodal import UserMessage
+
+
+_CHECKPOINT_LOCKS: dict[str, threading.RLock] = {}
+_CHECKPOINT_LOCKS_GUARD = threading.Lock()
+
+
+def checkpoint_lock(path: str | Path) -> threading.RLock:
+    """Return the process-local lock shared by all writers of one checkpoint."""
+    key = str(Path(path).resolve())
+    with _CHECKPOINT_LOCKS_GUARD:
+        lock = _CHECKPOINT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _CHECKPOINT_LOCKS[key] = lock
+        return lock
 
 
 class ContextHandler(ABC):
