@@ -23,22 +23,26 @@ class ContextHandlerSpec:
 
 
 def _create_linear(*, fetcher: CompactionFetcher, max_context_threshold: int,
-                   compaction_output_max_tokens: int, storage: Any = None) -> ContextHandler:
+                   compaction_output_max_tokens: int, storage: Any = None,
+                   keep_recent: int = 0) -> ContextHandler:
     return ContextHandlerLinear(
         fetcher,
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
+        keep_recent=keep_recent,
     )
 
 
 def _create_graph(*, fetcher: CompactionFetcher, max_context_threshold: int,
-                  compaction_output_max_tokens: int, storage: Any = None) -> ContextHandler:
+                  compaction_output_max_tokens: int, storage: Any = None,
+                  keep_recent: int = 0) -> ContextHandler:
     from ..graph_memory import GraphContextHandler
 
     return GraphContextHandler(
         compacting_fetcher=fetcher,
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
+        keep_recent=keep_recent,
     )
 
 
@@ -65,7 +69,8 @@ def context_handler_revision() -> tuple[str, ...]:
 def create_context_handler(name: str, *, fetcher: CompactionFetcher,
                            max_context_threshold: int = 262144,
                            compaction_output_max_tokens: int = 8192,
-                           storage: Any = None) -> ContextHandler:
+                           storage: Any = None,
+                           keep_recent: int = 0) -> ContextHandler:
     spec = CONTEXT_HANDLERS.get(name)
     if spec is None:
         raise ValueError(f"unknown context handler: {name!r} (available: {', '.join(available_context_handlers())})")
@@ -74,6 +79,7 @@ def create_context_handler(name: str, *, fetcher: CompactionFetcher,
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
+        keep_recent=keep_recent,
     )
 
 

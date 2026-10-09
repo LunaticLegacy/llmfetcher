@@ -19,9 +19,11 @@ from ..llm_types import (
     LLMContextCompacted,
     LLMOutput,
     LLMToolCall,
+    TokenUsage,
     ToolInfo,
 )
 from ..usage_ledger import UsageRecord, copy_usage, drain_records
+from ..execution.control import ExecutionController
 
 class CompactionFetcher(Protocol):
     """Describe the minimal LLM interface used for context compaction."""
@@ -214,6 +216,7 @@ class ContextHandlerLinear(ContextHandler):
         compaction_input_char_limit: int = _COMPACTION_INPUT_CHAR_LIMIT,
         compaction_output_max_tokens: int = _COMPACTION_OUTPUT_MAX_TOKENS,
         event_hook: Optional[Callable[[str, str, dict], None]] = None,
+        keep_recent: int = 0,
     ) -> None:
         """
         Initiate the context handler.
@@ -232,6 +235,11 @@ class ContextHandlerLinear(ContextHandler):
                 ``(event_type, message, data)`` for each compaction lifecycle
                 stage (started / success / failed / skipped). A raising hook
                 is isolated so a broken observer never breaks compaction.
+            keep_recent:
+                Default number of newest active entries compaction keeps
+                verbatim instead of summarising. ``0`` summarises the whole
+                active transcript. Overridable per call through
+                :meth:`compact`.
 
         Raises:
             ValueError: If either compaction budget is not positive.
@@ -244,6 +252,7 @@ class ContextHandlerLinear(ContextHandler):
             raise ValueError("compaction budgets must be greater than zero")
         self.compaction_input_char_limit = compaction_input_char_limit
         self.compaction_output_max_tokens = compaction_output_max_tokens
+        self.keep_recent = max(0, int(keep_recent))
 
         self.abstract: Optional[LLMContextCompacted] = None
         self.messages: List[LLMContext] = []
@@ -377,6 +386,7 @@ class ContextHandlerLinear(ContextHandler):
         model_duration_ms: Optional[int] = None,
         round_duration_ms: Optional[int] = None,
         created_at: Optional[float] = None,
+        controller: ExecutionController | None = None,
     ) -> None:
         """Append an LLM output to the conversation history.
 
@@ -417,15 +427,31 @@ class ContextHandlerLinear(ContextHandler):
         context_size: int = self._estimate_context_size()
         # print(f"Current context size: {context_size} / {self.compress_threshold} | {100 * context_size / self.compress_threshold}%")
         if context_size > self.compress_threshold:
-            self.compact()
+            self.compact(controller=controller)
 
-    def compact(self) -> bool:
+    def compact(
+        self,
+        *,
+        controller: ExecutionController | None = None,
+        keep_recent: int | None = None,
+    ) -> bool:
         """Compress the conversation history into a single abstract.
 
         Sends the current messages to the LLM with the compaction
         schema prompt, parses the response, and replaces all messages
         with the compacted ``LLMContextCompacted`` (stored in
         ``self.abstract``).
+
+        Args:
+            controller: Optional cancellation source for the compactor call.
+            keep_recent: Number of newest active entries to keep verbatim
+                instead of summarising them; ``None`` uses this handler's
+                configured default. Retained entries stay in the active
+                transcript and are excluded from the abstract's
+                ``source_timeline``. ``0`` archives the whole active
+                transcript (the original behaviour), and so does any value at
+                or above its length, because at least one entry is always
+                summarised.
 
         Returns:
             ``True`` on successful compaction, ``False`` otherwise
@@ -450,13 +476,25 @@ class ContextHandlerLinear(ContextHandler):
         started_at = time.time()
         round_index = self._round
 
+        # Retaining a verbatim tail moves the summarise/archive boundary: only
+        # the entries before it are summarised and archived, so the newest
+        # turns stay intact in the active transcript.  At least one entry is
+        # always summarised, otherwise compaction would report success while
+        # archiving nothing and the next round would compact again forever.
+        policy = self.keep_recent if keep_recent is None else int(keep_recent)
+        keep = max(0, min(policy, len(self.messages) - 1))
+        boundary = len(self.messages) - keep
+        archived_messages = self.messages[:boundary]
+        retained_messages = self.messages[boundary:]
+
         # Provenance is owned by the context handler, never by the model.
         # The next abstract includes the preceding abstract in its prompt, so
-        # retain its full source range as well as the active raw messages.
+        # retain its full source range plus the timelines this abstract
+        # actually replaces; a retained tail is not part of that range.
         source_timelines: List[int] = []
         if self.abstract is not None:
             source_timelines.extend(self.abstract.source_timeline)
-        source_timelines.extend(m.timeline for m in self.messages)
+        source_timelines.extend(m.timeline for m in archived_messages)
 
         request_preview = self.compaction_request_preview()
         compaction_input = request_preview.text
@@ -475,12 +513,29 @@ class ContextHandlerLinear(ContextHandler):
             },
         )
         try:
-            result: LLMOutput = self.llm_handler.fetch(
+            stream_usage = TokenUsage()
+            chunks: list[str] = []
+            for chunk in self.llm_handler.fetch_stream(
                 msg=request_preview.text,
                 system_prompt=request_preview.system_prompt,
                 temperature=request_preview.temperature,
                 max_tokens=request_preview.max_tokens,
                 context_handler=None,
+                usage_sink=stream_usage,
+                controller=controller,
+            ):
+                chunks.append(chunk)
+                self._emit_compaction_event(
+                    "context:compact_delta",
+                    "Context compaction model output",
+                    {"round": round_index, "channel": "content", "delta": chunk},
+                )
+            result = LLMOutput(
+                content="".join(chunks),
+                provider=self.llm_handler.default_backend_config.provider,
+                backend_name=self.llm_handler.default_backend_config.name,
+                model=self.llm_handler.default_backend_config.model,
+                usage=stream_usage,
             )
         except Exception as exc:
             self.last_compaction_error = f"Compaction model request failed: {exc}"
@@ -531,33 +586,37 @@ class ContextHandlerLinear(ContextHandler):
             )
             return False
 
-        # Count archived messages before the active buffer is cleared.
-        archived_count = len(self.messages)
+        # Count archived messages from the boundary computed before the
+        # compactor ran.
+        archived_count = len(archived_messages)
         self.abstract = LLMContextCompacted(
             abstract_msg=abstract_msg,
             source_timeline=source_timelines,
         )
         # Only archive after the compactor response has been parsed.  A
         # failed compaction must leave the active context wholly intact.
-        self.archive.extend(self.messages)
-        self.messages.clear()
+        self.archive.extend(archived_messages)
+        self.messages = retained_messages
 
-        # Compaction archives every active message, which would otherwise
-        # leave the next request as system-only (agent prompt + compacted
-        # abstract) and some providers return an empty completion for a
-        # request with no user turn (rejected as EMPTY_RESPONSE).  Mark the
-        # handler so the next build_messages() appends a derived resume
-        # user turn.  The resume prompt is intentionally NOT stored in
+        # Archiving every active message would otherwise leave the next
+        # request as system-only (agent prompt + compacted abstract) and some
+        # providers return an empty completion for a request with no user turn
+        # (rejected as EMPTY_RESPONSE).  Mark the handler so the next
+        # build_messages() appends a derived resume user turn - but only when
+        # nothing was retained, since a verbatim tail already supplies the
+        # user-visible turn.  The resume prompt is intentionally NOT stored in
         # ``messages``: it must not consume a timeline slot, must not be
         # re-archived by a later compaction, and must not be persisted.
-        self._pending_resume = True
+        self._pending_resume = not self.messages
         self._emit_compaction_event(
             "context:compact_success",
             f"Context compaction completed (round {round_index}): "
-            f"{archived_count} message(s) -> 1 abstract",
+            f"{archived_count} message(s) -> 1 abstract "
+            f"({len(retained_messages)} retained)",
             {
                 "round": round_index,
                 "archived_messages": archived_count,
+                "retained_messages": len(retained_messages),
                 "abstract_characters": len(abstract_msg),
                 "source_timeline": source_timelines,
                 "duration_ms": round((time.time() - started_at) * 1000),

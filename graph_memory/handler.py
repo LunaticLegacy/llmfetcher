@@ -37,6 +37,7 @@ from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
 from .retriever import GraphRetriever, GraphRetrievalResult, RetrievalConfig
 from ..usage_ledger import UsageRecord
+from ..execution.control import ExecutionController
 
 
 class GraphContextHandler(ContextHandler):
@@ -67,6 +68,8 @@ class GraphContextHandler(ContextHandler):
             from the compactor (forwarded to the linear handler).
         graph_save_suffix: Suffix appended to the context file path when
             persisting the graph (default ``".graph.json"``).
+        keep_recent: Default number of newest active entries the composed
+            linear handler keeps verbatim during compaction (forwarded).
     """
 
     def __init__(
@@ -82,12 +85,14 @@ class GraphContextHandler(ContextHandler):
         max_context_threshold: int = 262144,
         compaction_output_max_tokens: int = 8192,
         graph_save_suffix: str = ".graph.json",
+        keep_recent: int = 0,
     ) -> None:
         super().__init__()
         self.linear = ContextHandlerLinear(
             compacting_fetcher,
             max_context_threshold=max_context_threshold,
             compaction_output_max_tokens=compaction_output_max_tokens,
+            keep_recent=keep_recent,
         )
         self.store = store if store is not None else GraphStore()
         self.builder = GraphBuilder(self.store, fetcher=extraction_fetcher)
@@ -193,6 +198,26 @@ class GraphContextHandler(ContextHandler):
         self._last_retrieved_gen = self._compaction_generation
         return result
 
+    def compact(
+        self,
+        *,
+        controller: ExecutionController | None = None,
+        keep_recent: int | None = None,
+    ) -> bool:
+        """Compact the linear context and flush pending graph evidence.
+
+        Args:
+            controller: Optional cancellation source for the compaction call.
+            keep_recent: Number of newest active entries the composed linear
+                handler keeps verbatim instead of summarising; None uses
+                that handler's configured default.
+        """
+        compacted = self.linear.compact(controller=controller, keep_recent=keep_recent)
+        if compacted:
+            self._compaction_generation += 1
+            self._flush_pending()
+        return compacted
+
     # -- ContextHandler interface -------------------------------------------
 
     def add_user_message(self, message: "str | UserMessage") -> None:
@@ -223,6 +248,7 @@ class GraphContextHandler(ContextHandler):
         model_duration_ms: Optional[int] = None,
         round_duration_ms: Optional[int] = None,
         created_at: Optional[float] = None,
+        controller: ExecutionController | None = None,
     ) -> None:
         """Append an assistant output, detect compaction and flush the graph."""
         # Snapshot before the linear handler may compact the history.
@@ -244,6 +270,7 @@ class GraphContextHandler(ContextHandler):
             model_duration_ms=model_duration_ms,
             round_duration_ms=round_duration_ms,
             created_at=created_at,
+            controller=controller,
         )
         now = (len(self.linear.messages), self.linear.abstract is not None)
         compacted = prev[0] > 0 and now[0] == 0 and now[1]
