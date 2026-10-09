@@ -18,12 +18,16 @@ Angelus superproject.
 |---|---|---|---|---|
 | [test_compaction_tail.py](test_compaction_tail.py#L28) | `_ScriptedCompactor.default_backend_config` | `None` | `LLMBackendConfig` | Describe the single backend this compactor reports as. |
 | [test_compaction_tail.py](test_compaction_tail.py#L32) | `_ScriptedCompactor.fetch_stream` | `**_: object` | `Any` | Yield the scripted summary body as one streamed chunk. |
-| [test_compaction_tail.py](test_compaction_tail.py#L40) | `CompactionTailTests.test_keep_recent_leaves_a_verbatim_tail_outside_provenance` | `None` | `None` | Only the entries before the boundary are summarised and archived. |
-| [test_compaction_tail.py](test_compaction_tail.py#L52) | `CompactionTailTests.test_retained_tail_suppresses_the_derived_resume_turn` | `None` | `None` | A retained tail is already the user-visible turn. |
-| [test_compaction_tail.py](test_compaction_tail.py#L64) | `CompactionTailTests.test_retained_rows_never_duplicate_a_timeline_in_the_checkpoint` | `None` | `None` | Retained rows must not also be archived, so pages stay unique. |
-| [test_compaction_tail.py](test_compaction_tail.py#L80) | `CompactionTailTests.test_default_still_archives_everything_and_resumes` | `None` | `None` | ``keep_recent=0`` keeps the original behaviour. |
-| [test_compaction_tail.py](test_compaction_tail.py#L93) | `CompactionTailTests.test_keep_recent_beyond_the_transcript_archives_everything` | `None` | `None` | An oversized retention count degrades to a full compaction. |
-| [test_compaction_tail.py](test_compaction_tail.py#L105) | `CompactionTailTests.test_graph_handler_forwards_keep_recent` | `None` | `None` | The composing handler passes the retention boundary down. |
+| [test_compaction_tail.py](test_compaction_tail.py#L37) | `_assistant` | `content: str` | `LLMOutput` | Build one assistant output with the fields the handler requires. |
+| [test_compaction_tail.py](test_compaction_tail.py#L45) | `CompactionTailTests.test_handler_policy_applies_to_automatic_compaction` | `None` | `None` | A configured default governs the compaction the handler raises. |
+| [test_compaction_tail.py](test_compaction_tail.py#L60) | `CompactionTailTests.test_call_argument_overrides_the_handler_policy` | `None` | `None` | An explicit count wins over the configured default. |
+| [test_compaction_tail.py](test_compaction_tail.py#L70) | `CompactionTailTests.test_registry_forwards_keep_recent_to_the_composed_handler` | `None` | `None` | The shared configuration reaches the handlers that expose it. |
+| [test_compaction_tail.py](test_compaction_tail.py#L84) | `CompactionTailTests.test_keep_recent_leaves_a_verbatim_tail_outside_provenance` | `None` | `None` | Only the entries before the boundary are summarised and archived. |
+| [test_compaction_tail.py](test_compaction_tail.py#L96) | `CompactionTailTests.test_retained_tail_suppresses_the_derived_resume_turn` | `None` | `None` | A retained tail is already the user-visible turn. |
+| [test_compaction_tail.py](test_compaction_tail.py#L108) | `CompactionTailTests.test_retained_rows_never_duplicate_a_timeline_in_the_checkpoint` | `None` | `None` | Retained rows must not also be archived, so pages stay unique. |
+| [test_compaction_tail.py](test_compaction_tail.py#L124) | `CompactionTailTests.test_default_still_archives_everything_and_resumes` | `None` | `None` | ``keep_recent=0`` keeps the original behaviour. |
+| [test_compaction_tail.py](test_compaction_tail.py#L137) | `CompactionTailTests.test_keep_recent_beyond_the_transcript_archives_everything` | `None` | `None` | An oversized retention count degrades to a full compaction. |
+| [test_compaction_tail.py](test_compaction_tail.py#L149) | `CompactionTailTests.test_graph_handler_forwards_keep_recent` | `None` | `None` | The composing handler passes the retention boundary down. |
 | [test_context_handler_registry.py](test_context_handler_registry.py#L23) | `_Fetcher.default_backend_config` | `None` | `LLMBackendConfig` | Describe the one backend this fetcher reports. |
 | [test_context_handler_registry.py](test_context_handler_registry.py#L31) | `ContextHandlerRegistryTests.test_catalog_is_sorted_and_fully_described` | `None` | `None` | Every selectable handler carries a title and a description. |
 | [test_context_handler_registry.py](test_context_handler_registry.py#L42) | `ContextHandlerRegistryTests.test_default_handler_is_registered` | `None` | `None` | The fallback a host uses before a user chooses must exist. |
@@ -95,7 +99,7 @@ Angelus superproject.
 | Source | Class | Constructor / field input types | Base(s) | Semantics |
 |---|---|---|---|---|
 | [test_compaction_tail.py](test_compaction_tail.py#L20) | `_ScriptedCompactor` | `raw: str` | `object` | Yield one fixed ``<context_abstract>`` body for every summary request. |
-| [test_compaction_tail.py](test_compaction_tail.py#L37) | `CompactionTailTests` | `None` | `unittest.TestCase` | The retained tail keeps its timelines and its turn in the request. |
+| [test_compaction_tail.py](test_compaction_tail.py#L42) | `CompactionTailTests` | `None` | `unittest.TestCase` | The retained tail keeps its timelines and its turn in the request. |
 | [test_context_handler_registry.py](test_context_handler_registry.py#L19) | `_Fetcher` | `None` | `object` | Stand in for the compaction fetcher every handler is built with. |
 | [test_context_handler_registry.py](test_context_handler_registry.py#L28) | `ContextHandlerRegistryTests` | `None` | `unittest.TestCase` | The registry is the single list a host offers and builds from. |
 | [test_execution_controller.py](test_execution_controller.py#L18) | `ExecutionControllerTests` | `None` | `unittest.TestCase` | Verify one stop request governs resource cancellation and observation. |

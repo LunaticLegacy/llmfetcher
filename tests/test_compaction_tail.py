@@ -11,10 +11,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llmfetcher.context_handlers import SQLiteContextStorage
+from llmfetcher.context_handlers import SQLiteContextStorage, create_context_handler
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
 from llmfetcher.graph_memory import GraphContextHandler
-from llmfetcher.llm_types import LLMBackendConfig
+from llmfetcher.llm_types import LLMBackendConfig, LLMOutput
 
 
 class _ScriptedCompactor:
@@ -34,8 +34,52 @@ class _ScriptedCompactor:
         yield self.raw
 
 
+def _assistant(content: str) -> LLMOutput:
+    """Build one assistant output with the fields the handler requires."""
+    return LLMOutput(content=content, provider="test", backend_name="test", model="test-model")
+
+
 class CompactionTailTests(unittest.TestCase):
     """The retained tail keeps its timelines and its turn in the request."""
+
+    def test_handler_policy_applies_to_automatic_compaction(self) -> None:
+        """A configured default governs the compaction the handler raises."""
+        linear = ContextHandlerLinear(
+            _ScriptedCompactor(),
+            max_context_threshold=1,
+            keep_recent=1,
+        )
+        linear.add_user_message("one")
+        linear.add_user_message("two")
+
+        linear.add_assistant_message(_assistant("three"))
+
+        self.assertEqual([3], [message.timeline for message in linear.messages])
+        self.assertEqual([1, 2], [message.timeline for message in linear.archive])
+
+    def test_call_argument_overrides_the_handler_policy(self) -> None:
+        """An explicit count wins over the configured default."""
+        linear = ContextHandlerLinear(_ScriptedCompactor(), keep_recent=5)
+        for index in range(4):
+            linear.add_user_message(f"m{index}")
+
+        self.assertTrue(linear.compact(keep_recent=1))
+
+        self.assertEqual([4], [message.timeline for message in linear.messages])
+
+    def test_registry_forwards_keep_recent_to_the_composed_handler(self) -> None:
+        """The shared configuration reaches the handlers that expose it.
+
+        ``sage`` is deliberately absent: its constructor is being rewritten and
+        the registry only applies the policy there through a defensive lookup.
+        """
+        for name in ("graph", "linear"):
+            with self.subTest(handler=name):
+                handler = create_context_handler(name, fetcher=_ScriptedCompactor(), keep_recent=3)
+
+                composed = getattr(handler, "linear", handler)
+
+                self.assertEqual(3, composed.keep_recent)
 
     def test_keep_recent_leaves_a_verbatim_tail_outside_provenance(self) -> None:
         """Only the entries before the boundary are summarised and archived."""

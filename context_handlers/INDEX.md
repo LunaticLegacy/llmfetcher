@@ -37,19 +37,19 @@ nearest index owns every `context_handlers/*.py` source; the top-level
 | [archive_retrieval.py](archive_retrieval.py#L170) | `_bounded_record_text` | `record: LLMContext, limit: int` | `str` | Render a source record with one total character cap. |
 | [base.py](base.py#L37) | `ContextHandler.extra_usage` | `None` | `TokenUsage` | Token usage accumulated by internal (non-round) LLM calls. |
 | [base.py](base.py#L46) | `ContextHandler.record_usage` | `usage: Optional[TokenUsage]` | `None` | Accumulate one internal LLM call's usage into ``extra_usage``. |
-| [base.py](base.py#L61) | `ContextHandler.compact` | `controller: 'ExecutionController \| None', keep_recent: int` | `bool` | Compact this handler through its linear context implementation. |
-| [base.py](base.py#L86) | `ContextHandler.add_user_message` | `message: 'str \| UserMessage'` | `None` | Append an User input to conversation history. |
-| [base.py](base.py#L100) | `ContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]], usage: Optional[Dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float], controller: 'ExecutionController \| None'` | `None` | Record an LLM response into the conversation history. |
-| [base.py](base.py#L128) | `ContextHandler.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
-| [base.py](base.py#L142) | `ContextHandler.save` | `path: str \| Path` | `bool` | Save context from disk. |
-| [base.py](base.py#L154) | `ContextHandler.load` | `path: str \| Path` | `bool` | Load context from disk. |
-| [base.py](base.py#L166) | `ContextHandler.clear_context` | `None` | `bool` | Clear context. |
-| [registry.py](registry.py#L25) | `_create_linear` | `fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None` | `ContextHandler` | Build the flat durable transcript handler. |
-| [registry.py](registry.py#L41) | `_create_sage` | `fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None` | `ContextHandler` | Build the tree-indexed transcript handler. |
-| [registry.py](registry.py#L57) | `_create_graph` | `fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None` | `ContextHandler` | Build the transcript plus entity-relation graph handler. |
-| [registry.py](registry.py#L120) | `available_context_handlers` | `None` | `tuple[str, ...]` | Return every selectable handler id, sorted. |
-| [registry.py](registry.py#L129) | `context_handler_specs` | `None` | `tuple[ContextHandlerSpec, ...]` | Return the catalog in the order a host should present it. |
-| [registry.py](registry.py#L138) | `create_context_handler` | `name: str, fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None` | `ContextHandler` | Build one registered context handler. |
+| [base.py](base.py#L61) | `ContextHandler.compact` | `controller: 'ExecutionController \| None', keep_recent: 'int \| None'` | `bool` | Compact this handler through its linear context implementation. |
+| [base.py](base.py#L87) | `ContextHandler.add_user_message` | `message: 'str \| UserMessage'` | `None` | Append an User input to conversation history. |
+| [base.py](base.py#L101) | `ContextHandler.add_assistant_message` | `message: LLMOutput, tool_results: Optional[Dict[str, str]], usage: Optional[Dict[str, int]], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float], controller: 'ExecutionController \| None'` | `None` | Record an LLM response into the conversation history. |
+| [base.py](base.py#L129) | `ContextHandler.build_messages` | `None` | `List[Dict[str, Any]]` | Build context messages for an LLM request. |
+| [base.py](base.py#L143) | `ContextHandler.save` | `path: str \| Path` | `bool` | Save context from disk. |
+| [base.py](base.py#L155) | `ContextHandler.load` | `path: str \| Path` | `bool` | Load context from disk. |
+| [base.py](base.py#L167) | `ContextHandler.clear_context` | `None` | `bool` | Clear context. |
+| [registry.py](registry.py#L25) | `_create_linear` | `fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None, keep_recent: int` | `ContextHandler` | Build the flat durable transcript handler. |
+| [registry.py](registry.py#L43) | `_create_sage` | `fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None, keep_recent: int` | `ContextHandler` | Build the composed transcript handler. |
+| [registry.py](registry.py#L70) | `_create_graph` | `fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None, keep_recent: int` | `ContextHandler` | Build the transcript plus entity-relation graph handler. |
+| [registry.py](registry.py#L135) | `available_context_handlers` | `None` | `tuple[str, ...]` | Return every selectable handler id, sorted. |
+| [registry.py](registry.py#L144) | `context_handler_specs` | `None` | `tuple[ContextHandlerSpec, ...]` | Return the catalog in the order a host should present it. |
+| [registry.py](registry.py#L153) | `create_context_handler` | `name: str, fetcher: CompactionFetcher, max_context_threshold: int, compaction_output_max_tokens: int, storage: ContextStorage \| None, keep_recent: int` | `ContextHandler` | Build one registered context handler. |
 | [retrieved.py](retrieved.py#L65) | `_extract_json_from_text` | `text: str` | `dict[str, Any]` | Extract and parse the first valid JSON object from text via raw_decode. |
 | [retrieved.py](retrieved.py#L164) | `RetrievedContextHandler._init_session_state` | `None` | `None` | (Re)set all per-session transient state (P0-J). |
 | [retrieved.py](retrieved.py#L177) | `RetrievedContextHandler.has_retrieved` | `None` | `bool` | Implement `RetrievedContextHandler.has_retrieved`. |
@@ -107,7 +107,7 @@ nearest index owns every `context_handlers/*.py` source; the top-level
 | [archive_retrieval.py](archive_retrieval.py#L45) | `ArchiveEvidence` | `timeline_start: int, timeline_end: int, role: str, score: float, text: str, matched_terms: tuple[str, ...]` | `object` | A bounded, display-safe projection of one archived context record. |
 | [archive_retrieval.py](archive_retrieval.py#L63) | `ArchiveRetrievalResult` | `query: str, evidence: tuple[ArchiveEvidence, ...], scanned_records: int` | `object` | Result metadata plus bounded evidence suitable for later injection. |
 | [base.py](base.py#L12) | `ContextHandler` | `None` | `ABC` | Manages conversational context and builds API-ready message lists. |
-| [registry.py](registry.py#L77) | `ContextHandlerSpec` | `id: str, title: str, description: str, factory: Callable[..., ContextHandler]` | `object` | One host-selectable context implementation. |
+| [registry.py](registry.py#L92) | `ContextHandlerSpec` | `id: str, title: str, description: str, factory: Callable[..., ContextHandler]` | `object` | One host-selectable context implementation. |
 | [retrieved.py](retrieved.py#L88) | `RetrievedContextHandler` | `project_knowledge_root: str \| Path \| None, user_knowledge_root: str \| Path \| None, tlb_fetcher: CompactionFetcher, compacting_fetcher: CompactionFetcher, classify_fetcher: CompactionFetcher \| None, max_retrieved_sessions: int, retrieval_trigger: str, archive_scope: str, max_context_threshold: int` | `ContextHandler` | TLB-RAG powered conversation memory over linear context. |
 | [storage.py](storage.py#L22) | `PersistedContextPage` | `rows: list[dict[str, Any]], next_before: int \| None, total: int` | `object` | One bounded page returned from durable context storage. |
 | [storage.py](storage.py#L56) | `ContextStorage` | `None` | `Protocol` | Storage contract used by durable context handlers. |

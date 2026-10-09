@@ -62,7 +62,7 @@ class ContextHandler(ABC):
         self,
         *,
         controller: "ExecutionController | None" = None,
-        keep_recent: int = 0,
+        keep_recent: "int | None" = None,
     ) -> bool:
         """Compact this handler through its linear context implementation.
 
@@ -74,8 +74,9 @@ class ContextHandler(ABC):
         Args:
             controller: Optional cancellation source for the compaction call.
             keep_recent: Number of newest active entries to keep verbatim
-                instead of summarising them; ``0`` summarises the whole
-                active transcript.
+                instead of summarising them; ``None`` uses the handler's
+                configured default and ``0`` summarises the whole active
+                transcript.
         """
         linear = getattr(self, "linear", None)
         if linear is None or linear is self:

@@ -71,6 +71,8 @@ class GraphContextHandler(ContextHandler):
             persisting the graph (default ``".graph.json"``).
         storage: Optional durable row store for the composed linear handler;
             defaults to its SQLite implementation.
+        keep_recent: Default number of newest active entries the composed
+            linear handler keeps verbatim during compaction (forwarded).
     """
 
     def __init__(
@@ -87,6 +89,7 @@ class GraphContextHandler(ContextHandler):
         compaction_output_max_tokens: int = 8192,
         graph_save_suffix: str = ".graph.json",
         storage: ContextStorage | None = None,
+        keep_recent: int = 0,
     ) -> None:
         super().__init__()
         self.linear = ContextHandlerLinear(
@@ -94,6 +97,7 @@ class GraphContextHandler(ContextHandler):
             max_context_threshold=max_context_threshold,
             compaction_output_max_tokens=compaction_output_max_tokens,
             storage=storage,
+            keep_recent=keep_recent,
         )
         self.store = store if store is not None else GraphStore()
         self.builder = GraphBuilder(self.store, fetcher=extraction_fetcher)
@@ -203,14 +207,15 @@ class GraphContextHandler(ContextHandler):
         self,
         *,
         controller: ExecutionController | None = None,
-        keep_recent: int = 0,
+        keep_recent: int | None = None,
     ) -> bool:
         """Compact the linear context and flush pending graph evidence.
 
         Args:
             controller: Optional cancellation source for the compaction call.
             keep_recent: Number of newest active entries the composed linear
-                handler keeps verbatim instead of summarising.
+                handler keeps verbatim instead of summarising; ``None`` uses
+                that handler's configured default.
         """
         compacted = self.linear.compact(controller=controller, keep_recent=keep_recent)
         if compacted:

@@ -73,6 +73,7 @@ class ContextHandlerLinear(ContextHandler):
         compaction_output_max_tokens: int = _COMPACTION_OUTPUT_MAX_TOKENS,
         event_hook: Optional[Callable[[str, str, dict], None]] = None,
         storage: ContextStorage | None = None,
+        keep_recent: int = 0,
     ) -> None:
         """
         Initiate the context handler.
@@ -93,6 +94,11 @@ class ContextHandlerLinear(ContextHandler):
                 is isolated so a broken observer never breaks compaction.
             storage:
                 Durable row store; defaults to the SQLite implementation.
+            keep_recent:
+                Default number of newest active entries compaction keeps
+                verbatim instead of summarising. ``0`` summarises the whole
+                active transcript. Overridable per call through
+                :meth:`compact`.
 
         Raises:
             ValueError: If either compaction budget is not positive.
@@ -106,6 +112,7 @@ class ContextHandlerLinear(ContextHandler):
             raise ValueError("compaction budgets must be greater than zero")
         self.compaction_input_char_limit = compaction_input_char_limit
         self.compaction_output_max_tokens = compaction_output_max_tokens
+        self.keep_recent = max(0, int(keep_recent))
 
         self.abstract: Optional[LLMContextCompacted] = None
         self.messages: List[LLMContext] = []
@@ -285,7 +292,7 @@ class ContextHandlerLinear(ContextHandler):
         self,
         *,
         controller: ExecutionController | None = None,
-        keep_recent: int = 0,
+        keep_recent: int | None = None,
     ) -> bool:
         """Compress the conversation history into a single abstract.
 
@@ -297,8 +304,9 @@ class ContextHandlerLinear(ContextHandler):
         Args:
             controller: Optional cancellation source for the compactor call.
             keep_recent: Number of newest active entries to keep verbatim
-                instead of summarising them. Retained entries stay in the
-                active transcript and are excluded from the abstract's
+                instead of summarising them; ``None`` uses this handler's
+                configured default. Retained entries stay in the active
+                transcript and are excluded from the abstract's
                 ``source_timeline``. ``0`` archives the whole active
                 transcript (the original behaviour), and so does any value at
                 or above its length, because at least one entry is always
@@ -332,7 +340,8 @@ class ContextHandlerLinear(ContextHandler):
         # turns stay intact in the active transcript.  At least one entry is
         # always summarised, otherwise compaction would report success while
         # archiving nothing and the next round would compact again forever.
-        keep = max(0, min(int(keep_recent), len(self.messages) - 1))
+        policy = self.keep_recent if keep_recent is None else int(keep_recent)
+        keep = max(0, min(policy, len(self.messages) - 1))
         boundary = len(self.messages) - keep
         archived_messages = self.messages[:boundary]
         retained_messages = self.messages[boundary:]

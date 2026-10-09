@@ -28,6 +28,7 @@ def _create_linear(
     max_context_threshold: int,
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
+    keep_recent: int = 0,
 ) -> ContextHandler:
     """Build the flat durable transcript handler."""
     return ContextHandlerLinear(
@@ -35,6 +36,7 @@ def _create_linear(
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
+        keep_recent=keep_recent,
     )
 
 
@@ -44,14 +46,25 @@ def _create_sage(
     max_context_threshold: int,
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
+    keep_recent: int = 0,
 ) -> ContextHandler:
-    """Build the tree-indexed transcript handler."""
-    return SageContext(
+    """Build the composed transcript handler.
+
+    ``SageContext`` does not expose ``keep_recent`` in its constructor yet, so
+    the retention policy is applied to the linear handler it composes - which
+    is where its compaction runs. Should that composed handler disappear, the
+    setting stops applying to Sage and the constructor needs the keyword.
+    """
+    handler = SageContext(
         fetcher,
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
     )
+    linear = getattr(handler, "linear", None)
+    if linear is not None:
+        linear.keep_recent = keep_recent
+    return handler
 
 
 def _create_graph(
@@ -60,6 +73,7 @@ def _create_graph(
     max_context_threshold: int,
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
+    keep_recent: int = 0,
 ) -> ContextHandler:
     """Build the transcript plus entity-relation graph handler."""
     # Imported lazily: graph_memory imports this package's linear handler.
@@ -70,6 +84,7 @@ def _create_graph(
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
+        keep_recent=keep_recent,
     )
 
 
@@ -142,6 +157,7 @@ def create_context_handler(
     max_context_threshold: int = 262144,
     compaction_output_max_tokens: int = 8192,
     storage: ContextStorage | None = None,
+    keep_recent: int = 0,
 ) -> ContextHandler:
     """Build one registered context handler.
 
@@ -151,6 +167,8 @@ def create_context_handler(
         max_context_threshold: Character threshold that triggers compaction.
         compaction_output_max_tokens: Compactor completion-token budget.
         storage: Optional durable row store.
+        keep_recent: Number of newest active entries compaction keeps verbatim
+            instead of summarising (``0`` summarises the whole transcript).
 
     Returns:
         A configured handler.
@@ -169,6 +187,7 @@ def create_context_handler(
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
+        keep_recent=keep_recent,
     )
 
 
