@@ -1,6 +1,7 @@
+# Agent core: the Agent class and its private helpers.
 from __future__ import annotations
 
-from .multimodal import UserMessage, ImageToolResult, MAX_REQUEST_IMAGES
+from ..multimodal import UserMessage, ImageToolResult, MAX_REQUEST_IMAGES
 
 import threading
 import time
@@ -12,8 +13,8 @@ from enum import Enum
 from typing import List, Any, Optional, Dict, Protocol, Callable
 from pathlib import Path
 
-from .llm_fetcher import LLMBackendConfig, LLMFetcher, LLMBackendHandler
-from .llm_types import (
+from ..llm_fetcher import LLMBackendConfig, LLMFetcher, LLMBackendHandler
+from ..llm_types import (
     Tool,
     ToolParameter,
     ToolSchema,
@@ -22,210 +23,16 @@ from .llm_types import (
     LLMToolCall,
     TokenUsage,
 )
-from .tool_handler import ToolHandler
-from .tool_executor import ToolBatchCancelled, ToolExecutor
-from .context_handlers import ContextHandlerLinear, ContextHandler
-from .events import ExecutionEvent, ExecutionHook
-from .usage_ledger import UsageRecord, add_usage, copy_usage
-from .execution import ExecutionController
+from ..tool_handler import ToolHandler
+from ..tool_executor import ToolBatchCancelled, ToolExecutor
+from ..context_handlers import ContextHandlerLinear, ContextHandler
+from ..events import ExecutionEvent, ExecutionHook
+from ..usage_ledger import UsageRecord, add_usage, copy_usage
+from ..execution import ExecutionController
 
-
-def _supports_force_control(control: object) -> bool:
-    """Return whether one cooperative control can cancel provider resources.
-
-    Args:
-        control: Candidate global or Agent-scoped execution control.
-
-    Returns:
-        ``True`` when the object exposes the force-cancellation contract used
-        by ``LLMFetcher`` and tool execution.
-    """
-    return (
-        isinstance(control, ExecutionController)
-        or (
-            control is not None
-            and callable(getattr(control, "register_force_canceller", None))
-            and hasattr(control, "force_stopped")
-        )
-    )
-
-
-class AgentRunControl(Protocol):
-    """Describe cooperative controls read between completed Agent steps.
-
-    Implementations may persist requests in a database or keep them in an
-    application-specific queue. Methods are deliberately only called after a
-    model response and its tool batch have completed.
-    """
-
-    def should_stop(self) -> bool:
-        """Return whether the Agent should stop at the current safe boundary."""
-        ...
-
-    def drain_steers(self) -> list[str]:
-        """Return and consume queued user steering messages in FIFO order."""
-        ...
-
-
-class AgentRunStopped(RuntimeError):
-    """Signal a cooperative stop after durable completion of one Agent step.
-
-    Args:
-        message: Human-readable reason for ending the current run.
-        last_output: Model result from the completed boundary. It is ``None``
-            only when no model round completed before the stop was observed.
-
-    The exception is raised only after the latest assistant message has been
-    added to the context and that context has been saved. Browser callers use
-    ``last_output`` to persist the matching display transcript.
-    """
-
-    def __init__(self, message: str, *, last_output: LLMOutput | None = None) -> None:
-        super().__init__(message)
-        self.last_output = last_output
-
-
-class AgentRunLimitReached(RuntimeError):
-    """Signal that an Agent exhausted its round budget before a terminal result.
-
-    The last response requested tools, so returning it as a user-facing answer
-    would silently discard the required next model step.
-    """
-
-
-class ContextLoadError(RuntimeError):
-    """Signal that an existing Agent checkpoint could not be restored."""
-
-
-class ContextSaveError(RuntimeError):
-    """Signal that a configured Agent checkpoint could not be committed."""
-
-
-class AgentRunTermination(str, Enum):
-    """Explicit terminal classifications for one completed Agent invocation."""
-
-    FINAL_RESPONSE = "final_response"
-    STOP_TURN = "stop_turn"
-    WORKFLOW_COMPLETION = "workflow_completion"
-    USER_STOPPED = "user_stopped"
-    EMPTY_RESPONSE = "empty_response"
-    ROUND_LIMIT = "round_limit"
-
-
-@dataclass(frozen=True)
-class AgentRunOutcome:
-    """Inspectable terminal state for an Agent run.
-
-    Args:
-        termination: Explicit reason the run stopped progressing.
-        rounds: Number of completed model rounds.
-        detail: Optional model- or control-provided terminal explanation.
-        output: Last completed model response, if one exists.
-
-    ``output`` is retained in-process for hosts that need the exact response;
-    lifecycle events use :meth:`to_dict` and therefore never serialize it.
-    """
-
-    termination: AgentRunTermination
-    rounds: int
-    detail: str = ""
-    output: LLMOutput | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return the credential-free terminal fields for lifecycle events."""
-        return {
-            "termination": self.termination.value,
-            "rounds": self.rounds,
-            "detail": self.detail,
-            "has_output": self.output is not None,
-        }
-
-
-@dataclass(frozen=True)
-class RequestIndex:
-    """Content-free index for one remote LLM request.
-
-    Args:
-        request_id: Opaque identifier distinct from any provider response id.
-        round: One-based Agent round the request belongs to.
-        model: Provider model identifier the request targeted.
-        stream: Whether the request asked for a streaming response.
-        message_count: Number of context messages sent.
-        message_roles: Count of messages per role.
-        source_ids: Durable provenance identifiers copied from messages.
-        input_characters: Total characters across message content.
-        estimated_input_tokens: Rough token estimate used for sizing only.
-        input_sha256: Hash of the canonical serialized message body.
-        tool_count: Number of registered tools sent.
-        tool_schema_hashes: Truncated hash per serialized tool schema.
-        temperature: Sampling temperature supplied to the provider.
-        max_tokens: Completion budget supplied to the provider.
-    """
-
-    request_id: str
-    round: int
-    model: str
-    stream: bool
-    message_count: int
-    message_roles: dict[str, int]
-    source_ids: list[str]
-    input_characters: int
-    estimated_input_tokens: int
-    input_sha256: str
-    tool_count: int
-    tool_schema_hashes: list[str]
-    temperature: Any
-    max_tokens: Any
-
-
-@dataclass(frozen=True)
-class RequestContentMessage:
-    """One capped context message retained only for the console ledger.
-
-    Args:
-        role: Message role supplied to the model.
-        content: Capped textual rendering of the message content.
-        characters: Full character count before capping.
-        truncated: Whether ``content`` was shortened for the ledger.
-    """
-
-    role: str
-    content: str
-    characters: int
-    truncated: bool
-
-
-@dataclass(frozen=True)
-class RequestContent:
-    """Capped, readable preview of one dispatch-ready request.
-
-    Args:
-        round: One-based Agent round the request belongs to.
-        model: Provider model identifier the request targeted.
-        messages: Capped tail of context messages sent to the provider.
-        omitted_messages: Count of earlier messages dropped from that tail.
-    """
-
-    round: int
-    model: str
-    messages: list[RequestContentMessage]
-    omitted_messages: int
-
-
-def _tool_result_text(value: Any) -> str:
-    """Return the complete tool-result string supplied back to the model.
-
-    Args:
-        value: Raw value returned by a tool handler.
-    Returns:
-        Complete string form of ``value`` without a display or persistence limit.
-
-    Notes:
-        This model-facing conversion is intentionally separate from lifecycle
-        events, which retain their raw value so JSON results reach the UI as
-        structured data rather than Python's escaped representation.
-    """
-    return str(value)
+from .control import AgentRunControl, _supports_force_control
+from .errors import AgentRunLimitReached, AgentRunStopped, ContextLoadError, ContextSaveError
+from .models import AgentRunOutcome, AgentRunTermination, RequestContent, RequestContentMessage, RequestIndex
 
 
 class Agent:
@@ -624,8 +431,8 @@ class Agent:
     # round resends the whole running context, so persisting every message
     # verbatim would grow the journal quadratically; each message is capped and
     # only the newest tail window is retained.
-    _REQUEST_CONTENT_MESSAGE_LIMIT = 32
-    _REQUEST_CONTENT_CHARACTER_LIMIT = 2000
+    _REQUEST_CONTENT_MESSAGE_LIMIT = 2000
+    _REQUEST_CONTENT_CHARACTER_LIMIT = 200000
 
     @classmethod
     def _request_content(cls, request: Any, round_idx: int) -> RequestContent:
