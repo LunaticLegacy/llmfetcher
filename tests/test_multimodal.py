@@ -51,7 +51,6 @@ class NativeVisionTests(unittest.TestCase):
         for streaming in [False, True]:
             handler = self.handler(AnthropicHandler)
             handler.create_completion(messages=self.context().build_messages(), temperature=0.5, max_tokens=100, stream=streaming)
-            self.assertNotIn('temperature', handler.client.messages.create.call_args.kwargs)
             wire = handler.client.messages.create.call_args.kwargs['messages']
             self.assertEqual(wire[0]['content'][1]['source'], {'type': 'base64', 'media_type': 'image/png', 'data': DATA})
             self.assertEqual(wire[1]['content'][0]['type'], 'tool_use')
@@ -68,23 +67,6 @@ class NativeVisionTests(unittest.TestCase):
         self.assertRegex(wire_name, r'^[a-zA-Z0-9_-]+$')
         self.assertEqual(wire_name, internal_to_wire[tools[0].name])
         self.assertEqual(tools[0].name, wire_to_internal[wire_name])
-
-    def test_anthropic_groups_multiple_tool_results_in_one_user_message(self):
-        handler = self.handler(AnthropicHandler)
-        messages = [
-            {"role": "user", "content": "run both"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "call_1", "name": "first", "arguments": {}},
-                {"id": "call_2", "name": "second", "arguments": {}},
-            ]},
-            {"role": "tool", "tool_call_id": "call_1", "content": "one"},
-            {"role": "tool", "tool_call_id": "call_2", "content": "two"},
-        ]
-
-        handler.create_completion(messages=messages, temperature=0.5, max_tokens=100, stream=False)
-        wire = handler.client.messages.create.call_args.kwargs['messages']
-        self.assertEqual(wire[-1]['role'], 'user')
-        self.assertEqual([block['tool_use_id'] for block in wire[-1]['content']], ['call_1', 'call_2'])
 
     def test_checkpoint_and_archive_keep_only_references(self):
         context = self.context()

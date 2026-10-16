@@ -269,6 +269,8 @@ class OnnxRuntimeGenAIHandler(LLMBackendHandler):
         self,
         messages: list[dict[str, str]],
         tools: Optional[list[ToolSchemaDict]] = None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ) -> list[dict[str, str]]:
         """Return messages as-is; the tokenizer's built-in chat template
         handles the formatting during ``tokenizer.encode_chat()``."""
@@ -324,7 +326,12 @@ class OnnxRuntimeGenAIHandler(LLMBackendHandler):
             json.dumps(history),
             tools=json.dumps(tools) if tools else None,
         )
-        prompt = _apply_thinking_prefix(prompt, self.chat_template_context(history))
+        template_context = self.chat_template_context(history)
+        if thinking_mode == "off":
+            template_context["enable_thinking"] = False
+        elif thinking_mode == "on":
+            template_context["enable_thinking"] = True
+        prompt = _apply_thinking_prefix(prompt, template_context)
         input_ids = self.tokenizer.encode(prompt)
 
         # Build generator parameters.

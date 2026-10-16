@@ -1,10 +1,10 @@
 # Core dependencies
-openai==2.54.0
-openai-agents==0.17.0
+openai>=1.0.0
+openai-agents>=0.17.0
 anthropic==1.8.0
 
 # Optional dependencies for additional LLM backends
-litellm==1.100.3
+litellm>=1.0.0
 
 # Development dependencies (optional)
 # pytest>=7.0.0
@@ -14,4 +14,4 @@ litellm==1.100.3
 # sentence-transformers     
 
 # markdown parser
-markdown-it-py==4.2.0
+markdown-it-py

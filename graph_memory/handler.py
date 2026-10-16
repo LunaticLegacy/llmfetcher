@@ -31,13 +31,14 @@ import uuid
 from ..context_handlers.base import ContextHandler, checkpoint_lock
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
+from ..context_handlers.storage import ContextStorage
 from ..multimodal import ImageToolResult, UserMessage, validate_images
 from ..llm_types import LLMContext, LLMOutput
+from ..execution.control import ExecutionController
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
 from .retriever import GraphRetriever, GraphRetrievalResult, RetrievalConfig
 from ..usage_ledger import UsageRecord
-from ..execution.control import ExecutionController
 
 
 class GraphContextHandler(ContextHandler):
@@ -68,6 +69,8 @@ class GraphContextHandler(ContextHandler):
             from the compactor (forwarded to the linear handler).
         graph_save_suffix: Suffix appended to the context file path when
             persisting the graph (default ``".graph.json"``).
+        storage: Optional durable row store for the composed linear handler;
+            defaults to its SQLite implementation.
         keep_recent: Default number of newest active entries the composed
             linear handler keeps verbatim during compaction (forwarded).
     """
@@ -85,6 +88,7 @@ class GraphContextHandler(ContextHandler):
         max_context_threshold: int = 262144,
         compaction_output_max_tokens: int = 8192,
         graph_save_suffix: str = ".graph.json",
+        storage: ContextStorage | None = None,
         keep_recent: int = 0,
     ) -> None:
         super().__init__()
@@ -92,6 +96,7 @@ class GraphContextHandler(ContextHandler):
             compacting_fetcher,
             max_context_threshold=max_context_threshold,
             compaction_output_max_tokens=compaction_output_max_tokens,
+            storage=storage,
             keep_recent=keep_recent,
         )
         self.store = store if store is not None else GraphStore()
@@ -209,7 +214,7 @@ class GraphContextHandler(ContextHandler):
         Args:
             controller: Optional cancellation source for the compaction call.
             keep_recent: Number of newest active entries the composed linear
-                handler keeps verbatim instead of summarising; None uses
+                handler keeps verbatim instead of summarising; ``None`` uses
                 that handler's configured default.
         """
         compacted = self.linear.compact(controller=controller, keep_recent=keep_recent)
@@ -306,8 +311,6 @@ class GraphContextHandler(ContextHandler):
             return self._save_locked(target)
 
     def _save_locked(self, target: Path) -> bool:
-        """Persist the graph and linear checkpoint under one shared lock."""
-        self.last_save_error = None
         self._flush_pending()
         generation = uuid.uuid4().hex
         graph_name = f"{target.name}{self.graph_save_suffix}.{generation}"
@@ -316,7 +319,6 @@ class GraphContextHandler(ContextHandler):
         # its reference, making the primary atomic replacement the pair's
         # transaction boundary.
         if not self.store.save(graph_path):
-            self.last_save_error = getattr(self.store, "last_save_error", None) or self.linear.last_save_error
             return False
         committed = self.linear.save(
             target,
@@ -324,7 +326,6 @@ class GraphContextHandler(ContextHandler):
             graph_checkpoint=graph_name,
         )
         if not committed:
-            self.last_save_error = self.linear.last_save_error
             return False
         # Once the primary file references the new immutable graph, older
         # generations and crash-orphans are no longer reachable. Bound local

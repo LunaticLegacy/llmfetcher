@@ -421,6 +421,8 @@ class LLMFetcher:
         system_prompt: Optional[str] = None,
         temperature: float = 0.4,
         max_tokens: int = 4096,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         context_handler: Optional[ContextHandler] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
@@ -452,6 +454,7 @@ class LLMFetcher:
             raise LLMBackendError("No backend is configured")
         _, snapshot = self._prepare_backend_request(
             backends[0], messages, temperature, max_tokens, tools, stream,
+            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
         )
         return snapshot
 
@@ -461,6 +464,8 @@ class LLMFetcher:
         system_prompt: Optional[str] = None,
         temperature: float = 0.4,
         max_tokens: int = 4096,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         context_handler: Optional[ContextHandler] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
@@ -549,6 +554,7 @@ class LLMFetcher:
                         self._raise_if_force_stopped(controller)
                         handler, snapshot, tool_name_map = self._prepare_backend_request(
                             backend, messages, temperature, max_tokens, tools, False,
+                            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
                             include_tool_name_map=True,
                         )
                         active_handler = handler
@@ -562,6 +568,7 @@ class LLMFetcher:
                             max_tokens=max_tokens,
                             stream=False,
                             tools=snapshot.tools,
+                            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
                         )
                         self._raise_if_force_stopped(controller)
                         result = handler.normalize_completion_response(raw)
@@ -592,6 +599,8 @@ class LLMFetcher:
         system_prompt: Optional[str] = None,
         temperature: float = 0.4,
         max_tokens: int = 4096,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         output_reasoning: bool = False,
         context_handler: Optional[ContextHandler] = None,
         backend_name: Optional[str] = None,
@@ -685,6 +694,7 @@ class LLMFetcher:
                         self._raise_if_force_stopped(controller)
                         handler, snapshot, tool_name_map = self._prepare_backend_request(
                             backend, messages, temperature, max_tokens, tools, True,
+                            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
                             include_tool_name_map=True,
                         )
                         active_handler = handler
@@ -745,6 +755,8 @@ class LLMFetcher:
         tools: Optional[Sequence[ToolDefinition]],
         stream: bool,
         *,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         include_tool_name_map: bool = False,
     ) -> tuple[LLMBackendHandler, RemoteRequestSnapshot] | tuple[LLMBackendHandler, RemoteRequestSnapshot, tuple[dict[str, str], dict[str, str]]]:
         """Prepare one backend's tool schemas and safe request snapshot.
@@ -756,9 +768,12 @@ class LLMFetcher:
             max_tokens: Completion-token cap selected for the request.
             tools: Optional model-visible tools requiring provider preparation.
             stream: Whether this request would use provider streaming.
+            include_tool_name_map: When true, also return the request-local
+                internal-to-wire and wire-to-internal Tool-name maps.
 
         Returns:
-            Prepared backend handler and its credential-free request snapshot.
+            Prepared backend handler and its credential-free request snapshot,
+            plus the Tool-name maps when ``include_tool_name_map`` is set.
         """
         handler = self._handler_for_backend(backend)
         prepare_with_mapping = getattr(handler, "prepare_tools_with_mapping", None)
@@ -775,7 +790,8 @@ class LLMFetcher:
         # owns native wire conversion.
         if images and backend.provider not in {'openai', 'anthropic'}:
             raise ValueError(f'Provider {backend.provider} does not support native image inputs')
-        if len(images) > 20:
+        from .multimodal import MAX_REQUEST_IMAGES
+        if len(images) > MAX_REQUEST_IMAGES:
             raise ValueError('Image request exceeds 20 images; compact or start a new conversation')
         snapshot = RemoteRequestSnapshot(
             model=backend.model,
@@ -784,6 +800,8 @@ class LLMFetcher:
             max_tokens=max_tokens,
             stream=stream,
             tools=list(provider_tools or []),
+            thinking_mode=thinking_mode,
+            reasoning_effort=reasoning_effort,
         )
         if include_tool_name_map:
             return handler, snapshot, (internal_to_wire, wire_name_to_internal_name)

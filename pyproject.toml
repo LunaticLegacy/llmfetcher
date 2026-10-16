@@ -12,11 +12,11 @@ authors = [
     {name = "LunaticLegacy"},
 ]
 dependencies = [
-    "openai==2.54.0",
+    "openai>=1.0.0",
     "anthropic==1.8.0",
-    "litellm==1.100.3",
-    "markdown-it-py==4.2.0",
-    "networkx==3.7",
+    "litellm>=1.0.0",
+    "markdown-it-py",
+    "networkx",
 ]
 
 [project.scripts]

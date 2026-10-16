@@ -39,6 +39,8 @@ class RemoteRequestSnapshot:
     max_tokens: int
     stream: bool
     tools: list[JsonObject] = field(default_factory=list)
+    thinking_mode: str = "auto"
+    reasoning_effort: str = "auto"
 
     def to_dict(self) -> JsonObject:
         """Return the JSON-safe event payload used by application hosts.
@@ -53,6 +55,8 @@ class RemoteRequestSnapshot:
             "messages": self.messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "thinking_mode": self.thinking_mode,
+            "reasoning_effort": self.reasoning_effort,
             "stream": self.stream,
             "tools": self.tools,
         }

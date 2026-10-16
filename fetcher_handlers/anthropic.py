@@ -33,7 +33,7 @@ class AnthropicHandler(LLMBackendHandler):
 
         def flush_tool_results() -> None:
             if pending_tool_results:
-                anthropic_messages.append({"role": "user", "content": list(pending_tool_results)})
+                anthropic_messages.append({"role": "user", "content": pending_tool_results.copy()})
                 pending_tool_results.clear()
 
         for msg in messages:
@@ -45,16 +45,17 @@ class AnthropicHandler(LLMBackendHandler):
                     raise ValueError('Images require user or tool messages')
                 content = ([{'type': 'text', 'text': content}] if content else []) + images
             if role == "system":
-                flush_tool_results()
                 system_message = content
                 continue
             if role == "tool":
                 tool_call_id = msg.get("tool_call_id", "")
-                pending_tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call_id,
-                    "content": content,
-                })
+                pending_tool_results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_call_id,
+                        "content": content,
+                    }
+                )
             elif role == 'assistant' and msg.get('tool_calls'):
                 flush_tool_results()
                 blocks = [{'type': 'text', 'text': content}] if content else []
@@ -145,22 +146,22 @@ class AnthropicHandler(LLMBackendHandler):
         max_tokens: int,
         stream: bool,
         tools=None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ):
         anthropic_messages, system_prompt = self.convert_messages(messages)
         kwargs = {
             "model": self.backend.model,
             "messages": anthropic_messages,
             "max_tokens": max_tokens,
+            "temperature": temperature,
             "stream": stream,
         }
         if system_prompt:
             kwargs["system"] = system_prompt
         if tools:
             kwargs["tools"] = tools
-        # Anthropic's official 1.x Messages API removed the temperature
-        # parameter.  Filter it from compatibility extras as well so a
-        # profile cannot reintroduce the unsupported keyword.
-        kwargs.update({key: value for key, value in self.backend.extra.items() if key != "temperature"})
+        kwargs.update(self.backend.extra)
         return self.client.messages.create(**kwargs)
 
     def normalize_completion_response(self, response) -> LLMOutput:

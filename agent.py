@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .multimodal import UserMessage, ImageToolResult
+from .multimodal import UserMessage, ImageToolResult, MAX_REQUEST_IMAGES
 
 import threading
 import time
@@ -243,6 +243,8 @@ class Agent:
         enable_stop_turn: bool = False,
         default_stream: bool = False,
         output_reasoning: bool = True,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         tool_result_transformer: Callable[[str, str, str], str] | None = None,
     ):
         """Initialize one tool-using Agent.
@@ -279,6 +281,10 @@ class Agent:
             raise ValueError("default_max_rounds must be zero or greater")
         if default_max_tokens <= 0:
             raise ValueError("default_max_tokens must be greater than zero")
+        if thinking_mode not in {"auto", "on", "off"}:
+            raise ValueError("thinking_mode must be auto, on, or off")
+        if reasoning_effort not in {"auto", "low", "medium", "high"}:
+            raise ValueError("reasoning_effort must be auto, low, medium, or high")
 
         # Initiate the variable.
         self.llm_fetcher = llm_fetcher
@@ -290,6 +296,8 @@ class Agent:
         self.default_max_tokens = default_max_tokens
         self.default_stream = default_stream
         self.output_reasoning = output_reasoning
+        self.thinking_mode = thinking_mode
+        self.reasoning_effort = reasoning_effort
         self.tool_result_transformer = tool_result_transformer
 
         # Handle the tool, and make the tool executor.
@@ -760,6 +768,48 @@ class Agent:
             raise error
         return True
 
+    def compact_context(self, *, control: AgentRunControl | None = None) -> bool:
+        """Run the same cancellable compactor used by automatic compaction.
+
+        Hosts use this entry point for an explicit user request. The context
+        handler remains the owner of summary parsing and durable state, so an
+        explicit compaction cannot drift from automatic behavior.
+        """
+        controller = control if _supports_force_control(control) else None
+        compact = getattr(self.context_handler, "compact", None)
+        if not callable(compact):
+            raise RuntimeError("context handler does not support compaction")
+        compacted = bool(compact(controller=controller))
+        if compacted:
+            self._save_context()
+        return compacted
+
+    def _compact_for_image_budget(self, *, control: AgentRunControl | None = None) -> bool:
+        """Compact before the next request reaches the image-count guard.
+
+        Keep the newest image-bearing message visible after compaction. This
+        matters for screenshots: the model has not yet seen the latest tool
+        result when the request budget is reached.
+        """
+        messages = self.context_handler.build_messages()
+        count = sum(len(message.get("images", ())) for message in messages)
+        if count < MAX_REQUEST_IMAGES:
+            return False
+        recent_images = next(
+            (message["images"] for message in reversed(messages) if message.get("images")),
+            [],
+        )[-8:]
+        if not self.compact_context(control=control):
+            linear = getattr(self.context_handler, "linear", self.context_handler)
+            reason = getattr(linear, "last_compaction_error", None) or "unknown error"
+            raise RuntimeError(f"Image budget compaction failed: {reason}")
+        if recent_images:
+            self.context_handler.add_user_message(UserMessage(
+                "Most recent image retained after context compaction.", recent_images,
+            ))
+            self._save_context()
+        return True
+
     def _fetch_model_with_force_stop(
         self,
         *,
@@ -913,6 +963,8 @@ class Agent:
         verbose: bool = False,
         control: AgentRunControl | None = None,
         stream: bool | None = None,
+        thinking_mode: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> LLMOutput:
         """Run the Agent until one explicit terminal outcome is reached.
 
@@ -951,6 +1003,12 @@ class Agent:
             self.default_max_tokens if max_tokens is None else max_tokens
         )
         resolved_stream = self.default_stream if stream is None else stream
+        resolved_thinking_mode = self.thinking_mode if thinking_mode is None else thinking_mode
+        resolved_reasoning_effort = self.reasoning_effort if reasoning_effort is None else reasoning_effort
+        if resolved_thinking_mode not in {"auto", "on", "off"}:
+            raise ValueError("thinking_mode must be auto, on, or off")
+        if resolved_reasoning_effort not in {"auto", "low", "medium", "high"}:
+            raise ValueError("reasoning_effort must be auto, low, medium, or high")
         if resolved_max_rounds < 0:
             raise ValueError("max_rounds must be zero or greater")
         if resolved_max_tokens <= 0:
@@ -1018,6 +1076,12 @@ class Agent:
             if verbose:
                 print("=" * 10 + "  ROUND " + str(round_idx) + "=" * 10)
 
+            # Screenshots and reopened images accumulate in durable context.
+            # Compact while there is still room for the newest image to be
+            # carried into the next request instead of failing at dispatch.
+            self._compact_for_image_budget(control=control)
+            self._drain_internal_usage(name)
+
             round_started_at = time.perf_counter()
             message_input: str = ""
             if round_idx == 0:
@@ -1039,6 +1103,8 @@ class Agent:
                     "system_prompt": prompt,
                     "temperature": temperature,
                     "max_tokens": resolved_max_tokens,
+                    "thinking_mode": resolved_thinking_mode,
+                    "reasoning_effort": resolved_reasoning_effort,
                     "backend": {
                         "name": backend.name,
                         "provider": backend.provider,
@@ -1059,6 +1125,8 @@ class Agent:
                     context_handler=self.context_handler,
                     max_tokens=resolved_max_tokens,
                     output_reasoning=self.output_reasoning,
+                    thinking_mode=resolved_thinking_mode,
+                    reasoning_effort=resolved_reasoning_effort,
                     tools=self.tool_handler.get_all_tools(),
                     on_request=lambda request: self._emit(
                         "agent", name, "agent:remote_request",
@@ -1277,6 +1345,7 @@ class Agent:
                 model_duration_ms=model_duration_ms,
                 round_duration_ms=round_duration_ms,
                 created_at=response_completed_at,
+                controller=(control if _supports_force_control(control) else None),
             )
             self._drain_internal_usage(name)
 

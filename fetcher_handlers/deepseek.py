@@ -163,6 +163,8 @@ class DeepSeekHandler(OpenAIHandler):
         max_tokens: int,
         stream: bool,
         tools: List["Any"] = None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ):
         """Send a request with assistant ``<think>`` wrappers removed."""
         return super().create_completion(
@@ -171,6 +173,7 @@ class DeepSeekHandler(OpenAIHandler):
             max_tokens=max_tokens,
             stream=stream,
             tools=tools,
+            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
         )
 
     def normalize_completion_response(self, response) -> LLMOutput:

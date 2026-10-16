@@ -19,6 +19,7 @@ from ..llm_types import LLMOutput, Tool, ToolParameter, ToolSchema
 from ..multimodal import image_reference_markers
 from .base import ContextHandler
 from .linear import CompactionFetcher, ContextHandlerLinear
+from ..execution.control import ExecutionController
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
@@ -199,6 +200,7 @@ class RetrievedContextHandler(ContextHandler):
         model_duration_ms: int | None = None,
         round_duration_ms: int | None = None,
         created_at: float | None = None,
+        controller: ExecutionController | None = None,
     ) -> None:
         self.linear.add_assistant_message(
             message, tool_results,
@@ -206,6 +208,7 @@ class RetrievedContextHandler(ContextHandler):
             model_duration_ms=model_duration_ms,
             round_duration_ms=round_duration_ms,
             created_at=created_at,
+            controller=controller,
         )
 
     def build_messages(self) -> list[dict[str, Any]]:
