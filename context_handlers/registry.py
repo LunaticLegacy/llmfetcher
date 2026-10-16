@@ -141,6 +141,11 @@ def available_context_handlers() -> tuple[str, ...]:
     return tuple(sorted(CONTEXT_HANDLERS))
 
 
+def context_handler_revision() -> str:
+    """Return a stable revision for host Agent cache fingerprints."""
+    return "|".join(f"{name}:{CONTEXT_HANDLERS[name].title}" for name in available_context_handlers())
+
+
 def context_handler_specs() -> tuple[ContextHandlerSpec, ...]:
     """Return the catalog in the order a host should present it.
 
@@ -197,5 +202,6 @@ __all__ = [
     "DEFAULT_CONTEXT_HANDLER",
     "available_context_handlers",
     "context_handler_specs",
+    "context_handler_revision",
     "create_context_handler",
 ]

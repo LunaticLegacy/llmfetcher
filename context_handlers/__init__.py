@@ -6,6 +6,7 @@ from .registry import (
     ContextHandlerSpec,
     available_context_handlers,
     context_handler_specs,
+    context_handler_revision,
     create_context_handler,
 )
 from .sage import SageContext
@@ -35,6 +36,7 @@ __all__ = [
     "SageContext",
     "available_context_handlers",
     "context_handler_specs",
+    "context_handler_revision",
     "create_context_handler",
     "is_sqlite_context_pointer",
     "CompactionRequestPreview",
