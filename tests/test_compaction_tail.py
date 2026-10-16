@@ -10,6 +10,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from llmfetcher.context_handlers import SQLiteContextStorage, create_context_handler
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
@@ -157,6 +158,15 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertEqual([4], [message.timeline for message in handler.linear.messages])
         self.assertEqual([1, 2, 3], handler.linear.abstract.source_timeline)
+
+    def test_graph_preview_retrieves_for_empty_next_input(self) -> None:
+        """An empty preview uses the latest user turn as its graph query."""
+        handler = GraphContextHandler(compacting_fetcher=_ScriptedCompactor())
+        with patch.object(handler, "retrieve") as retrieve:
+            handler.add_user_message("find GraphStore")
+            handler.add_user_message("")
+
+        self.assertEqual(["find GraphStore", "find GraphStore"], [call.args[0] for call in retrieve.call_args_list])
 
 
 if __name__ == "__main__": unittest.main()

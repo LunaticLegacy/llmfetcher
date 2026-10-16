@@ -232,6 +232,9 @@ class GraphContextHandler(ContextHandler):
         preserved on the pending record so the durable linear history (and
         its checkpoint) never silently loses them.
         """
+        retrieval_query = str(message).strip()
+        if not retrieval_query:
+            retrieval_query = self._latest_user_query()
         timeline = self.linear._round + 1
         self._pending.append(LLMContext(
             role="user",
@@ -242,7 +245,7 @@ class GraphContextHandler(ContextHandler):
         self.linear.add_user_message(message)
         self._message_count += 1
         if self._should_retrieve():
-            self.retrieve(str(message))
+            self.retrieve(retrieval_query)
 
     def add_assistant_message(
         self,
@@ -467,6 +470,16 @@ class GraphContextHandler(ContextHandler):
                 return self._compaction_generation > self._last_retrieved_gen
             return False
         return self._message_count >= 1
+
+    def _latest_user_query(self) -> str:
+        """Return the newest non-empty user turn for empty previews."""
+        for message in reversed(self.linear.messages):
+            if getattr(message, "role", "") != "user":
+                continue
+            content = str(getattr(message, "content", "") or "").strip()
+            if content:
+                return content
+        return ""
 
     def _flush_pending(self) -> None:
         """Ingest buffered messages into the graph and clear the buffer."""
