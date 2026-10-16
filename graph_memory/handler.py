@@ -33,7 +33,7 @@ from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retriev
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
 from ..context_handlers.storage import ContextStorage
 from ..multimodal import ImageToolResult, UserMessage, validate_images
-from ..llm_types import LLMContext, LLMOutput
+from ..llm_types import LLMContext, LLMOutput, RequestMessage
 from ..execution.control import ExecutionController
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
@@ -284,14 +284,16 @@ class GraphContextHandler(ContextHandler):
         if compacted or len(self._pending) >= self.graph_update_every:
             self._flush_pending()
 
-    def build_messages(self) -> list[dict[str, Any]]:
+    def build_messages(self, *, system_prompt: str | None = None) -> list[RequestMessage]:
         """Build messages: graph memory block (user), then linear history."""
-        messages: list[dict[str, Any]] = []
+        messages: list[RequestMessage] = []
+        if system_prompt:
+            messages.append(RequestMessage(role="system", content=system_prompt))
         retrieved_memory = "\n\n".join(
             block for block in (self._graph_memory, self._archive_memory) if block
         )
         if retrieved_memory:
-            messages.append({"role": "user", "content": retrieved_memory})
+            messages.append(RequestMessage(role="user", content=retrieved_memory))
         messages.extend(self.linear.build_messages())
         return messages
 

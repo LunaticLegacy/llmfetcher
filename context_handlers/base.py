@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
-from ..llm_types import LLMOutput, TokenUsage
+from ..llm_types import LLMOutput, RequestMessage, TokenUsage
 from ..multimodal import UserMessage
 
 if TYPE_CHECKING:
@@ -126,17 +126,21 @@ class ContextHandler(ABC):
         """
 
     @abstractmethod
-    def build_messages(self) -> List[Dict[str, Any]]:
+    def build_messages(
+        self,
+        *,
+        system_prompt: str | None = None,
+    ) -> List[RequestMessage]:
         """Build context messages for an LLM request.
 
-        Returns the stored conversation history (excluding system prompt
-        and the current user message) as a list of API-compatible dicts.
-        The caller (``LLMFetcher``) is responsible for prepending the
-        system prompt and appending the current user message.
+        Return the complete provider-neutral request context. Context
+        handlers own semantic message composition, including the optional
+        system prompt and memory projection.
+        The caller is responsible only for provider transport and wire
+        adaptation after this semantic projection is returned.
 
         Returns:
-            A list of message dicts (``{"role": ..., "content": ...}``),
-            with ``tool_calls`` embedded where applicable.
+            A complete provider-neutral request message sequence.
         """
 
     @abstractmethod

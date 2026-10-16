@@ -591,11 +591,11 @@ class Agent:
         result when the request budget is reached.
         """
         messages = self.context_handler.build_messages()
-        count = sum(len(message.get("images", ())) for message in messages)
+        count = sum(len(message.images) for message in messages)
         if count < MAX_REQUEST_IMAGES:
             return False
         recent_images = next(
-            (message["images"] for message in reversed(messages) if message.get("images")),
+            (message.images for message in reversed(messages) if message.images),
             [],
         )[-8:]
         if not self.compact_context(control=control):
@@ -811,7 +811,7 @@ class Agent:
         self.last_outcome = None
         name = self._agent_name_in_graph
 
-        backend = self.llm_fetcher.default_backend_config
+        backend: LLMBackendConfig = self.llm_fetcher.default_backend_config
         self._emit(
             "agent",
             name,
@@ -830,12 +830,12 @@ class Agent:
             },
         )
 
-        prompt: str = self._build_prompt()
+        prompt: str = self._build_prompt()  # Build system prompt.
         tool_results: Optional[Dict[str, str]] = None
         have_tool_call: bool = False
 
-        desired_context_threshold = self.max_context_threshold
-        context_file = Path(self.context_path) if self.context_path is not None else None
+        desired_context_threshold: int = self.max_context_threshold
+        context_file = Path(self.context_path) if self.context_path is not None else None   # if context file exists.
         load_result = False
         if context_file is not None and context_file.exists():
             load_result = self.context_handler.load(context_file)
@@ -859,9 +859,10 @@ class Agent:
         self.usage = TokenUsage()
         self._drain_internal_usage(name)
 
-        result: LLMOutput | None = None
+        result: Optional[LLMOutput] = None
         round_idx = 0
 
+        # AGent loop begins here.
         while resolved_max_rounds == 0 or round_idx < resolved_max_rounds:
             round_idx += 1
             if verbose:
@@ -1134,6 +1135,9 @@ class Agent:
                 created_at=response_completed_at,
                 controller=(control if _supports_force_control(control) else None),
             )
+            apply_branch_commands = getattr(self.context_handler, "apply_pending_branch_commands", None)
+            if callable(apply_branch_commands):
+                apply_branch_commands()
             self._drain_internal_usage(name)
 
             # A completed model response and its complete tool batch form the

@@ -26,7 +26,10 @@ llmfetcher = "llmfetcher.cli:main"
 package-dir = {llmfetcher = "."}
 packages = [
     "llmfetcher",
+    "llmfetcher.agent",
     "llmfetcher.context_handlers",
+    "llmfetcher.context_handlers.linear",
+    "llmfetcher.context_handlers.sage",
     "llmfetcher.execution",
     "llmfetcher.fetcher_handlers",
     "llmfetcher.graph_memory",

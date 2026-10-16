@@ -101,8 +101,8 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertTrue(linear.compact(keep_recent=1))
 
-        contents = [message["content"] for message in linear.build_messages()]
-        self.assertEqual(["two"], [message["content"] for message in linear.build_messages() if message["role"] == "user"])
+        contents = [message.content for message in linear.build_messages()]
+        self.assertEqual(["two"], [message.content for message in linear.build_messages() if message.role == "user"])
         self.assertNotIn("Continue user's job from your checkpoint, now.", contents)
 
     def test_retained_rows_never_duplicate_a_timeline_in_the_checkpoint(self) -> None:
@@ -131,7 +131,7 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertEqual([], linear.messages)
         self.assertEqual([1, 2], [message.timeline for message in linear.archive])
-        contents = [message["content"] for message in linear.build_messages()]
+        contents = [message.content for message in linear.build_messages()]
         self.assertIn("Continue user's job from your checkpoint, now.", contents)
 
     def test_keep_recent_beyond_the_transcript_archives_everything(self) -> None:
@@ -143,7 +143,7 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertEqual([], linear.messages)
         self.assertEqual([1], linear.abstract.source_timeline)
-        contents = [message["content"] for message in linear.build_messages()]
+        contents = [message.content for message in linear.build_messages()]
         self.assertIn("Continue user's job from your checkpoint, now.", contents)
 
     def test_graph_handler_forwards_keep_recent(self) -> None:

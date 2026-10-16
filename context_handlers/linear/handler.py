@@ -27,6 +27,7 @@ from ...llm_types import (
     LLMContext,
     LLMContextCompacted,
     LLMOutput,
+    RequestMessage,
     TokenUsage,
     ToolInfo,
 )
@@ -492,21 +493,24 @@ class ContextHandlerLinear(ContextHandler):
         return result
 
     @override
-    def build_messages(self) -> List[Dict[str, Any]]:
+    def build_messages(self, *, system_prompt: str | None = None) -> List[RequestMessage]:
         """Build context messages for an LLM request.
 
-        Returns stored conversation history only — the caller
-        (``LLMFetcher``) prepends the system prompt and appends the
-        current user message.
+        Returns the complete provider-neutral request sequence. The system
+        prompt is included here so composed handlers control semantic order.
 
         Returns:
-            A list of message dicts, with tool calls and the derived
-            post-compaction resume turn included where applicable.
+            The complete provider-neutral request sequence, with tool calls
+            and the derived post-compaction resume turn included where
+            applicable.
         """
-        return render_messages(
+        messages = render_messages(
             self.get_prev_messages(),
             pending_resume=self._pending_resume,
         )
+        if system_prompt:
+            messages.insert(0, RequestMessage(role="system", content=system_prompt))
+        return messages
 
     # -- compaction helpers ------------------------------------------------
 

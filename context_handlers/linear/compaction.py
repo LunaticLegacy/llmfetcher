@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Protocol, Sequence
 
 from ..base import ContextHandler
-from ...llm_types import LLMOutput
+from ...llm_types import LLMOutput, RequestMessage
 from ...execution.control import ExecutionController
 
 _COMPACTING_SYSTEM_PROMPT = (
@@ -109,12 +109,12 @@ class CompactionRequestPreview:
     round: int
 
 
-def serialize_request_message(message: Dict[str, Any]) -> str:
+def serialize_request_message(message: RequestMessage) -> str:
     """Serialize one request message with the shared size accounting."""
-    return json.dumps(message, ensure_ascii=False, default=str)
+    return json.dumps(message.to_dict(), ensure_ascii=False, default=str)
 
 
-def estimate_context_size(messages: Sequence[Dict[str, Any]]) -> int:
+def estimate_context_size(messages: Sequence[RequestMessage]) -> int:
     """Estimate the serialized size of the request built from *messages*.
 
     This is the cheap token-count proxy that drives automatic compaction, and
@@ -124,7 +124,7 @@ def estimate_context_size(messages: Sequence[Dict[str, Any]]) -> int:
 
 
 def build_request_preview(
-    messages: Sequence[Dict[str, Any]],
+    messages: Sequence[RequestMessage],
     *,
     input_char_limit: int,
     output_max_tokens: int,

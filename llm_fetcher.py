@@ -35,6 +35,7 @@ from .llm_types import (
     LLMRequestCancelled,
     JsonObject,
     RemoteRequestSnapshot,
+    RequestMessage,
     TokenUsage,
 )
 
@@ -475,9 +476,10 @@ class LLMFetcher:
         errors skip to the next backend immediately.
 
         When a *context* handler is provided, the message list is built
-        by ``context.build_messages(msg, system_prompt)``.  Otherwise a
-        minimal one-shot message list is constructed from *msg* and
-        *system_prompt* alone.
+        by ``context.build_messages(system_prompt=system_prompt)``. The
+        current Agent lifecycle commits the user turn through the context
+        handler before dispatch. Otherwise a minimal one-shot message list
+        is constructed from *msg* and *system_prompt* alone.
 
         Args:
             msg:
@@ -813,13 +815,16 @@ class LLMFetcher:
         msg: str,
         system_prompt: Optional[str],
         context: Optional[ContextHandler],
-    ) -> List[Dict[str, Any]]:
-        """Build the message list, delegating to a context handler when available.
+    ) -> List[JsonObject]:
+        """Build the request messages, delegating history to a context handler.
 
-        When *context* is provided, its ``build_messages()`` is called
-        to retrieve the stored conversation history.  The system prompt
-        and current user message are always appended by this method so
-        that the context handler stays focused purely on history.
+        When *context* is provided, its ``build_messages()`` supplies the
+        complete semantic request context, including the system prompt when
+        one is provided. Without a context handler this method builds a
+        stateless system-plus-user request. Messages travel as
+        :class:`~llmfetcher.llm_types.RequestMessage` until the final line
+        converts them to the provider-neutral mapping that the dispatch layer,
+        its snapshot and the provider adapters already consume.
 
         Args:
             msg: The current user message text.
@@ -827,16 +832,23 @@ class LLMFetcher:
             context: An optional ``ContextHandler`` with conversation history.
 
         Returns:
-            A list of message dicts ready for the backend handler.
+            A list of wire-ready message mappings for the backend handler.
         """
-        messages: List[Dict[str, Any]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
         if context is not None:
-            messages.extend(context.build_messages())
+            # Agent.run commits the user turn through add_user_message before
+            # dispatch. The context handler owns the complete semantic
+            # sequence, so msg is intentionally not appended a second time.
+            return [
+                message.to_dict()
+                for message in context.build_messages(system_prompt=system_prompt)
+            ]
+
+        messages: List[RequestMessage] = []
+        if system_prompt:
+            messages.append(RequestMessage(role="system", content=system_prompt))
         if msg:
             from .multimodal import UserMessage, validate_images
-            messages.append({"role": "user", "content": str(msg),
-                             **({'images': validate_images(msg.images)} if isinstance(msg, UserMessage) and msg.images else {})})
-        
-        return messages
+            images = validate_images(msg.images) if isinstance(msg, UserMessage) else []
+            messages.append(RequestMessage(role="user", content=str(msg), images=images))
+
+        return [message.to_dict() for message in messages]

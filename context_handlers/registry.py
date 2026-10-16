@@ -1,7 +1,7 @@
 """Selectable context handlers for hosts that let a user choose one.
 
-Every registered implementation composes the same durable linear store, so the
-shared configuration below is exactly what they need. ``retrieved`` and
+Every registered implementation accepts the shared configuration below.
+``retrieved`` and
 ``tlb`` are deliberately not registered: their constructors require
 host-specific extras (a TLB fetcher, knowledge roots, a save path) and neither
 is wired into a host yet.
@@ -48,22 +48,14 @@ def _create_sage(
     storage: ContextStorage | None = None,
     keep_recent: int = 0,
 ) -> ContextHandler:
-    """Build the composed transcript handler.
-
-    ``SageContext`` does not expose ``keep_recent`` in its constructor yet, so
-    the retention policy is applied to the linear handler it composes - which
-    is where its compaction runs. Should that composed handler disappear, the
-    setting stops applying to Sage and the constructor needs the keyword.
-    """
+    """Build the branch-aware Sage handler."""
     handler = SageContext(
         fetcher,
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
+        keep_recent=keep_recent,
     )
-    linear = getattr(handler, "linear", None)
-    if linear is not None:
-        linear.keep_recent = keep_recent
     return handler
 
 
@@ -103,6 +95,7 @@ class ContextHandlerSpec:
     title: str
     description: str
     factory: Callable[..., ContextHandler]
+    exposed_tools: tuple[str, ...] = ()
 
 
 # Registry of selectable handlers. Adding one here is all a host needs to offer
@@ -123,8 +116,12 @@ CONTEXT_HANDLERS: dict[str, ContextHandlerSpec] = {
     "sage": ContextHandlerSpec(
         id="sage",
         title="Sage",
-        description="Linear transcript indexed as context trees.",
+        description="Branch-aware worktree context with Sage-specific compaction.",
         factory=_create_sage,
+        exposed_tools=(
+            "sage_get_worktree", "sage_fork_branch", "sage_checkout_branch",
+            "sage_pause_branch", "sage_resume_branch", "sage_finish_branch",
+        ),
     ),
 }
 

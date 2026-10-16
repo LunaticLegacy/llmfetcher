@@ -6,7 +6,7 @@ from pathlib import Path
 from .base import ContextHandler
 from ..rag_module_tlb.core import TLBRAGHandler
 from ..llm_fetcher import LLMFetcher
-from ..llm_types import LLMOutput
+from ..llm_types import LLMOutput, RequestMessage
 from ..execution.control import ExecutionController
 
 
@@ -83,17 +83,14 @@ class TLBContextHandler(ContextHandler):
         """
 
     @override
-    def build_messages(self) -> List[Dict[str, Any]]:
+    def build_messages(self, *, system_prompt: str | None = None) -> List[RequestMessage]:
         """Build context messages for an LLM request.
 
-        Returns the stored conversation history (excluding system prompt
-        and the current user message) as a list of API-compatible dicts.
-        The caller (``LLMFetcher``) is responsible for prepending the
-        system prompt and appending the current user message.
+        Returns the complete provider-neutral request sequence. The system
+        prompt is included here so composed handlers control semantic order.
 
         Returns:
-            A list of message dicts (``{"role": ..., "content": ...}``),
-            with ``tool_calls`` embedded where applicable.
+            A complete provider-neutral request message sequence.
         """
 
 
