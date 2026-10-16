@@ -57,7 +57,7 @@ class GraphContextHandler(ContextHandler):
             omitted.
         retriever_config: Optional :class:`RetrievalConfig` for the hybrid
             retrieval weights / limits.
-        retrieval_trigger: ``"first_message"`` (default), ``"every_message"``
+        retrieval_trigger: ``"every_message"`` (default), ``"first_message"``
             (refresh for every user turn), ``"auto"`` (re-retrieve after
             compaction), or ``"manual"`` (explicit :meth:`retrieve` calls
             only).
@@ -83,7 +83,7 @@ class GraphContextHandler(ContextHandler):
         query_fetcher: Optional[ExtractionFetcher] = None,
         store: Optional[GraphStore] = None,
         retriever_config: Optional[RetrievalConfig] = None,
-        retrieval_trigger: str = "first_message",
+        retrieval_trigger: str = "every_message",
         graph_update_every: int = 3,
         max_context_threshold: int = 262144,
         compaction_output_max_tokens: int = 8192,

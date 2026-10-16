@@ -149,6 +149,7 @@ class CompactionTailTests(unittest.TestCase):
     def test_graph_handler_forwards_keep_recent(self) -> None:
         """The composing handler passes the retention boundary down."""
         handler = GraphContextHandler(compacting_fetcher=_ScriptedCompactor())
+        self.assertEqual("every_message", handler.retrieval_trigger)
         for index in range(4):
             handler.add_user_message(f"m{index}")
 
