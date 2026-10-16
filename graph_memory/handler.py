@@ -31,6 +31,7 @@ import uuid
 from ..context_handlers.base import ContextHandler
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
+from ..context_handlers.linear.rendering import render_messages
 from ..context_handlers.storage import ContextStorage
 from ..multimodal import ImageToolResult, UserMessage, validate_images
 from ..llm_types import LLMContext, LLMOutput, RequestMessage
@@ -288,17 +289,64 @@ class GraphContextHandler(ContextHandler):
             self._flush_pending()
 
     def build_messages(self, *, system_prompt: str | None = None) -> list[RequestMessage]:
-        """Build messages: graph memory block (user), then linear history."""
+        """Build messages in stable previous/graph/recent/current order.
+
+        The graph block is deliberately placed between older context and the
+        most recent completed assistant turn. The pending user turn remains
+        last, so the provider sees the current request after all supporting
+        context has been assembled.
+        """
         messages: list[RequestMessage] = []
         if system_prompt:
             messages.append(RequestMessage(role="system", content=system_prompt))
+
+        previous, last_round, current_user = self._linear_message_sections()
+        messages.extend(render_messages(previous, pending_resume=self.linear._pending_resume and not current_user))
         retrieved_memory = "\n\n".join(
             block for block in (self._graph_memory, self._archive_memory) if block
         )
         if retrieved_memory:
             messages.append(RequestMessage(role="user", content=retrieved_memory))
-        messages.extend(self.linear.build_messages())
+        messages.extend(render_messages(last_round, pending_resume=False))
+        messages.extend(render_messages(current_user, pending_resume=False))
         return messages
+
+    def _linear_message_sections(
+        self,
+    ) -> tuple[list[Any], list[Any], list[Any]]:
+        """Split linear context into previous, last assistant, and current user.
+
+        ``ContextHandlerLinear`` stores a flat timeline. GraphContext uses the
+        pending user turn as the current request and treats the newest stored
+        assistant entry as the completed last round, matching Sage's request
+        ordering without duplicating any linear entry.
+        """
+        current_timeline = next(
+            (item.timeline for item in reversed(self._pending) if item.role == "user"),
+            None,
+        )
+        current_user = [
+            item for item in self.linear.messages
+            if current_timeline is not None and item.timeline == current_timeline
+            and item.role == "user"
+        ]
+        candidates = [
+            item for item in self.linear.messages
+            if current_timeline is None or item.timeline != current_timeline
+        ]
+        last_assistant = next(
+            (item for item in reversed(candidates) if item.role == "assistant"),
+            None,
+        )
+        last_round = [last_assistant] if last_assistant is not None else []
+        last_timeline = last_assistant.timeline if last_assistant is not None else None
+        previous = [
+            item for item in self.linear.get_prev_messages()
+            if not isinstance(item, LLMContext) or (
+                item.timeline != current_timeline and item.timeline != last_timeline
+            )
+        ]
+        return previous, last_round, current_user
 
     def save(self, path: str | Path) -> bool:
         """Save the conversation AND the companion graph file.
