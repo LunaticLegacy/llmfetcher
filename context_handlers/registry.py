@@ -106,6 +106,10 @@ CONTEXT_HANDLERS: dict[str, ContextHandlerSpec] = {
         title="Graph memory",
         description="Linear transcript plus an entity-relation long-term graph.",
         factory=_create_graph,
+        exposed_tools=(
+            "graph_search", "graph_get_neighbors", "graph_upsert_entity",
+            "graph_upsert_relation", "graph_invalidate_relation",
+        ),
     ),
     "linear": ContextHandlerSpec(
         id="linear",
