@@ -143,6 +143,32 @@ class ContextHandler(ABC):
             A complete provider-neutral request message sequence.
         """
 
+    def describe_request_messages(
+        self,
+        messages: List[RequestMessage],
+    ) -> list[dict[str, Any]]:
+        """Describe the origin of messages in a request preview.
+
+        The message payload remains the exact provider-neutral request. This
+        companion projection gives hosts a stable way to explain which part
+        came from a context handler without changing provider wire data.
+        """
+        result: list[dict[str, Any]] = []
+        for index, message in enumerate(messages):
+            if message.role == "system":
+                source = "system_prompt"
+            elif index == len(messages) - 1 and message.role == "user" and not message.content:
+                source = "hypothetical_input"
+            else:
+                source = f"{self.__class__.__name__}:context"
+            result.append({
+                "index": index,
+                "role": message.role,
+                "source": source,
+                "persisted": source.endswith(":context"),
+            })
+        return result
+
     @abstractmethod
     def save(self, path: str | Path) -> bool:
         """

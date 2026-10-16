@@ -232,6 +232,29 @@ class SageContext(ContextHandler):
         ))
         return messages
 
+    def describe_request_messages(self, messages: List[RequestMessage]) -> list[dict[str, Any]]:
+        """Label Sage's synthetic worktree and summary messages in previews."""
+        result: list[dict[str, Any]] = []
+        for index, message in enumerate(messages):
+            content = message.content or ""
+            if message.role == "system" and index == 0:
+                source = "system_prompt"
+            elif "<worktree_state>" in content:
+                source = "sage_worktree"
+            elif "<context_abstract>" in content:
+                source = "sage_summary"
+            elif index == len(messages) - 1 and message.role == "user" and not content:
+                source = "hypothetical_input"
+            else:
+                source = "sage_context"
+            result.append({
+                "index": index,
+                "role": message.role,
+                "source": source,
+                "persisted": source == "sage_context",
+            })
+        return result
+
     def _render_branch_summaries(self) -> list[RequestMessage]:
         rendered: list[RequestMessage] = []
         seen: set[int] = set()

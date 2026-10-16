@@ -36,6 +36,25 @@ class SageContextTests(unittest.TestCase):
         self.assertIn("<worktree_state>", messages[1].content)
         self.assertEqual(messages[-1].content, "hi")
 
+    def test_request_preview_labels_persisted_and_synthetic_messages(self) -> None:
+        sage = SageContext(_Compactor())
+        sage.add_user_message("hello")
+        sage.add_assistant_message(_assistant("hi"))
+        sage.add_user_message("")
+
+        messages = sage.build_messages(system_prompt="system")
+        metadata = sage.describe_request_messages(messages)
+
+        self.assertEqual(len(metadata), len(messages))
+        self.assertEqual(
+            [item["source"] for item in metadata],
+            ["system_prompt", "sage_context", "sage_worktree", "sage_context", "hypothetical_input"],
+        )
+        self.assertEqual(
+            [item["persisted"] for item in metadata],
+            [False, True, False, True, False],
+        )
+
     def test_compaction_creates_sage_summary_and_keeps_raw_rows(self) -> None:
         sage = SageContext(_Compactor())
         sage.add_user_message("hello")
