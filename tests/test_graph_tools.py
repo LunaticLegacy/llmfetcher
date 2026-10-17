@@ -60,6 +60,16 @@ class GraphToolTests(unittest.TestCase):
         ))
         self.assertEqual(invalidated["invalidated"], 1)
 
+        deleted_edge = json.loads(tools["graph_delete_relation"].handler(
+            source="GraphContext", target="GraphStore", relation="uses",
+        ))
+        self.assertEqual(deleted_edge["deleted_relations"], 1)
+
+        deleted_node = json.loads(tools["graph_delete_entity"].handler(
+            entity="GraphStore",
+        ))
+        self.assertEqual(deleted_node["deleted"]["entities"], 1)
+
     def test_graph_search_returns_retrieval_projection(self) -> None:
         context = GraphContextHandler(compacting_fetcher=_Compactor(), retrieval_trigger="manual")
         tools = {tool.name: tool for tool in create_graph_tools(context)}

@@ -25,7 +25,12 @@ from ..llm_types import (
 )
 from ..tool_handler import ToolHandler
 from ..tool_executor import ToolBatchCancelled, ToolExecutor
-from ..context_handlers import ContextHandlerLinear, ContextHandler
+from ..context_handlers import (
+    ContextHandlerLinear,
+    ContextHandler,
+    ContextComposer,
+    ContextProvider,
+)
 from ..events import ExecutionEvent, ExecutionHook
 from ..usage_ledger import UsageRecord, add_usage, copy_usage
 from ..execution import ExecutionController
@@ -50,7 +55,10 @@ class Agent:
         enable_stop_turn: bool = False,
         default_stream: bool = False,
         output_reasoning: bool = True,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         tool_result_transformer: Callable[[str, str, str], str] | None = None,
+        context_providers: tuple[ContextProvider, ...] = (),
     ):
         """Initialize one tool-using Agent.
 
@@ -86,6 +94,10 @@ class Agent:
             raise ValueError("default_max_rounds must be zero or greater")
         if default_max_tokens <= 0:
             raise ValueError("default_max_tokens must be greater than zero")
+        if thinking_mode not in {"auto", "on", "off"}:
+            raise ValueError("thinking_mode must be auto, on, or off")
+        if reasoning_effort not in {"auto", "low", "medium", "high"}:
+            raise ValueError("reasoning_effort must be auto, low, medium, or high")
 
         # Initiate the variable.
         self.llm_fetcher = llm_fetcher
@@ -97,6 +109,8 @@ class Agent:
         self.default_max_tokens = default_max_tokens
         self.default_stream = default_stream
         self.output_reasoning = output_reasoning
+        self.thinking_mode = thinking_mode
+        self.reasoning_effort = reasoning_effort
         self.tool_result_transformer = tool_result_transformer
 
         # Handle the tool, and make the tool executor.
@@ -110,6 +124,14 @@ class Agent:
             compacting_llmfetcher_handler=self.llm_fetcher,
             max_context_threshold=self.max_context_threshold,
         )
+        # The Agent owns request composition. The handler is only one source
+        # of context state; plugins are registered beside it.
+        inherited_providers = tuple(
+            getattr(getattr(self.context_handler, "context_composer", None), "providers", ())
+        )
+        self.context_composer = ContextComposer((self.context_handler,))
+        for provider in (*inherited_providers, *context_providers):
+            self.context_composer.register(provider)
 
         # Meaningless code.
         if context_handler is not None:
@@ -166,6 +188,16 @@ class Agent:
             None.
         """
         self.hooks.append(hook)
+
+    def register_context_provider(self, provider: ContextProvider) -> None:
+        """Register a dynamic context source owned by this Agent.
+
+        Args:
+            provider: Source that emits :class:`ContextBlock` instances for
+                the next request. The source never mutates conversation
+                history through this registration API.
+        """
+        self.context_composer.register(provider)
 
     def remove_hook(self, hook: ExecutionHook) -> bool:
         """Unregister one execution-event receiver.
@@ -425,6 +457,8 @@ class Agent:
             tool_schema_hashes=tool_hashes,
             temperature=getattr(request, "temperature", None),
             max_tokens=getattr(request, "max_tokens", None),
+            thinking_mode=getattr(request, "thinking_mode", "auto"),
+            reasoning_effort=getattr(request, "reasoning_effort", "auto"),
         )
 
     # The calls ledger renders a readable per-round request preview.  A later
@@ -762,6 +796,8 @@ class Agent:
         verbose: bool = False,
         control: AgentRunControl | None = None,
         stream: bool | None = None,
+        thinking_mode: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> LLMOutput:
         """Run the Agent until one explicit terminal outcome is reached.
 
@@ -800,6 +836,12 @@ class Agent:
             self.default_max_tokens if max_tokens is None else max_tokens
         )
         resolved_stream = self.default_stream if stream is None else stream
+        resolved_thinking_mode = self.thinking_mode if thinking_mode is None else thinking_mode
+        resolved_reasoning_effort = self.reasoning_effort if reasoning_effort is None else reasoning_effort
+        if resolved_thinking_mode not in {"auto", "on", "off"}:
+            raise ValueError("thinking_mode must be auto, on, or off")
+        if resolved_reasoning_effort not in {"auto", "low", "medium", "high"}:
+            raise ValueError("reasoning_effort must be auto, low, medium, or high")
         if resolved_max_rounds < 0:
             raise ValueError("max_rounds must be zero or greater")
         if resolved_max_tokens <= 0:
@@ -895,6 +937,8 @@ class Agent:
                     "system_prompt": prompt,
                     "temperature": temperature,
                     "max_tokens": resolved_max_tokens,
+                    "thinking_mode": resolved_thinking_mode,
+                    "reasoning_effort": resolved_reasoning_effort,
                     "backend": {
                         "name": backend.name,
                         "provider": backend.provider,
@@ -913,8 +957,11 @@ class Agent:
                     system_prompt=prompt,
                     temperature=temperature,
                     context_handler=self.context_handler,
+                    context_composer=self.context_composer,
                     max_tokens=resolved_max_tokens,
                     output_reasoning=self.output_reasoning,
+                    thinking_mode=resolved_thinking_mode,
+                    reasoning_effort=resolved_reasoning_effort,
                     tools=self.tool_handler.get_all_tools(),
                     on_request=lambda request: self._emit(
                         "agent", name, "agent:remote_request",

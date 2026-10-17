@@ -39,6 +39,13 @@ def normalize_entity_id(name: str, entity_type: str = "concept") -> str:
         r"\s+", " ",
         unicodedata.normalize("NFKC", str(name).strip()),
     ).casefold()
+    if str(entity_type).casefold() == "file":
+        # Windows and POSIX spellings of the same workspace path must share
+        # one node. Keep the displayed name unchanged; only the stable ID is
+        # canonicalized here.
+        key = key.replace("\\", "/")
+        key = re.sub(r"/{2,}", "/", key)
+        key = re.sub(r"^(?:\./)+", "", key)
     prefix = re.sub(r"[^a-z0-9]", "_", str(entity_type).casefold()) or "concept"
     return f"{prefix}:{key}"
 
@@ -310,6 +317,40 @@ class GraphStore:
                 e.valid = False
                 count += 1
         return count
+
+    def delete_relation(
+        self,
+        source_id: str,
+        target_id: str,
+        relation: Optional[str] = None,
+    ) -> int:
+        """Hard-delete matching edges and return the number removed."""
+        removed = 0
+        with self._lock:
+            for key, edge in list(self._edges.items()):
+                if {edge.source_id, edge.target_id} != {source_id, target_id}:
+                    continue
+                if relation and edge.relation != relation:
+                    continue
+                del self._edges[key]
+                removed += 1
+            if removed:
+                self.communities.clear()
+        return removed
+
+    def delete_entity(self, entity_id: str) -> dict[str, int]:
+        """Hard-delete one node and all incident edges."""
+        with self._lock:
+            if entity_id not in self.nodes:
+                return {"entities": 0, "relations": 0}
+            del self.nodes[entity_id]
+            removed = 0
+            for key, edge in list(self._edges.items()):
+                if edge.source_id == entity_id or edge.target_id == entity_id:
+                    del self._edges[key]
+                    removed += 1
+            self.communities.clear()
+            return {"entities": 1, "relations": removed}
 
     # -- graph algorithms --------------------------------------------------
 

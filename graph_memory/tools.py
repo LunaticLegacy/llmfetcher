@@ -64,6 +64,24 @@ class GraphToolProvider:
                 ]),
                 self.invalidate_relation,
             ),
+            Tool(
+                "graph_delete_relation",
+                "Hard-delete one relation, or all relations, between two entities.",
+                ToolSchema(properties=[
+                    ToolParameter("source", description="Source entity ID, name, or alias."),
+                    ToolParameter("target", description="Target entity ID, name, or alias."),
+                    ToolParameter("relation", description="Optional exact relation label; omit to delete all between the pair.", required=False, default=""),
+                ]),
+                self.delete_relation,
+            ),
+            Tool(
+                "graph_delete_entity",
+                "Hard-delete one entity and every relation incident to it.",
+                ToolSchema(properties=[
+                    ToolParameter("entity", description="Entity ID, name, or alias to delete."),
+                ]),
+                self.delete_entity,
+            ),
         ]
 
     def _timeline(self) -> int:
@@ -148,6 +166,24 @@ class GraphToolProvider:
             "target": target_node.id,
             "invalidated": self.context.store.invalidate_relation(source_node.id, target_node.id),
         })
+
+    def delete_relation(self, source: str, target: str, relation: str = "", **_: Any) -> str:
+        source_node = self._entity(source)
+        target_node = self._entity(target)
+        removed = self.context.store.delete_relation(
+            source_node.id, target_node.id, str(relation).strip() or None,
+        )
+        return self._dump({
+            "source": source_node.id,
+            "target": target_node.id,
+            "relation": str(relation).strip() or None,
+            "deleted_relations": removed,
+        })
+
+    def delete_entity(self, entity: str, **_: Any) -> str:
+        node = self._entity(entity)
+        result = self.context.store.delete_entity(node.id)  
+        return self._dump({"entity": node.id, "deleted": result})
 
 
 def create_graph_tools(context: Any) -> list[Tool]:

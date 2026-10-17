@@ -116,6 +116,8 @@ class LLMBackendHandler(ABC):
         max_tokens: int,
         stream: bool,
         tools: Optional[list[ToolSchemaDict]] = None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ) -> Any:
         raise NotImplementedError
 

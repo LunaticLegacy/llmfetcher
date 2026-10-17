@@ -14,7 +14,7 @@ to its own localized label.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 from .base import ContextHandler
 from .linear import CompactionFetcher, ContextHandlerLinear
@@ -29,6 +29,7 @@ def _create_linear(
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
     keep_recent: int = 0,
+    settings: Mapping[str, Any] | None = None,
 ) -> ContextHandler:
     """Build the flat durable transcript handler."""
     return ContextHandlerLinear(
@@ -47,6 +48,7 @@ def _create_sage(
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
     keep_recent: int = 0,
+    settings: Mapping[str, Any] | None = None,
 ) -> ContextHandler:
     """Build the branch-aware Sage handler."""
     handler = SageContext(
@@ -66,18 +68,38 @@ def _create_graph(
     compaction_output_max_tokens: int,
     storage: ContextStorage | None = None,
     keep_recent: int = 0,
+    settings: Mapping[str, Any] | None = None,
 ) -> ContextHandler:
     """Build the transcript plus entity-relation graph handler."""
     # Imported lazily: graph_memory imports this package's linear handler.
     from ..graph_memory import GraphContextHandler
 
+    values = dict(settings or {})
     return GraphContextHandler(
         compacting_fetcher=fetcher,
+        extraction_fetcher=fetcher if values.get("auto_extract", True) else None,
+        query_fetcher=fetcher,
+        graph_update_every=int(values.get("graph_update_every", 2)),
+        retrieval_trigger=str(values.get("retrieval_trigger", "every_message")),
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
         keep_recent=keep_recent,
     )
+
+
+@dataclass(frozen=True)
+class ContextSettingSpec:
+    """One UI and validation descriptor for a handler-specific setting."""
+
+    key: str
+    title: str
+    description: str
+    type: str
+    default: Any
+    enum: tuple[str, ...] = ()
+    minimum: float | None = None
+    maximum: float | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +118,7 @@ class ContextHandlerSpec:
     description: str
     factory: Callable[..., ContextHandler]
     exposed_tools: tuple[str, ...] = ()
+    settings: tuple[ContextSettingSpec, ...] = ()
 
 
 # Registry of selectable handlers. Adding one here is all a host needs to offer
@@ -109,6 +132,25 @@ CONTEXT_HANDLERS: dict[str, ContextHandlerSpec] = {
         exposed_tools=(
             "graph_search", "graph_get_neighbors", "graph_upsert_entity",
             "graph_upsert_relation", "graph_invalidate_relation",
+            "graph_delete_relation", "graph_delete_entity",
+        ),
+        settings=(
+            ContextSettingSpec(
+                key="graph_update_every", title="Graph update frequency",
+                description="Flush pending conversation messages into the graph after this many messages.",
+                type="integer", default=2, minimum=1, maximum=20,
+            ),
+            ContextSettingSpec(
+                key="retrieval_trigger", title="Graph retrieval trigger",
+                description="Choose when graph memory is refreshed for a new request.",
+                type="enum", default="every_message",
+                enum=("every_message", "first_message", "auto", "manual"),
+            ),
+            ContextSettingSpec(
+                key="auto_extract", title="Automatic graph extraction",
+                description="Use an internal LLM call to extract entities and relations.",
+                type="boolean", default=True,
+            ),
         ),
     ),
     "linear": ContextHandlerSpec(
@@ -159,6 +201,7 @@ def create_context_handler(
     compaction_output_max_tokens: int = 8192,
     storage: ContextStorage | None = None,
     keep_recent: int = 0,
+    settings: Mapping[str, Any] | None = None,
 ) -> ContextHandler:
     """Build one registered context handler.
 
@@ -183,20 +226,59 @@ def create_context_handler(
             "unknown context handler: "
             f"{name!r} (available: {', '.join(available_context_handlers())})"
         )
+    values = normalize_context_settings(spec, settings)
     return spec.factory(
         fetcher=fetcher,
         max_context_threshold=max_context_threshold,
         compaction_output_max_tokens=compaction_output_max_tokens,
         storage=storage,
         keep_recent=keep_recent,
+        settings=values,
     )
+
+
+def normalize_context_settings(
+    spec: ContextHandlerSpec,
+    values: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply defaults and validate handler-specific settings."""
+    submitted = dict(values or {})
+    allowed = {item.key: item for item in spec.settings}
+    unknown = set(submitted) - set(allowed)
+    if unknown:
+        raise ValueError(f"unknown {spec.id} context settings: {', '.join(sorted(unknown))}")
+    result = {item.key: item.default for item in spec.settings}
+    for key, value in submitted.items():
+        descriptor = allowed[key]
+        if descriptor.type == "boolean":
+            if not isinstance(value, bool):
+                raise ValueError(f"{spec.id}.{key} must be a boolean")
+        elif descriptor.type == "integer":
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{spec.id}.{key} must be an integer")
+        elif descriptor.type == "number":
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"{spec.id}.{key} must be a number")
+        elif descriptor.type in {"enum", "string"}:
+            if not isinstance(value, str):
+                raise ValueError(f"{spec.id}.{key} must be a string")
+        if descriptor.enum and value not in descriptor.enum:
+            raise ValueError(f"{spec.id}.{key} must be one of: {', '.join(descriptor.enum)}")
+        if descriptor.minimum is not None and value < descriptor.minimum:
+            raise ValueError(f"{spec.id}.{key} is below the minimum")
+        if descriptor.maximum is not None and value > descriptor.maximum:
+            raise ValueError(f"{spec.id}.{key} is above the maximum")
+        result[key] = value
+    return result
 
 
 __all__ = [
     "CONTEXT_HANDLERS",
+    "ContextSettingSpec",
     "ContextHandlerSpec",
     "DEFAULT_CONTEXT_HANDLER",
     "available_context_handlers",
     "context_handler_specs",
     "create_context_handler",
+    "normalize_context_settings",
 ]

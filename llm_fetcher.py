@@ -46,7 +46,7 @@ from .fetcher_handlers import (
     LLMBackendHandler,
 )
 
-from .context_handlers import ContextHandler
+from .context_handlers import ContextHandler, ContextComposer, ContextSnapshot
 from .execution import ExecutionController, StopMode
 
 
@@ -422,7 +422,10 @@ class LLMFetcher:
         system_prompt: Optional[str] = None,
         temperature: float = 0.4,
         max_tokens: int = 4096,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         context_handler: Optional[ContextHandler] = None,
+        context_composer: Optional[ContextComposer] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         stream: bool = False,
@@ -447,12 +450,13 @@ class LLMFetcher:
         Raises:
             LLMBackendError: If no backend can be resolved for the request.
         """
-        messages = self._build_messages(msg, system_prompt, context_handler)
+        messages = self._build_messages(msg, system_prompt, context_handler, context_composer)
         backends = self._resolve_backends(backend_name, self.fallback_order)
         if not backends:
             raise LLMBackendError("No backend is configured")
         _, snapshot = self._prepare_backend_request(
             backends[0], messages, temperature, max_tokens, tools, stream,
+            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
         )
         return snapshot
 
@@ -462,7 +466,10 @@ class LLMFetcher:
         system_prompt: Optional[str] = None,
         temperature: float = 0.4,
         max_tokens: int = 4096,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         context_handler: Optional[ContextHandler] = None,
+        context_composer: Optional[ContextComposer] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
@@ -537,7 +544,7 @@ class LLMFetcher:
             else None
         )
         try:
-            messages = self._build_messages(msg, system_prompt, context_handler)
+            messages = self._build_messages(msg, system_prompt, context_handler, context_composer)
             backend_errors: List[str] = []
 
             for backend in self._resolve_backends(backend_name, self.fallback_order):
@@ -551,6 +558,7 @@ class LLMFetcher:
                         self._raise_if_force_stopped(controller)
                         handler, snapshot, tool_name_map = self._prepare_backend_request(
                             backend, messages, temperature, max_tokens, tools, False,
+                            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
                             include_tool_name_map=True,
                         )
                         active_handler = handler
@@ -564,6 +572,8 @@ class LLMFetcher:
                             max_tokens=max_tokens,
                             stream=False,
                             tools=snapshot.tools,
+                            thinking_mode=thinking_mode,
+                            reasoning_effort=reasoning_effort,
                         )
                         self._raise_if_force_stopped(controller)
                         result = handler.normalize_completion_response(raw)
@@ -594,8 +604,11 @@ class LLMFetcher:
         system_prompt: Optional[str] = None,
         temperature: float = 0.4,
         max_tokens: int = 4096,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         output_reasoning: bool = False,
         context_handler: Optional[ContextHandler] = None,
+        context_composer: Optional[ContextComposer] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
@@ -672,7 +685,7 @@ class LLMFetcher:
             else None
         )
         try:
-            messages = self._build_messages(msg, system_prompt, context_handler)
+            messages = self._build_messages(msg, system_prompt, context_handler, context_composer)
             backend_errors: List[str] = []
 
             for backend in self._resolve_backends(backend_name, self.fallback_order):
@@ -687,6 +700,7 @@ class LLMFetcher:
                         self._raise_if_force_stopped(controller)
                         handler, snapshot, tool_name_map = self._prepare_backend_request(
                             backend, messages, temperature, max_tokens, tools, True,
+                            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
                             include_tool_name_map=True,
                         )
                         active_handler = handler
@@ -698,6 +712,8 @@ class LLMFetcher:
                             max_tokens=max_tokens,
                             stream=True,
                             tools=snapshot.tools,
+                            thinking_mode=thinking_mode,
+                            reasoning_effort=reasoning_effort,
                         )
                         capture = StreamUsageCapture()
                         for text in handler.iter_stream_text(
@@ -747,6 +763,8 @@ class LLMFetcher:
         tools: Optional[Sequence[ToolDefinition]],
         stream: bool,
         *,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
         include_tool_name_map: bool = False,
     ) -> tuple[LLMBackendHandler, RemoteRequestSnapshot] | tuple[LLMBackendHandler, RemoteRequestSnapshot, tuple[dict[str, str], dict[str, str]]]:
         """Prepare one backend's tool schemas and safe request snapshot.
@@ -790,6 +808,8 @@ class LLMFetcher:
             max_tokens=max_tokens,
             stream=stream,
             tools=list(provider_tools or []),
+            thinking_mode=thinking_mode,
+            reasoning_effort=reasoning_effort,
         )
         if include_tool_name_map:
             return handler, snapshot, (internal_to_wire, wire_name_to_internal_name)
@@ -815,6 +835,7 @@ class LLMFetcher:
         msg: str,
         system_prompt: Optional[str],
         context: Optional[ContextHandler],
+        composer: Optional[ContextComposer] = None,
     ) -> List[JsonObject]:
         """Build the request messages, delegating history to a context handler.
 
@@ -838,10 +859,18 @@ class LLMFetcher:
             # Agent.run commits the user turn through add_user_message before
             # dispatch. The context handler owns the complete semantic
             # sequence, so msg is intentionally not appended a second time.
-            return [
-                message.to_dict()
-                for message in context.build_messages(system_prompt=system_prompt)
-            ]
+            if composer is not None:
+                messages = composer.compose(
+                    snapshot=ContextSnapshot(
+                        handler=context,
+                        system_prompt=system_prompt,
+                        current_message=str(msg),
+                    ),
+                    system_prompt=system_prompt,
+                )
+            else:
+                messages = context.build_messages(system_prompt=system_prompt)
+            return [message.to_dict() for message in messages]
 
         messages: List[RequestMessage] = []
         if system_prompt:

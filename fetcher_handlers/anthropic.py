@@ -146,6 +146,8 @@ class AnthropicHandler(LLMBackendHandler):
         max_tokens: int,
         stream: bool,
         tools=None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ):
         anthropic_messages, system_prompt = self.convert_messages(messages)
         kwargs = {

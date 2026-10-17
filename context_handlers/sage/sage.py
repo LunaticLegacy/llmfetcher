@@ -3,6 +3,8 @@
 The durable transcript is indexed by worktree branches. Sage owns its summary
 format and compaction policy; branch state remains separate from raw
 conversation rows and is persisted with the checkpoint manifest.
+
+This context manager is still WIP, I think, and need to be tested asap.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from typing import Any, Dict, List, Optional, Callable, Union, override
 from uuid import uuid4, UUID
 
 from ..base import ContextHandler
+from ..composer import ContextBlock, ContextPosition, ContextSnapshot
 from ..linear import render_messages
 from .compaction import SageCompactionFetcher, build_sage_compaction_request, parse_sage_summary
 from ..storage import ContextStorage, SQLiteContextStorage
@@ -204,6 +207,9 @@ class SageContext(ContextHandler):
         messages: List[RequestMessage] = []
         if system_prompt:
             messages.append(RequestMessage(role="system", content=system_prompt))
+        provider_messages = self.provider_messages(system_prompt=system_prompt)
+        if provider_messages:
+            messages.extend(provider_messages)
         by_timeline = {
             item.timeline: item
             for item in self.raw_contexts_info
@@ -231,6 +237,34 @@ class SageContext(ContextHandler):
             by_timeline,
         ))
         return messages
+
+    def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
+        """Expose Sage's history, summaries, worktree, and current input.
+
+        Each semantic section gets its own Composer position while the
+        legacy ``build_messages`` path remains unchanged for compatibility.
+        """
+        by_timeline = {item.timeline: item for item in self.raw_contexts_info}
+        blocks: list[ContextBlock] = []
+
+        def add(messages: list[RequestMessage], position: ContextPosition, source: str) -> None:
+            for message in messages:
+                blocks.append(ContextBlock(
+                    role=message.role,
+                    content=message.content or "",
+                    source=source,
+                    position=position,
+                    message=message,
+                ))
+
+        add(self._render_context_ids(self._previous_context_ids(), by_timeline), ContextPosition.PREVIOUS, "sage.previous")
+        add(self._render_branch_summaries(), ContextPosition.MEMORY, "sage.summary")
+        worktree = self._render_worktree_information()
+        if worktree is not None:
+            add([worktree], ContextPosition.WORKTREE, "sage.worktree")
+        add(self._render_context_ids(self._last_round_context_ids(), by_timeline), ContextPosition.LAST_ROUND, "sage.last_round")
+        add(self._render_context_ids(self._pending_context_id_list, by_timeline), ContextPosition.CURRENT_INPUT, "sage.current_input")
+        return blocks
 
     def describe_request_messages(self, messages: List[RequestMessage]) -> list[dict[str, Any]]:
         """Label Sage's synthetic worktree and summary messages in previews."""

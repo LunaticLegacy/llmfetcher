@@ -18,6 +18,8 @@ class LiteLLMHandler(OpenAIHandler):
         max_tokens: int,
         stream: bool,
         tools=None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ):
         from litellm import completion as litellm_completion
 

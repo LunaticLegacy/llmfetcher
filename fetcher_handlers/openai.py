@@ -288,6 +288,8 @@ class OpenAIHandler(LLMBackendHandler):
         max_tokens: int,
         stream: bool,
         tools: List["Tool"] = None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ):
         messages = self._normalize_messages(openai_image_messages(
             messages, bounded_resolver(getattr(self.fetcher, 'image_resolver', None))))
@@ -302,6 +304,13 @@ class OpenAIHandler(LLMBackendHandler):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # ``reasoning_effort`` is not part of the universally supported
+        # OpenAI-compatible API.  A connector may opt in explicitly when its
+        # endpoint documents support; auto remains wire-compatible everywhere.
+        model_name = str(self.backend.model or "").lower()
+        native_effort = bool(self.backend.extra.get("supports_reasoning_effort")) or model_name.startswith(("o1", "o3", "o4", "gpt-5"))
+        if reasoning_effort != "auto" and native_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         # Ask the provider for a final usage chunk on the streaming wire so
         # the Agent can account for real per-call token consumption.
         if stream and "stream_options" not in kwargs and "stream_options" not in (self.backend.extra or {}):

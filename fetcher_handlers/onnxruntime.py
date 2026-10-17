@@ -314,6 +314,8 @@ class OnnxRuntimeGenAIHandler(LLMBackendHandler):
         max_tokens: int,
         stream: bool,
         tools: Optional[list[ToolSchemaDict]] = None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ):
         history = self.build_chat_history(messages, tools=tools)
         config = self.generation_config(temperature=temperature, max_tokens=max_tokens)
@@ -324,7 +326,12 @@ class OnnxRuntimeGenAIHandler(LLMBackendHandler):
             json.dumps(history),
             tools=json.dumps(tools) if tools else None,
         )
-        prompt = _apply_thinking_prefix(prompt, self.chat_template_context(history))
+        template_context = self.chat_template_context(history)
+        if thinking_mode == "off":
+            template_context["enable_thinking"] = False
+        elif thinking_mode == "on":
+            template_context["enable_thinking"] = True
+        prompt = _apply_thinking_prefix(prompt, template_context)
         input_ids = self.tokenizer.encode(prompt)
 
         # Build generator parameters.

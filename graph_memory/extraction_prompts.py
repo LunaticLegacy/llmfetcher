@@ -34,7 +34,9 @@ Rules:
 3. Relations must connect two entities that both appear in the "entities" list. Use short labels: "fixes", "depends_on", "implements", "uses", "rejects", "replaces", "discusses".
 4. "aliases" are optional alternate names for the same entity (max 3).
 5. Max 12 entities and 12 relations per batch.
-6. Output pure JSON, no commentary."""
+6. Tool output is noisy evidence. Ignore temporary/generated files (out.txt, err.txt, empty.txt, numbered input/output files), dependency paths such as .venv/site-packages and node_modules, standard-library imports, command switches, raw logs, stack-frame addresses, and ordinary shell/navigation commands.
+7. Do not create an entity merely because a path, import, package name, or tool name appears once in raw output. Keep it only when the surrounding conversation says it is a durable subject of the work.
+8. Output pure JSON, no commentary."""
 
 EXTRACTION_SYSTEM_PROMPT_RICH = """You build a knowledge graph with entity summaries from a conversation transcript.
 
@@ -104,7 +106,8 @@ def extract_regex(text: str) -> dict:
     ]
     return {"entities": entity_list, "relations": []}
 
-RETRIEVAL_QUERY_EXTRACTION_PROMPT = """You extract the key entities from a user query so they can be matched against a long-term memory knowledge graph.
+RETRIEVAL_QUERY_EXTRACTION_PROMPT = """
+You extract the key entities from a user query so they can be matched against a long-term memory knowledge graph.
 
 Return ONLY a JSON object:
 {
@@ -115,4 +118,5 @@ Rules:
 1. Extract entities likely stored in memory: files, functions, classes, tools, frameworks, projects, key concepts, decisions, people.
 2. Names must be exact (file paths, function names, product names) so they can match graph nodes.
 3. Max 5 entities; skip stopwords and generic words.
-4. Output pure JSON, no commentary."""
+4. Output pure JSON, no commentary.
+"""

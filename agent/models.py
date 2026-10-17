@@ -82,6 +82,8 @@ class RequestIndex:
     tool_schema_hashes: list[str]
     temperature: Any
     max_tokens: Any
+    thinking_mode: str = "auto"
+    reasoning_effort: str = "auto"
 
 
 @dataclass(frozen=True)
