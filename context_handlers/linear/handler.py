@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, override
 
-from ..base import ContextHandler
+from ..base import ContextHandler, checkpoint_lock
 from ..composer import ContextBlock, ContextPosition, ContextSnapshot
 from ..storage import ContextStorage, SQLiteContextStorage
 from ...llm_types import (
@@ -654,7 +654,6 @@ class ContextHandlerLinear(ContextHandler):
         try:
             self.last_save_error = None
             generation = checkpoint_generation or uuid.uuid4().hex
-            target = Path(path)
             database = target.with_suffix(target.suffix + ".sqlite3")
             self._save_sqlite_rows(database)
             data: Dict[str, Any] = {
