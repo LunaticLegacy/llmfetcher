@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ..llm_types import LLMOutput, Tool, ToolParameter, ToolSchema
+from ..llm_types import LLMOutput, RequestMessage, Tool, ToolParameter, ToolSchema
 from ..multimodal import image_reference_markers
 from .base import ContextHandler
 from .linear import CompactionFetcher, ContextHandlerLinear
@@ -211,15 +211,17 @@ class RetrievedContextHandler(ContextHandler):
             controller=controller,
         )
 
-    def build_messages(self) -> list[dict[str, Any]]:
+    def build_messages(self, *, system_prompt: str | None = None) -> list[RequestMessage]:
         """Build messages: retrieved as **user** role (P0-I), then linear."""
-        messages: list[dict[str, Any]] = []
+        messages: list[RequestMessage] = []
+        if system_prompt:
+            messages.append(RequestMessage(role="system", content=system_prompt))
 
         if self.retrieved:
-            messages.append({
-                "role": "user",
-                "content": _render_retrieved_memory(self.retrieved),
-            })
+            messages.append(RequestMessage(
+                role="user",
+                content=_render_retrieved_memory(self.retrieved),
+            ))
 
         messages.extend(self.linear.build_messages())
         return messages
@@ -662,19 +664,30 @@ class RetrievedContextHandler(ContextHandler):
         }
 
     @staticmethod
-    def _messages_to_text(messages: list[dict[str, Any]]) -> str:
+    def _messages_to_text(messages: list[RequestMessage | dict[str, Any]]) -> str:
+        """Flatten messages into retrieval text.
+
+        ``linear`` returns request messages while this handler's own seeding
+        path builds reduced mappings, so both shapes are accepted here.
+        """
+        def field(message: RequestMessage | dict[str, Any], key: str, default: Any = None) -> Any:
+            if isinstance(message, RequestMessage):
+                return getattr(message, key, default)
+            return message.get(key, default) if isinstance(message, dict) else default
+
         parts = []
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "") or ""
+            role = field(msg, "role", "")
+            content = field(msg, "content", "") or ""
+            images = _image_markers(field(msg, "images"))
             if role == "user":
-                parts.append(f"## User\n\n{content}{_image_markers(msg.get('images'))}")
+                parts.append(f"## User\n\n{content}{images}")
             elif role == "assistant":
-                parts.append(f"## Assistant\n\n{content}{_image_markers(msg.get('images'))}")
-                for tc in msg.get("tool_calls", []):
-                    parts.append(f"[Tool: {tc.get('name', '?')}]{_image_markers(tc.get('images'))}")
+                parts.append(f"## Assistant\n\n{content}{images}")
+                for tc in field(msg, "tool_calls", []) or []:
+                    parts.append(f"[Tool: {field(tc, 'name', '?')}]{_image_markers(field(tc, 'images'))}")
             elif role == "tool":
-                parts.append(f"[Tool result: {content[:2000]}]{_image_markers(msg.get('images'))}")
+                parts.append(f"[Tool result: {str(content)[:2000]}]{images}")
         return "\n\n".join(parts)
 
     @staticmethod

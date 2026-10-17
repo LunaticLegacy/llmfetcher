@@ -15,6 +15,7 @@ from .retriever import (
     render_graph_memory,
 )
 from .handler import GraphContextHandler
+from .tools import GraphToolProvider, create_graph_tools
 from .semantic import SemanticGraphWorker
 
 __all__ = [
@@ -30,5 +31,7 @@ __all__ = [
     "RetrievalConfig",
     "render_graph_memory",
     "GraphContextHandler",
+    "GraphToolProvider",
+    "create_graph_tools",
     "SemanticGraphWorker",
 ]

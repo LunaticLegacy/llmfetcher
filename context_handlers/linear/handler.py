@@ -21,12 +21,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, override
 
-from ..base import ContextHandler, checkpoint_lock
+from ..base import ContextHandler
+from ..composer import ContextBlock, ContextPosition, ContextSnapshot
 from ..storage import ContextStorage, SQLiteContextStorage
 from ...llm_types import (
     LLMContext,
     LLMContextCompacted,
     LLMOutput,
+    RequestMessage,
     TokenUsage,
     ToolInfo,
 )
@@ -492,21 +494,73 @@ class ContextHandlerLinear(ContextHandler):
         return result
 
     @override
-    def build_messages(self) -> List[Dict[str, Any]]:
+    def build_messages(self, *, system_prompt: str | None = None) -> List[RequestMessage]:
         """Build context messages for an LLM request.
 
-        Returns stored conversation history only — the caller
-        (``LLMFetcher``) prepends the system prompt and appends the
-        current user message.
+        Returns the complete provider-neutral request sequence. The system
+        prompt is included here so composed handlers control semantic order.
 
         Returns:
-            A list of message dicts, with tool calls and the derived
-            post-compaction resume turn included where applicable.
+            The complete provider-neutral request sequence, with tool calls
+            and the derived post-compaction resume turn included where
+            applicable.
         """
-        return render_messages(
+        messages = render_messages(
             self.get_prev_messages(),
             pending_resume=self._pending_resume,
         )
+        if system_prompt:
+            messages.insert(0, RequestMessage(role="system", content=system_prompt))
+        provider_messages = self.provider_messages(system_prompt=system_prompt)
+        if provider_messages:
+            insert_at = 1 if system_prompt else 0
+            messages[insert_at:insert_at] = provider_messages
+        return messages
+
+    def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
+        """Project the linear transcript into Composer ordering slots.
+
+        The newest user entry is the current input and the newest assistant
+        entry before it is the last completed round. Older entries stay in
+        the previous-context slot. Tool calls and tool results are preserved
+        because blocks retain their complete :class:`RequestMessage`.
+        """
+        entries = list(self.get_prev_messages())
+        current_index: int | None = None
+        for index in range(len(entries) - 1, -1, -1):
+            if getattr(entries[index], "role", None) == "user":
+                current_index = index
+                break
+
+        last_assistant_index: int | None = None
+        search_end = current_index if current_index is not None else len(entries)
+        for index in range(search_end - 1, -1, -1):
+            if getattr(entries[index], "role", None) == "assistant":
+                last_assistant_index = index
+                break
+
+        previous = [
+            item for index, item in enumerate(entries)
+            if index not in {current_index, last_assistant_index}
+        ]
+        last_round = [entries[last_assistant_index]] if last_assistant_index is not None else []
+        current = [entries[current_index]] if current_index is not None else []
+        blocks: list[ContextBlock] = []
+
+        def add(items: list[Any], position: ContextPosition, source: str, *, resume: bool = False) -> None:
+            for message in render_messages(items, pending_resume=resume):
+                blocks.append(ContextBlock(
+                    role=message.role,
+                    content=message.content or "",
+                    source=source,
+                    position=position,
+                    message=message,
+                ))
+
+        add(previous, ContextPosition.PREVIOUS, "linear.previous", resume=self._pending_resume and not current)
+        add(last_round, ContextPosition.LAST_ROUND, "linear.last_round")
+        add(current, ContextPosition.CURRENT_INPUT, "linear.current_input")
+        return blocks
 
     # -- compaction helpers ------------------------------------------------
 

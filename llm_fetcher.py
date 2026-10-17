@@ -35,6 +35,7 @@ from .llm_types import (
     LLMRequestCancelled,
     JsonObject,
     RemoteRequestSnapshot,
+    RequestMessage,
     TokenUsage,
 )
 
@@ -45,7 +46,7 @@ from .fetcher_handlers import (
     LLMBackendHandler,
 )
 
-from .context_handlers import ContextHandler
+from .context_handlers import ContextHandler, ContextComposer, ContextSnapshot
 from .execution import ExecutionController, StopMode
 
 
@@ -424,6 +425,7 @@ class LLMFetcher:
         thinking_mode: str = "auto",
         reasoning_effort: str = "auto",
         context_handler: Optional[ContextHandler] = None,
+        context_composer: Optional[ContextComposer] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         stream: bool = False,
@@ -448,7 +450,7 @@ class LLMFetcher:
         Raises:
             LLMBackendError: If no backend can be resolved for the request.
         """
-        messages = self._build_messages(msg, system_prompt, context_handler)
+        messages = self._build_messages(msg, system_prompt, context_handler, context_composer)
         backends = self._resolve_backends(backend_name, self.fallback_order)
         if not backends:
             raise LLMBackendError("No backend is configured")
@@ -467,6 +469,7 @@ class LLMFetcher:
         thinking_mode: str = "auto",
         reasoning_effort: str = "auto",
         context_handler: Optional[ContextHandler] = None,
+        context_composer: Optional[ContextComposer] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
@@ -480,9 +483,10 @@ class LLMFetcher:
         errors skip to the next backend immediately.
 
         When a *context* handler is provided, the message list is built
-        by ``context.build_messages(msg, system_prompt)``.  Otherwise a
-        minimal one-shot message list is constructed from *msg* and
-        *system_prompt* alone.
+        by ``context.build_messages(system_prompt=system_prompt)``. The
+        current Agent lifecycle commits the user turn through the context
+        handler before dispatch. Otherwise a minimal one-shot message list
+        is constructed from *msg* and *system_prompt* alone.
 
         Args:
             msg:
@@ -540,7 +544,7 @@ class LLMFetcher:
             else None
         )
         try:
-            messages = self._build_messages(msg, system_prompt, context_handler)
+            messages = self._build_messages(msg, system_prompt, context_handler, context_composer)
             backend_errors: List[str] = []
 
             for backend in self._resolve_backends(backend_name, self.fallback_order):
@@ -568,7 +572,8 @@ class LLMFetcher:
                             max_tokens=max_tokens,
                             stream=False,
                             tools=snapshot.tools,
-                            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
+                            thinking_mode=thinking_mode,
+                            reasoning_effort=reasoning_effort,
                         )
                         self._raise_if_force_stopped(controller)
                         result = handler.normalize_completion_response(raw)
@@ -603,6 +608,7 @@ class LLMFetcher:
         reasoning_effort: str = "auto",
         output_reasoning: bool = False,
         context_handler: Optional[ContextHandler] = None,
+        context_composer: Optional[ContextComposer] = None,
         backend_name: Optional[str] = None,
         tools: Optional[Sequence[ToolDefinition]] = None,
         on_request: Optional[Callable[[RemoteRequestSnapshot], None]] = None,
@@ -679,7 +685,7 @@ class LLMFetcher:
             else None
         )
         try:
-            messages = self._build_messages(msg, system_prompt, context_handler)
+            messages = self._build_messages(msg, system_prompt, context_handler, context_composer)
             backend_errors: List[str] = []
 
             for backend in self._resolve_backends(backend_name, self.fallback_order):
@@ -706,6 +712,8 @@ class LLMFetcher:
                             max_tokens=max_tokens,
                             stream=True,
                             tools=snapshot.tools,
+                            thinking_mode=thinking_mode,
+                            reasoning_effort=reasoning_effort,
                         )
                         capture = StreamUsageCapture()
                         for text in handler.iter_stream_text(
@@ -827,13 +835,17 @@ class LLMFetcher:
         msg: str,
         system_prompt: Optional[str],
         context: Optional[ContextHandler],
-    ) -> List[Dict[str, Any]]:
-        """Build the message list, delegating to a context handler when available.
+        composer: Optional[ContextComposer] = None,
+    ) -> List[JsonObject]:
+        """Build the request messages, delegating history to a context handler.
 
-        When *context* is provided, its ``build_messages()`` is called
-        to retrieve the stored conversation history.  The system prompt
-        and current user message are always appended by this method so
-        that the context handler stays focused purely on history.
+        When *context* is provided, its ``build_messages()`` supplies the
+        complete semantic request context, including the system prompt when
+        one is provided. Without a context handler this method builds a
+        stateless system-plus-user request. Messages travel as
+        :class:`~llmfetcher.llm_types.RequestMessage` until the final line
+        converts them to the provider-neutral mapping that the dispatch layer,
+        its snapshot and the provider adapters already consume.
 
         Args:
             msg: The current user message text.
@@ -841,16 +853,31 @@ class LLMFetcher:
             context: An optional ``ContextHandler`` with conversation history.
 
         Returns:
-            A list of message dicts ready for the backend handler.
+            A list of wire-ready message mappings for the backend handler.
         """
-        messages: List[Dict[str, Any]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
         if context is not None:
-            messages.extend(context.build_messages())
+            # Agent.run commits the user turn through add_user_message before
+            # dispatch. The context handler owns the complete semantic
+            # sequence, so msg is intentionally not appended a second time.
+            if composer is not None:
+                messages = composer.compose(
+                    snapshot=ContextSnapshot(
+                        handler=context,
+                        system_prompt=system_prompt,
+                        current_message=str(msg),
+                    ),
+                    system_prompt=system_prompt,
+                )
+            else:
+                messages = context.build_messages(system_prompt=system_prompt)
+            return [message.to_dict() for message in messages]
+
+        messages: List[RequestMessage] = []
+        if system_prompt:
+            messages.append(RequestMessage(role="system", content=system_prompt))
         if msg:
             from .multimodal import UserMessage, validate_images
-            messages.append({"role": "user", "content": str(msg),
-                             **({'images': validate_images(msg.images)} if isinstance(msg, UserMessage) and msg.images else {})})
-        
-        return messages
+            images = validate_images(msg.images) if isinstance(msg, UserMessage) else []
+            messages.append(RequestMessage(role="user", content=str(msg), images=images))
+
+        return [message.to_dict() for message in messages]

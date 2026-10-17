@@ -10,6 +10,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from llmfetcher.context_handlers import SQLiteContextStorage, create_context_handler
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
@@ -101,8 +102,8 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertTrue(linear.compact(keep_recent=1))
 
-        contents = [message["content"] for message in linear.build_messages()]
-        self.assertEqual(["two"], [message["content"] for message in linear.build_messages() if message["role"] == "user"])
+        contents = [message.content for message in linear.build_messages()]
+        self.assertEqual(["two"], [message.content for message in linear.build_messages() if message.role == "user"])
         self.assertNotIn("Continue user's job from your checkpoint, now.", contents)
 
     def test_retained_rows_never_duplicate_a_timeline_in_the_checkpoint(self) -> None:
@@ -131,7 +132,7 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertEqual([], linear.messages)
         self.assertEqual([1, 2], [message.timeline for message in linear.archive])
-        contents = [message["content"] for message in linear.build_messages()]
+        contents = [message.content for message in linear.build_messages()]
         self.assertIn("Continue user's job from your checkpoint, now.", contents)
 
     def test_keep_recent_beyond_the_transcript_archives_everything(self) -> None:
@@ -143,12 +144,13 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertEqual([], linear.messages)
         self.assertEqual([1], linear.abstract.source_timeline)
-        contents = [message["content"] for message in linear.build_messages()]
+        contents = [message.content for message in linear.build_messages()]
         self.assertIn("Continue user's job from your checkpoint, now.", contents)
 
     def test_graph_handler_forwards_keep_recent(self) -> None:
         """The composing handler passes the retention boundary down."""
         handler = GraphContextHandler(compacting_fetcher=_ScriptedCompactor())
+        self.assertEqual("every_message", handler.retrieval_trigger)
         for index in range(4):
             handler.add_user_message(f"m{index}")
 
@@ -156,6 +158,15 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertEqual([4], [message.timeline for message in handler.linear.messages])
         self.assertEqual([1, 2, 3], handler.linear.abstract.source_timeline)
+
+    def test_graph_preview_retrieves_for_empty_next_input(self) -> None:
+        """An empty preview uses the latest user turn as its graph query."""
+        handler = GraphContextHandler(compacting_fetcher=_ScriptedCompactor())
+        with patch.object(handler, "retrieve") as retrieve:
+            handler.add_user_message("find GraphStore")
+            handler.add_user_message("")
+
+        self.assertEqual(["find GraphStore", "find GraphStore"], [call.args[0] for call in retrieve.call_args_list])
 
 
 if __name__ == "__main__": unittest.main()

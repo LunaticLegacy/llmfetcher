@@ -1,6 +1,11 @@
 from .base import JSONValue, JSONObject, ToolDefinition, ToolSchemaDict, LLMBackendHandler
 
 try:
+    from .codex import CodexHandler
+except ImportError:
+    CodexHandler = None
+
+try:
     from .openai import OpenAIHandler
 except ImportError:
     OpenAIHandler = None  # pragma: no cover — optional handler
@@ -36,6 +41,7 @@ __all__ = [
     "ToolDefinition",
     "ToolSchemaDict",
     "LLMBackendHandler",
+    "CodexHandler",
     "OpenAIHandler",
     "DeepSeekHandler",
     "LiteLLMHandler",

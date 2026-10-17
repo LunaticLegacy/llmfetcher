@@ -173,7 +173,8 @@ class DeepSeekHandler(OpenAIHandler):
             max_tokens=max_tokens,
             stream=stream,
             tools=tools,
-            thinking_mode=thinking_mode, reasoning_effort=reasoning_effort,
+            thinking_mode=thinking_mode,
+            reasoning_effort=reasoning_effort,
         )
 
     def normalize_completion_response(self, response) -> LLMOutput:

@@ -304,6 +304,9 @@ class OpenAIHandler(LLMBackendHandler):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        # ``reasoning_effort`` is not part of the universally supported
+        # OpenAI-compatible API.  A connector may opt in explicitly when its
+        # endpoint documents support; auto remains wire-compatible everywhere.
         model_name = str(self.backend.model or "").lower()
         native_effort = bool(self.backend.extra.get("supports_reasoning_effort")) or model_name.startswith(("o1", "o3", "o4", "gpt-5"))
         if reasoning_effort != "auto" and native_effort:

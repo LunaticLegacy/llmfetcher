@@ -8,6 +8,11 @@ and keeps a ``tree.py`` index over the active transcript.
 from __future__ import annotations
 
 from .sage import SageContext
-from .tree import ContextNode, ContextTree, SageMessage
+from .commands import SageBranchCommand
+from .tools import SageToolProvider, create_sage_tools
+from .compaction import SageCompactionFetcher, SageCompactionRequest
 
-__all__ = ["SageContext", "ContextNode", "ContextTree", "SageMessage"]
+__all__ = [
+    "SageContext", "SageBranchCommand", "SageToolProvider", "create_sage_tools",
+    "SageCompactionFetcher", "SageCompactionRequest",
+]

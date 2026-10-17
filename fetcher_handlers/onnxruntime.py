@@ -316,6 +316,8 @@ class OnnxRuntimeGenAIHandler(LLMBackendHandler):
         max_tokens: int,
         stream: bool,
         tools: Optional[list[ToolSchemaDict]] = None,
+        thinking_mode: str = "auto",
+        reasoning_effort: str = "auto",
     ):
         history = self.build_chat_history(messages, tools=tools)
         config = self.generation_config(temperature=temperature, max_tokens=max_tokens)

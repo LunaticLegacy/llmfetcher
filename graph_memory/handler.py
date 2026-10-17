@@ -28,12 +28,14 @@ from pathlib import Path
 from typing import Any, Optional
 import uuid
 
-from ..context_handlers.base import ContextHandler, checkpoint_lock
+from ..context_handlers.base import ContextHandler
+from ..context_handlers.composer import ContextBlock, ContextPosition, ContextSnapshot
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
+from ..context_handlers.linear.rendering import render_messages
 from ..context_handlers.storage import ContextStorage
 from ..multimodal import ImageToolResult, UserMessage, validate_images
-from ..llm_types import LLMContext, LLMOutput
+from ..llm_types import LLMContext, LLMOutput, RequestMessage, ToolInfo
 from ..execution.control import ExecutionController
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
@@ -57,12 +59,12 @@ class GraphContextHandler(ContextHandler):
             omitted.
         retriever_config: Optional :class:`RetrievalConfig` for the hybrid
             retrieval weights / limits.
-        retrieval_trigger: ``"first_message"`` (default), ``"every_message"``
+        retrieval_trigger: ``"every_message"`` (default), ``"first_message"``
             (refresh for every user turn), ``"auto"`` (re-retrieve after
             compaction), or ``"manual"`` (explicit :meth:`retrieve` calls
             only).
         graph_update_every: Flush the pending messages into the graph after
-            this many user/assistant messages (default 3).
+            this many user/assistant messages (default 2).
         max_context_threshold: Character threshold that triggers linear
             context compaction (forwarded to the linear handler).
         compaction_output_max_tokens: Maximum completion tokens requested
@@ -83,8 +85,8 @@ class GraphContextHandler(ContextHandler):
         query_fetcher: Optional[ExtractionFetcher] = None,
         store: Optional[GraphStore] = None,
         retriever_config: Optional[RetrievalConfig] = None,
-        retrieval_trigger: str = "first_message",
-        graph_update_every: int = 3,
+        retrieval_trigger: str = "every_message",
+        graph_update_every: int = 2,
         max_context_threshold: int = 262144,
         compaction_output_max_tokens: int = 8192,
         graph_save_suffix: str = ".graph.json",
@@ -232,6 +234,9 @@ class GraphContextHandler(ContextHandler):
         preserved on the pending record so the durable linear history (and
         its checkpoint) never silently loses them.
         """
+        retrieval_query = str(message).strip()
+        if not retrieval_query:
+            retrieval_query = self._latest_user_query()
         timeline = self.linear._round + 1
         self._pending.append(LLMContext(
             role="user",
@@ -242,7 +247,7 @@ class GraphContextHandler(ContextHandler):
         self.linear.add_user_message(message)
         self._message_count += 1
         if self._should_retrieve():
-            self.retrieve(str(message))
+            self.retrieve(retrieval_query)
 
     def add_assistant_message(
         self,
@@ -259,11 +264,22 @@ class GraphContextHandler(ContextHandler):
         # Snapshot before the linear handler may compact the history.
         prev = (len(self.linear.messages), self.linear.abstract is not None)
         timeline = self.linear._round + 1
+        # Keep tool results on the graph-ingest record as well as on the
+        # linear transcript.  GraphBuilder renders a bounded summary of these
+        # records, so useful file/command evidence is available to extraction
+        # without copying unbounded tool output into the graph prompt.
+        bounded_tool_results = self.linear._bounded_tool_results(tool_results)
+        pending_tool_calls: list[ToolInfo] = []
+        for index, call in enumerate(message.tool_calls):
+            call_id = call.call_id or f"call_{index}"
+            result = bounded_tool_results.get(call_id) if bounded_tool_results else None
+            pending_tool_calls.append(ToolInfo(call=call, result=str(result) if result is not None else None))
         self._pending.append(LLMContext(
             role=message.role,
             timeline=timeline,
             content=message.content or "",
             content_reasoning=message.reasoning_content or "",
+            tool_calls=pending_tool_calls,
             usage=dict(usage or {}),
             model_duration_ms=model_duration_ms,
             round_duration_ms=round_duration_ms,
@@ -284,16 +300,97 @@ class GraphContextHandler(ContextHandler):
         if compacted or len(self._pending) >= self.graph_update_every:
             self._flush_pending()
 
-    def build_messages(self) -> list[dict[str, Any]]:
-        """Build messages: graph memory block (user), then linear history."""
-        messages: list[dict[str, Any]] = []
+    def build_messages(self, *, system_prompt: str | None = None) -> list[RequestMessage]:
+        """Build messages in stable previous/graph/recent/current order.
+
+        The graph block is deliberately placed between older context and the
+        most recent completed assistant turn. The pending user turn remains
+        last, so the provider sees the current request after all supporting
+        context has been assembled.
+        """
+        messages: list[RequestMessage] = []
+        if system_prompt:
+            messages.append(RequestMessage(role="system", content=system_prompt))
+        provider_messages = self.provider_messages(system_prompt=system_prompt)
+        if provider_messages:
+            messages.extend(provider_messages)
+
+        previous, last_round, current_user = self._linear_message_sections()
+        messages.extend(render_messages(previous, pending_resume=self.linear._pending_resume and not current_user))
         retrieved_memory = "\n\n".join(
             block for block in (self._graph_memory, self._archive_memory) if block
         )
         if retrieved_memory:
-            messages.append({"role": "user", "content": retrieved_memory})
-        messages.extend(self.linear.build_messages())
+            messages.append(RequestMessage(role="user", content=retrieved_memory))
+        messages.extend(render_messages(last_round, pending_resume=False))
+        messages.extend(render_messages(current_user, pending_resume=False))
         return messages
+
+    def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
+        """Expose Graph context sections to the shared Composer.
+
+        The legacy ``build_messages`` method remains available for callers
+        that need a complete request. Composer-aware callers receive the
+        same sections with explicit ordering slots.
+        """
+        previous, last_round, current_user = self._linear_message_sections()
+        blocks: list[ContextBlock] = []
+
+        def add(messages: list[RequestMessage], position: ContextPosition, source: str) -> None:
+            for message in render_messages(messages, pending_resume=False):
+                blocks.append(ContextBlock(
+                    role=message.role,
+                    content=message.content or "",
+                    source=source,
+                    position=position,
+                    message=message,
+                ))
+
+        add(previous, ContextPosition.PREVIOUS, "graph.previous")
+        if self._graph_memory:
+            add([RequestMessage(role="user", content=self._graph_memory)], ContextPosition.MEMORY, "graph.memory")
+        if self._archive_memory:
+            add([RequestMessage(role="user", content=self._archive_memory)], ContextPosition.MEMORY, "graph.archive")
+        add(last_round, ContextPosition.LAST_ROUND, "graph.last_round")
+        add(current_user, ContextPosition.CURRENT_INPUT, "graph.current_input")
+        return blocks
+
+    def _linear_message_sections(
+        self,
+    ) -> tuple[list[Any], list[Any], list[Any]]:
+        """Split linear context into previous, last assistant, and current user.
+
+        ``ContextHandlerLinear`` stores a flat timeline. GraphContext uses the
+        pending user turn as the current request and treats the newest stored
+        assistant entry as the completed last round, matching Sage's request
+        ordering without duplicating any linear entry.
+        """
+        current_timeline = next(
+            (item.timeline for item in reversed(self._pending) if item.role == "user"),
+            None,
+        )
+        current_user = [
+            item for item in self.linear.messages
+            if current_timeline is not None and item.timeline == current_timeline
+            and item.role == "user"
+        ]
+        candidates = [
+            item for item in self.linear.messages
+            if current_timeline is None or item.timeline != current_timeline
+        ]
+        last_assistant = next(
+            (item for item in reversed(candidates) if item.role == "assistant"),
+            None,
+        )
+        last_round = [last_assistant] if last_assistant is not None else []
+        last_timeline = last_assistant.timeline if last_assistant is not None else None
+        previous = [
+            item for item in self.linear.get_prev_messages()
+            if not isinstance(item, LLMContext) or (
+                item.timeline != current_timeline and item.timeline != last_timeline
+            )
+        ]
+        return previous, last_round, current_user
 
     def save(self, path: str | Path) -> bool:
         """Save the conversation AND the companion graph file.
@@ -469,6 +566,16 @@ class GraphContextHandler(ContextHandler):
                 return self._compaction_generation > self._last_retrieved_gen
             return False
         return self._message_count >= 1
+
+    def _latest_user_query(self) -> str:
+        """Return the newest non-empty user turn for empty previews."""
+        for message in reversed(self.linear.messages):
+            if getattr(message, "role", "") != "user":
+                continue
+            content = str(getattr(message, "content", "") or "").strip()
+            if content:
+                return content
+        return ""
 
     def _flush_pending(self) -> None:
         """Ingest buffered messages into the graph and clear the buffer."""

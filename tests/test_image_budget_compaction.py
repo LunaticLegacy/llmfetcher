@@ -4,13 +4,17 @@ import unittest
 from types import SimpleNamespace
 
 from llmfetcher.agent import Agent
+from llmfetcher.llm_types import RequestMessage
 from llmfetcher.multimodal import UserMessage
 
 
 class FakeContext:
     def __init__(self, count):
         self.messages = [
-            {"role": "user", "images": [{"attachment_id": str(index), "media_type": "image/png"}]}
+            RequestMessage(
+                role="user",
+                images=[{"attachment_id": str(index), "media_type": "image/png"}],
+            )
             for index in range(count)
         ]
         self.carried = None
@@ -20,7 +24,7 @@ class FakeContext:
 
     def add_user_message(self, message):
         self.carried = message
-        self.messages.append({"role": "user", "images": message.images})
+        self.messages.append(RequestMessage(role="user", images=message.images))
 
 
 class ImageBudgetCompactionTests(unittest.TestCase):
@@ -38,7 +42,7 @@ class ImageBudgetCompactionTests(unittest.TestCase):
         self.assertTrue(Agent._compact_for_image_budget(agent))
         self.assertIsInstance(context.carried, UserMessage)
         self.assertEqual(context.carried.images[0]["attachment_id"], "19")
-        self.assertEqual(len(context.build_messages()[0]["images"]), 1)
+        self.assertEqual(len(context.build_messages()[0].images), 1)
         self.assertEqual(calls, [None, "saved"])
 
     def test_no_compaction_below_limit(self):

@@ -3,8 +3,15 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 import threading
 
-from ..llm_types import LLMOutput, TokenUsage
+from ..llm_types import LLMOutput, RequestMessage, TokenUsage
 from ..multimodal import UserMessage
+from .composer import (
+    ContextBlock,
+    ContextComposer,
+    ContextPosition,
+    ContextProvider,
+    ContextSnapshot,
+)
 
 if TYPE_CHECKING:
     from ..execution.control import ExecutionController
@@ -26,12 +33,15 @@ def checkpoint_lock(path: str | Path) -> threading.RLock:
 
 
 class ContextHandler(ABC):
-    """Manages conversational context and builds API-ready message lists.
+    """Manages conversational state and exposes it as a context source.
 
     Subclasses decide how context is stored, summarised, or compacted;
-    ``build_messages`` serialises the stored state into the message format
-    expected by ``LLMFetcher.fetch`` / ``fetch_stream``.
+    ``build_blocks`` projects that state into semantic blocks. The legacy
+    ``build_messages`` method still serialises a complete request for direct
+    callers, while ``ContextComposer`` owns cross-source ordering.
     """
+
+    source_id = "context_handler"
 
     def __init__(self) -> None:
         """Initialize the base context handler with a usage counter.
@@ -48,6 +58,70 @@ class ContextHandler(ABC):
         # This is transient diagnostic state and is never persisted alongside
         # conversation content.
         self.last_save_error: Exception | None = None
+        self.context_composer = ContextComposer()
+        self._composer_source_build = False
+
+    def register_context_provider(self, provider: ContextProvider) -> None:
+        """Register a provider that contributes blocks to future requests.
+
+        Args:
+            provider: Plugin or host-owned context provider.
+
+        Raises:
+            ValueError: If the provider ID is empty or already registered.
+        """
+        self.context_composer.register(provider)
+
+    def provider_messages(
+        self,
+        *,
+        system_prompt: str | None = None,
+        current_message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> list[RequestMessage]:
+        """Render registered provider blocks for the current request.
+
+        Args:
+            system_prompt: System prompt selected for the request.
+            current_message: Current user input, when available.
+            metadata: Optional host metadata exposed to providers.
+
+        Returns:
+            Provider-neutral messages contributed by registered providers.
+        """
+        if self._composer_source_build:
+            return []
+        snapshot = ContextSnapshot(
+            handler=self,
+            system_prompt=system_prompt,
+            current_message=current_message,
+            metadata=dict(metadata or {}),
+        )
+        return self.context_composer.render(self.context_composer.blocks(snapshot))
+
+    def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
+        """Expose durable handler state as a Composer-owned context source.
+
+        The legacy ``build_messages`` method remains the serialization
+        implementation, while the Composer controls where these messages
+        appear relative to other sources.
+        """
+        previous = self._composer_source_build
+        self._composer_source_build = True
+        try:
+            messages = self.build_messages(system_prompt=None)
+        finally:
+            self._composer_source_build = previous
+        return [
+            ContextBlock(
+                role=message.role,
+                content=message.content or "",
+                source=self.source_id,
+                position=ContextPosition.PREVIOUS,
+                message=message,
+            )
+            for message in messages
+        ]
 
     @property
     def extra_usage(self) -> TokenUsage:
@@ -142,18 +216,48 @@ class ContextHandler(ABC):
         """
 
     @abstractmethod
-    def build_messages(self) -> List[Dict[str, Any]]:
+    def build_messages(
+        self,
+        *,
+        system_prompt: str | None = None,
+    ) -> List[RequestMessage]:
         """Build context messages for an LLM request.
 
-        Returns the stored conversation history (excluding system prompt
-        and the current user message) as a list of API-compatible dicts.
-        The caller (``LLMFetcher``) is responsible for prepending the
-        system prompt and appending the current user message.
+        Return the complete provider-neutral request context. Context
+        handlers own semantic message composition, including the optional
+        system prompt and memory projection.
+        The caller is responsible only for provider transport and wire
+        adaptation after this semantic projection is returned.
 
         Returns:
-            A list of message dicts (``{"role": ..., "content": ...}``),
-            with ``tool_calls`` embedded where applicable.
+            A complete provider-neutral request message sequence.
         """
+
+    def describe_request_messages(
+        self,
+        messages: List[RequestMessage],
+    ) -> list[dict[str, Any]]:
+        """Describe the origin of messages in a request preview.
+
+        The message payload remains the exact provider-neutral request. This
+        companion projection gives hosts a stable way to explain which part
+        came from a context handler without changing provider wire data.
+        """
+        result: list[dict[str, Any]] = []
+        for index, message in enumerate(messages):
+            if message.role == "system":
+                source = "system_prompt"
+            elif index == len(messages) - 1 and message.role == "user" and not message.content:
+                source = "hypothetical_input"
+            else:
+                source = f"{self.__class__.__name__}:context"
+            result.append({
+                "index": index,
+                "role": message.role,
+                "source": source,
+                "persisted": source.endswith(":context"),
+            })
+        return result
 
     @abstractmethod
     def save(self, path: str | Path) -> bool:
@@ -187,3 +291,4 @@ class ContextHandler(ABC):
         Returns:
             A boolean for indicate whether successfully clear or not.
         """
+

@@ -1,13 +1,24 @@
 from .base import ContextHandler
+from .composer import (
+    ContextBlock,
+    ContextComposer,
+    ContextPosition,
+    ContextProvider,
+    ContextSnapshot,
+    ContextSource,
+    HandlerContextSource,
+)
 from .linear import CompactionRequestPreview, ContextHandlerLinear
 from .registry import (
     CONTEXT_HANDLERS,
     DEFAULT_CONTEXT_HANDLER,
+    ContextSettingSpec,
     ContextHandlerSpec,
     available_context_handlers,
     context_handler_specs,
     context_handler_revision,
     create_context_handler,
+    normalize_context_settings,
 )
 from .sage import SageContext
 from .storage import (
@@ -26,8 +37,16 @@ from .archive_retrieval import (
 
 __all__ = [
     "ContextHandler",
+    "ContextBlock",
+    "ContextComposer",
+    "ContextPosition",
+    "ContextProvider",
+    "ContextSource",
+    "ContextSnapshot",
+    "HandlerContextSource",
     "ContextHandlerLinear",
     "ContextHandlerSpec",
+    "ContextSettingSpec",
     "ContextStorage",
     "CONTEXT_HANDLERS",
     "DEFAULT_CONTEXT_HANDLER",
@@ -38,6 +57,7 @@ __all__ = [
     "context_handler_specs",
     "context_handler_revision",
     "create_context_handler",
+    "normalize_context_settings",
     "is_sqlite_context_pointer",
     "CompactionRequestPreview",
     "RetrievedContextHandler",

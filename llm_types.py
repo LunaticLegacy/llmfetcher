@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 from dataclasses import dataclass, field
-from typing import List, Dict, Literal, Optional, Tuple, Union, Set, Any, Callable, overload, override
+from typing import List, Dict, Literal, Optional, Tuple, Union, Set, Any, Callable, cast, overload, override
 
 from typing import TypeAlias
 from uuid import UUID, uuid4
@@ -12,6 +12,81 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 JsonArray: TypeAlias = list[JsonValue]
+
+MessageRole: TypeAlias = Literal["system", "user", "assistant", "tool"]
+"""The four roles a provider-neutral request message can carry."""
+
+
+@dataclass(frozen=True)
+class ToolCallPayload:
+    """One tool call as a provider-neutral request message carries it.
+
+    Attributes:
+        id: Correlation identifier the matching tool result refers to.
+        name: Tool name the model asked for.
+        arguments: Parsed arguments exactly as the model supplied them.
+    """
+
+    id: str
+    name: str
+    arguments: JsonObject
+
+    def to_dict(self) -> JsonObject:
+        """Return this tool call as the provider-neutral wire mapping.
+
+        Returns:
+            A fresh mapping whose ``arguments`` pass through unchanged.
+        """
+        return {"id": self.id, "name": self.name, "arguments": self.arguments}
+
+
+@dataclass(frozen=True)
+class RequestMessage:
+    """One provider-neutral message of a dispatch-ready request.
+
+    The rendered counterpart of :class:`LLMContext`: ``role`` decides which of
+    the remaining fields carry meaning, so ``tool_calls`` describes an
+    assistant turn that requested tools, ``tool_call_id`` correlates the
+    ``tool`` turn answering one, and ``images`` travels with an entry that had
+    image references. Reasoning is deliberately not a field of its own: the
+    render layer folds it into ``content`` inside a ``<think>`` block.
+
+    Attributes:
+        role: Conversation role this message plays.
+        content: Message text, or ``None`` for an assistant turn whose only
+            output was a tool request.
+        tool_calls: Tool calls requested by an assistant turn.
+        tool_call_id: Identifier of the tool call a ``tool`` message answers.
+        images: Durable image references the source entry carried.
+    """
+
+    role: MessageRole
+    content: Optional[str] = None
+    tool_calls: List[ToolCallPayload] = field(default_factory=list)
+    tool_call_id: Optional[str] = None
+    images: List[ImageReference] = field(default_factory=list)
+
+    def to_dict(self) -> JsonObject:
+        """Return this message as the wire mapping a provider adapter reads.
+
+        Only the fields the role actually uses are present, so the mapping is
+        identical to the one the render layer used to assemble by hand.
+        ``images`` carries :class:`~llmfetcher.multimodal.ImageReference`
+        objects rather than serialized data — the provider adapters resolve
+        them — so that single value is cast into the JSON mapping the dispatch
+        layer expects.
+
+        Returns:
+            A fresh mapping containing this message's populated fields.
+        """
+        payload: JsonObject = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            payload["tool_calls"] = [call.to_dict() for call in self.tool_calls]
+        if self.tool_call_id is not None:
+            payload["tool_call_id"] = self.tool_call_id
+        if self.images:
+            payload["images"] = cast(JsonValue, self.images)
+        return payload
 
 
 @dataclass(frozen=True)

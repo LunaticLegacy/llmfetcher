@@ -37,7 +37,7 @@ class NativeVisionTests(unittest.TestCase):
     def test_openai_both_dispatch_modes_and_tool_order(self):
         for streaming in [False, True]:
             handler = self.handler(OpenAIHandler)
-            messages = self.context().build_messages()
+            messages = [message.to_dict() for message in self.context().build_messages()]
             handler.create_completion(messages=messages, temperature=0.5, max_tokens=100, stream=streaming)
             wire = handler.client.chat.completions.create.call_args.kwargs['messages']
             self.assertEqual([m['role'] for m in wire], ['user', 'assistant', 'tool', 'tool', 'user'])
@@ -50,7 +50,9 @@ class NativeVisionTests(unittest.TestCase):
     def test_anthropic_native_tool_use_and_image_result(self):
         for streaming in [False, True]:
             handler = self.handler(AnthropicHandler)
-            handler.create_completion(messages=self.context().build_messages(), temperature=0.5, max_tokens=100, stream=streaming)
+            handler.create_completion(
+                messages=[message.to_dict() for message in self.context().build_messages()],
+                temperature=0.5, max_tokens=100, stream=streaming)
             wire = handler.client.messages.create.call_args.kwargs['messages']
             self.assertEqual(wire[0]['content'][1]['source'], {'type': 'base64', 'media_type': 'image/png', 'data': DATA})
             self.assertEqual(wire[1]['content'][0]['type'], 'tool_use')
@@ -86,12 +88,18 @@ class NativeVisionTests(unittest.TestCase):
         handler = self.handler(OpenAIHandler)
         fetcher = object.__new__(LLMFetcher)
         fetcher._handler_for_backend = lambda backend: handler
-        _, snapshot = fetcher._prepare_backend_request(handler.backend, self.context().build_messages(), 0.5, 100, None, False)
+        _, snapshot = fetcher._prepare_backend_request(
+            handler.backend,
+            [message.to_dict() for message in self.context().build_messages()],
+            0.5, 100, None, False)
         handler.fetcher.image_resolver.assert_not_called()
         self.assertNotIn(DATA, json.dumps(snapshot.to_dict()))
         handler.backend.provider = 'litellm'
         with self.assertRaisesRegex(ValueError, 'does not support'):
-            fetcher._prepare_backend_request(handler.backend, self.context().build_messages(), 0.5, 100, None, False)
+            fetcher._prepare_backend_request(
+                handler.backend,
+                [message.to_dict() for message in self.context().build_messages()],
+                0.5, 100, None, False)
 
     def test_validation_missing_resolver_and_request_budget(self):
         with self.assertRaises(ValueError):
@@ -104,7 +112,9 @@ class NativeVisionTests(unittest.TestCase):
         handler = self.handler(OpenAIHandler)
         handler.fetcher.image_resolver = None
         with self.assertRaisesRegex(ValueError, 'image_resolver'):
-            handler.create_completion(messages=self.context().build_messages(), temperature=0.5, max_tokens=100, stream=False)
+            handler.create_completion(
+                messages=[message.to_dict() for message in self.context().build_messages()],
+                temperature=0.5, max_tokens=100, stream=False)
         handler.client.chat.completions.create.assert_not_called()
 
 

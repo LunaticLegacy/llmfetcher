@@ -27,6 +27,61 @@ from ..usage_ledger import UsageRecord, copy_usage, drain_records
 from ..multimodal import image_reference_markers
 
 
+# Tool output is evidence, not an entity list.  These names mostly describe
+# navigation/inspection and produce high-volume transient data which should
+# never become long-term graph nodes.
+_NEVER_GRAPH_TOOL_NAMES = {
+    "ls", "dir", "pwd", "which", "where", "find", "glob", "list_files",
+    "list_directory", "search_files", "graph_search", "graph_get_neighbors",
+    "graph_read", "graph_delete_entity", "graph_delete_relation", "context_preview",
+}
+
+_NOISE_PATH_RE = re.compile(
+    r"(?:^|[/\\])(?:__pycache__|\.git|\.venv|node_modules|site-packages)(?:[/\\]|$)",
+    re.IGNORECASE,
+)
+_GENERATED_FILE_RE = re.compile(
+    r"^(?:out|err|empty|input|output|stdout|stderr|tmp|temp|in|o|e)\d*\.(?:txt|log|json|bin)$",
+    re.IGNORECASE,
+)
+_STANDARD_PACKAGES = {
+    "sys", "os", "re", "json", "math", "struct", "typing", "pathlib",
+    "asyncio", "logging", "time", "uuid", "dataclasses", "collections",
+}
+
+
+def _tool_evidence_allowed(name: str) -> bool:
+    """Return whether a tool result is useful as graph extraction evidence."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", name.casefold()).strip("_")
+    if normalized in _NEVER_GRAPH_TOOL_NAMES:
+        return False
+    # Explicit graph mutation tools already write to the graph directly.
+    return not normalized.startswith("graph_upsert") and normalized not in {
+        "graph_invalidate_relation", "graph_delete_entity",
+    }
+
+
+def _is_noise_entity(name: str, entity_type: str) -> bool:
+    """Reject transient artifacts and generic runtime vocabulary."""
+    value = re.sub(r"\s+", " ", name.strip())
+    if not value or len(value) > 180:
+        return True
+    lowered = value.casefold()
+    if lowered in {"work", "workspace", "shell", "tool", "command", "result"}:
+        return True
+    if _NOISE_PATH_RE.search(value):
+        return True
+    if entity_type.casefold() in {"package", "library", "module"} and lowered in _STANDARD_PACKAGES:
+        return True
+    basename = re.split(r"[/\\]", value)[-1]
+    if entity_type.casefold() == "file" and _GENERATED_FILE_RE.match(basename):
+        return True
+    # Do not persist bare command switches, hashes, or numeric addresses.
+    if re.fullmatch(r"(?:[-/]\w+|0x[0-9a-f]+|\d+)", lowered):
+        return True
+    return False
+
+
 class ExtractionFetcher(Protocol):
     """Minimal LLM interface used for graph extraction."""
 
@@ -110,8 +165,8 @@ class GraphBuilder:
 
         Args:
             messages: List of LLMContext-like objects (``role``, ``content``,
-                ``timeline``). Tool results are ignored to keep the batch
-                cheap and deterministic.
+                ``timeline``). Eligible tool results are included as bounded
+                evidence; navigation and graph-maintenance tools are skipped.
 
         Returns:
             IngestStats describing what happened.
@@ -119,7 +174,12 @@ class GraphBuilder:
         if not messages:
             return IngestStats()
 
-        transcript = self._render_transcript(messages)
+        # Tool output is useful only for the LLM extraction path.  The regex
+        # fallback has no notion of evidence quality and would turn every
+        # path/import in a shell transcript into a graph node.
+        transcript = self._render_transcript(
+            messages, include_tool_evidence=self.fetcher is not None,
+        )
         if not transcript.strip():
             return IngestStats()
 
@@ -158,7 +218,9 @@ class GraphBuilder:
                 stats.error = f"LLM extraction failed: {exc}"
 
         if extraction is None:
-            extraction = extract_regex(transcript)
+            extraction = extract_regex(
+                self._render_transcript(messages, include_tool_evidence=False)
+            )
             stats.fallback_regex = True
 
         self._apply_extraction(extraction, timeline, stats)
@@ -166,8 +228,20 @@ class GraphBuilder:
 
     # -- internal ----------------------------------------------------------
 
-    def _render_transcript(self, messages: list[Any]) -> str:
-        """Render the newest messages as a bounded transcript."""
+    def _render_transcript(
+        self,
+        messages: list[Any],
+        *,
+        include_tool_evidence: bool = True,
+    ) -> str:
+        """Render newest messages plus bounded tool evidence.
+
+        Tool results are often where coding agents produce the durable facts
+        that should enter the graph (paths, commands, diagnostics).  Include
+        a compact representation here while retaining a hard transcript size
+        bound.  The full tool result remains in the linear context; this is
+        only an extraction view.
+        """
         parts: list[str] = []
         used = 0
         for m in reversed(messages):
@@ -178,10 +252,34 @@ class GraphBuilder:
                 # An image-only turn still carries durable provenance; keep it
                 # in the transcript instead of dropping the whole message.
                 content = f"{content.strip()}\n{markers}".strip()
-            if role not in ("user", "assistant") or not content.strip():
+            if role not in ("user", "assistant"):
                 continue
             label = "User" if role == "user" else "Assistant"
-            block = f"## {label}\n\n{content.strip()}"
+            sections = []
+            if content.strip():
+                sections.append(content.strip())
+            if not include_tool_evidence:
+                tool_infos = []
+            else:
+                tool_infos = getattr(m, "tool_calls", []) or []
+            for tool_info in tool_infos:
+                call = getattr(tool_info, "call", None)
+                name = str(getattr(call, "name", "tool"))
+                if not _tool_evidence_allowed(name):
+                    continue
+                arguments = getattr(call, "arguments", {}) or {}
+                result = str(getattr(tool_info, "result", "") or "")
+                # Keep tool evidence bounded per call.  The outer transcript
+                # bound still applies after this compact rendering.
+                if len(result) > 4_000:
+                    result = result[:4_000] + "\n...[tool output truncated]"
+                sections.append(
+                    f"[Tool: {name}]\nArguments: {json.dumps(arguments, ensure_ascii=False)}\n"
+                    f"Result:\n{result}"
+                )
+            if not sections:
+                continue
+            block = f"## {label}\n\n" + "\n\n".join(sections)
             addition = len(block) + 2
             if parts and used + addition > self.max_batch_chars:
                 break
@@ -209,6 +307,8 @@ class GraphBuilder:
             if not name:
                 continue
             etype = str(ent.get("type", "concept")).strip() or "concept"
+            if _is_noise_entity(name, etype):
+                continue
             aliases = [
                 str(a).strip()
                 for a in (ent.get("aliases") or [])
@@ -231,6 +331,8 @@ class GraphBuilder:
             dst_name = str(rel.get("dst", "")).strip()
             relation = str(rel.get("relation", "related_to")).strip() or "related_to"
             if not src_name or not dst_name:
+                continue
+            if _is_noise_entity(src_name, "concept") or _is_noise_entity(dst_name, "concept"):
                 continue
             src_id = self._resolve_entity_id(src_name, entity_map)
             dst_id = self._resolve_entity_id(dst_name, entity_map)
