@@ -52,6 +52,7 @@ class Agent:
         context_handler: Optional[ContextHandler] = None,
         default_max_rounds: int = 30,
         default_max_tokens: int = 32768,
+        default_temperature: float = 0.4,
         enable_stop_turn: bool = False,
         default_stream: bool = False,
         output_reasoning: bool = True,
@@ -75,6 +76,8 @@ class Agent:
                 ``run`` call that omits ``max_rounds``. ``0`` means unlimited.
             default_max_tokens: Default maximum generated tokens per model
                 step for a ``run`` call that omits ``max_tokens``.
+            default_temperature: Default sampling temperature for a ``run``
+                call that omits ``temperature``.
             enable_stop_turn: Whether to register the reserved native
                 ``stop_turn`` control tool. Hosts enable it when their user
                 workflow needs a model-visible non-text terminal boundary.
@@ -95,6 +98,8 @@ class Agent:
             raise ValueError("default_max_rounds must be zero or greater")
         if default_max_tokens <= 0:
             raise ValueError("default_max_tokens must be greater than zero")
+        if isinstance(default_temperature, bool) or not isinstance(default_temperature, (int, float)) or not 0 <= default_temperature <= 2:
+            raise ValueError("default_temperature must be between 0 and 2")
         if thinking_mode not in {"auto", "on", "off"}:
             raise ValueError("thinking_mode must be auto, on, or off")
         if reasoning_effort not in {"auto", "low", "medium", "high"}:
@@ -110,6 +115,7 @@ class Agent:
         self.context_path = Path(context_path) if context_path else None
         self.default_max_rounds = default_max_rounds
         self.default_max_tokens = default_max_tokens
+        self.default_temperature = float(default_temperature)
         self.default_stream = default_stream
         self.output_reasoning = output_reasoning
         self.thinking_mode = thinking_mode
@@ -798,7 +804,7 @@ class Agent:
         self,
         message: str,
         max_rounds: int | None = None,
-        temperature: float = 0.4,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         verbose: bool = False,
         control: AgentRunControl | None = None,
@@ -812,7 +818,8 @@ class Agent:
             message: User request or explicit task package for this run.
             max_rounds: Maximum model-and-tool steps. ``None`` uses the
                 Agent's ``default_max_rounds``; ``0`` means unlimited.
-            temperature: Model sampling temperature.
+            temperature: Model sampling temperature. ``None`` uses the
+                Agent's configured ``default_temperature``.
             max_tokens: Maximum generated tokens per model step. ``None``
                 uses the Agent's ``default_max_tokens``.
             verbose: Whether to print per-round diagnostic output.
@@ -842,6 +849,7 @@ class Agent:
         resolved_max_tokens = (
             self.default_max_tokens if max_tokens is None else max_tokens
         )
+        resolved_temperature = self.default_temperature if temperature is None else temperature
         resolved_stream = self.default_stream if stream is None else stream
         resolved_thinking_mode = self.thinking_mode if thinking_mode is None else thinking_mode
         resolved_reasoning_effort = self.reasoning_effort if reasoning_effort is None else reasoning_effort
@@ -853,6 +861,8 @@ class Agent:
             raise ValueError("max_rounds must be zero or greater")
         if resolved_max_tokens <= 0:
             raise ValueError("max_tokens must be greater than zero")
+        if isinstance(resolved_temperature, bool) or not isinstance(resolved_temperature, (int, float)) or not 0 <= resolved_temperature <= 2:
+            raise ValueError("temperature must be between 0 and 2")
         self._completion_requested.clear()
         self._stop_turn_requested.clear()
         with self._termination_lock:
@@ -942,7 +952,7 @@ class Agent:
                     **({'images': message.images} if isinstance(message, UserMessage) else {}),
                     "msg": message_input,
                     "system_prompt": prompt,
-                    "temperature": temperature,
+                    "temperature": resolved_temperature,
                     "max_tokens": resolved_max_tokens,
                     "thinking_mode": resolved_thinking_mode,
                     "reasoning_effort": resolved_reasoning_effort,
@@ -962,7 +972,7 @@ class Agent:
                 fetch_kwargs = dict(
                     msg=message_input,
                     system_prompt=prompt,
-                    temperature=temperature,
+                    temperature=resolved_temperature,
                     context_handler=self.context_handler,
                     context_composer=self.context_composer,
                     max_tokens=resolved_max_tokens,
