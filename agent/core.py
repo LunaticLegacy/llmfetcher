@@ -57,6 +57,7 @@ class Agent:
         output_reasoning: bool = True,
         thinking_mode: str = "auto",
         reasoning_effort: str = "auto",
+        tool_result_context_limit: int = 0,
         tool_result_transformer: Callable[[str, str, str], str] | None = None,
         context_providers: tuple[ContextProvider, ...] = (),
     ):
@@ -98,6 +99,8 @@ class Agent:
             raise ValueError("thinking_mode must be auto, on, or off")
         if reasoning_effort not in {"auto", "low", "medium", "high"}:
             raise ValueError("reasoning_effort must be auto, low, medium, or high")
+        if not isinstance(tool_result_context_limit, int) or isinstance(tool_result_context_limit, bool) or tool_result_context_limit < 0:
+            raise ValueError("tool_result_context_limit must be a non-negative integer")
 
         # Initiate the variable.
         self.llm_fetcher = llm_fetcher
@@ -111,6 +114,7 @@ class Agent:
         self.output_reasoning = output_reasoning
         self.thinking_mode = thinking_mode
         self.reasoning_effort = reasoning_effort
+        self.tool_result_context_limit = tool_result_context_limit
         self.tool_result_transformer = tool_result_transformer
 
         # Handle the tool, and make the tool executor.
@@ -124,6 +128,9 @@ class Agent:
             compacting_llmfetcher_handler=self.llm_fetcher,
             max_context_threshold=self.max_context_threshold,
         )
+        self.context_handler.tool_result_context_limit = tool_result_context_limit
+        configured_linear = getattr(self.context_handler, "linear", self.context_handler)
+        configured_linear.tool_result_context_limit = tool_result_context_limit
         # The Agent owns request composition. The handler is only one source
         # of context state; plugins are registered beside it.
         inherited_providers = tuple(

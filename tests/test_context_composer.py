@@ -4,7 +4,7 @@ import unittest
 
 from llmfetcher.context_handlers import ContextBlock, ContextComposer, ContextPosition, ContextSnapshot
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
-from llmfetcher.llm_types import LLMBackendConfig
+from llmfetcher.llm_types import LLMBackendConfig, LLMOutput, LLMToolCall
 
 
 class _Compactor:
@@ -75,6 +75,32 @@ class ContextComposerTests(unittest.TestCase):
             [block.position for block in composer.blocks(ContextSnapshot(handler=handler))],
             [ContextPosition.PERSISTENT, ContextPosition.CURRENT_INPUT],
         )
+
+    def test_tool_result_limit_keeps_newest_results_and_pairs_calls(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        handler.add_user_message("run tools")
+        for index in range(3):
+            handler.add_assistant_message(
+                LLMOutput(
+                    content="",
+                    provider="test",
+                    backend_name="test",
+                    model="test",
+                    tool_calls=[LLMToolCall(name=f"tool_{index}", call_id=f"call_{index}")],
+                ),
+                {f"call_{index}": f"complete-{index}"},
+            )
+        handler.tool_result_context_limit = 1
+        messages = ContextComposer((handler,)).compose(
+            snapshot=ContextSnapshot(handler=handler),
+        )
+        results = [message for message in messages if message.role == "tool"]
+        self.assertEqual([message.tool_call_id for message in results], ["call_0", "call_1", "call_2"])
+        self.assertIn("omitted", results[0].content or "")
+        self.assertIn("omitted", results[1].content or "")
+        self.assertEqual(results[2].content, "complete-2")
+        first_tool_turn = next(item for item in handler.messages if item.tool_calls)
+        self.assertEqual(first_tool_turn.tool_calls[0].result, "complete-0")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,11 @@ from .composer import (
     ContextSnapshot,
 )
 
+TOOL_RESULT_OMITTED_PLACEHOLDER = (
+    "[Earlier tool result omitted from the active context. "
+    "Use the stored artifact reference or artifact_read if needed.]"
+)
+
 if TYPE_CHECKING:
     from ..execution.control import ExecutionController
 
@@ -60,6 +65,33 @@ class ContextHandler(ABC):
         self.last_save_error: Exception | None = None
         self.context_composer = ContextComposer()
         self._composer_source_build = False
+        self.tool_result_context_limit = 0
+
+    def limit_tool_result_messages(
+        self,
+        messages: List[RequestMessage],
+    ) -> List[RequestMessage]:
+        """Replace older tool results for the active model request only.
+
+        Durable context remains untouched; this projection is applied after
+        the handler and plugin providers have produced request messages.
+        """
+        limit = int(getattr(self, "tool_result_context_limit", 0) or 0)
+        if limit <= 0:
+            return messages
+        tool_indexes = [
+            index for index, message in enumerate(messages)
+            if message.role == "tool" and message.tool_call_id is not None
+        ]
+        keep = set(tool_indexes[-limit:])
+        return [
+            message if index in keep or index not in tool_indexes else RequestMessage(
+                role="tool",
+                content=TOOL_RESULT_OMITTED_PLACEHOLDER,
+                tool_call_id=message.tool_call_id,
+            )
+            for index, message in enumerate(messages)
+        ]
 
     def register_context_provider(self, provider: ContextProvider) -> None:
         """Register a provider that contributes blocks to future requests.

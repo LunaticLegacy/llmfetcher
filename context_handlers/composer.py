@@ -199,6 +199,9 @@ class ContextComposer:
         if effective.system_prompt:
             messages.append(RequestMessage(role="system", content=effective.system_prompt))
         messages.extend(self.render(blocks))
+        limiter = getattr(effective.handler, "limit_tool_result_messages", None)
+        if callable(limiter):
+            messages = limiter(messages)
         return messages
 
     def describe(
