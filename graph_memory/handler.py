@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 import uuid
 
-from ..context_handlers.base import ContextHandler
+from ..context_handlers.base import ContextHandler, checkpoint_lock
 from ..context_handlers.composer import ContextBlock, ContextPosition, ContextSnapshot
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
