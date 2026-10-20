@@ -257,6 +257,9 @@ class ContextComposer:
                 "type": block.role,
                 "length": len(content or ""),
                 "position": block.position.name.lower(),
+                "position_value": int(block.position),
+                "priority": self._priority_overrides.get(block.source, block.priority),
+                "default_priority": block.priority,
                 "persisted": block.persistent,
             })
             index += 1
