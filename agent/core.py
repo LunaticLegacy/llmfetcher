@@ -60,7 +60,7 @@ class Agent:
         reasoning_effort: str = "auto",
         tool_result_context_limit: int = 0,
         tool_result_transformer: Callable[[str, str, str], str] | None = None,
-        context_providers: tuple[ContextProvider, ...] = (),
+        context_providers: tuple[ContextProvider, ...],
     ):
         """Initialize one tool-using Agent.
 
@@ -83,6 +83,9 @@ class Agent:
                 workflow needs a model-visible non-text terminal boundary.
             default_stream: Whether calls omitting ``stream`` should emit
                 incremental lifecycle events while preserving final results.
+            context_providers: Complete externally supplied context sources
+                registered beside the Agent's context handler. The Agent owns
+                the only Composer; no sources are inherited from the handler.
             tool_result_transformer: Optional host-owned transformation applied
                 to a completed tool result before it enters model context. It
                 receives the tool name, call ID, and complete string result.
@@ -137,13 +140,11 @@ class Agent:
         self.context_handler.tool_result_context_limit = tool_result_context_limit
         configured_linear = getattr(self.context_handler, "linear", self.context_handler)
         configured_linear.tool_result_context_limit = tool_result_context_limit
-        # The Agent owns request composition. The handler is only one source
-        # of context state; plugins are registered beside it.
-        inherited_providers = tuple(
-            getattr(getattr(self.context_handler, "context_composer", None), "providers", ())
-        )
+        # The Agent is the sole Composer owner. Every source other than the
+        # handler is supplied explicitly by the host; no source is inherited
+        # from a ContextHandler-owned registry.
         self.context_composer = ContextComposer((self.context_handler,))
-        for provider in (*inherited_providers, *context_providers):
+        for provider in context_providers:
             self.context_composer.register(provider)
 
         # Meaningless code.
@@ -201,16 +202,6 @@ class Agent:
             None.
         """
         self.hooks.append(hook)
-
-    def register_context_provider(self, provider: ContextProvider) -> None:
-        """Register a dynamic context source owned by this Agent.
-
-        Args:
-            provider: Source that emits :class:`ContextBlock` instances for
-                the next request. The source never mutates conversation
-                history through this registration API.
-        """
-        self.context_composer.register(provider)
 
     def remove_hook(self, hook: ExecutionHook) -> bool:
         """Unregister one execution-event receiver.

@@ -248,6 +248,7 @@ def _bootstrap_agent(args: argparse.Namespace) -> Agent:
             compacting_fetcher=fetcher,
             max_context_threshold=262144,
         ),
+        context_providers=(),
     )
 
     tools = _load_tools(args.tools)

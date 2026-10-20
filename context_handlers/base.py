@@ -7,9 +7,7 @@ from ..llm_types import LLMOutput, RequestMessage, TokenUsage
 from ..multimodal import UserMessage
 from .composer import (
     ContextBlock,
-    ContextComposer,
     ContextPosition,
-    ContextProvider,
     ContextSnapshot,
 )
 
@@ -63,7 +61,6 @@ class ContextHandler(ABC):
         # This is transient diagnostic state and is never persisted alongside
         # conversation content.
         self.last_save_error: Exception | None = None
-        self.context_composer = ContextComposer()
         self._composer_source_build = False
         self.tool_result_context_limit = 0
 
@@ -92,44 +89,6 @@ class ContextHandler(ABC):
             )
             for index, message in enumerate(messages)
         ]
-
-    def register_context_provider(self, provider: ContextProvider) -> None:
-        """Register a provider that contributes blocks to future requests.
-
-        Args:
-            provider: Plugin or host-owned context provider.
-
-        Raises:
-            ValueError: If the provider ID is empty or already registered.
-        """
-        self.context_composer.register(provider)
-
-    def provider_messages(
-        self,
-        *,
-        system_prompt: str | None = None,
-        current_message: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> list[RequestMessage]:
-        """Render registered provider blocks for the current request.
-
-        Args:
-            system_prompt: System prompt selected for the request.
-            current_message: Current user input, when available.
-            metadata: Optional host metadata exposed to providers.
-
-        Returns:
-            Provider-neutral messages contributed by registered providers.
-        """
-        if self._composer_source_build:
-            return []
-        snapshot = ContextSnapshot(
-            handler=self,
-            system_prompt=system_prompt,
-            current_message=current_message,
-            metadata=dict(metadata or {}),
-        )
-        return self.context_composer.render(self.context_composer.blocks(snapshot))
 
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
         """Expose durable handler state as a Composer-owned context source.
