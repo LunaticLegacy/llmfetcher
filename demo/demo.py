@@ -36,6 +36,7 @@ def main():
     agent: Agent = Agent(
         llm_fetcher=fetcher,
         system_prompt=DEMO_PROMPT,
+        context_providers=(),
         )
     agent.add_tools(create_shell_tools(sandbox_cwd="/home/luna/Documents/code/llmfetcher/workspace"))
 

@@ -288,6 +288,7 @@ class ExecutionGraph:
                 system_prompt=str(spec["system_prompt"]), max_concurrency=int(spec["max_concurrency"]),
                 max_context_threshold=int(spec["max_context_threshold"]), context_path=spec.get("context_path"),
                 default_max_rounds=int(spec["default_max_rounds"]), default_max_tokens=int(spec["default_max_tokens"]),
+                context_providers=(),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise GraphPersistenceError(f"Invalid Agent spec for {agent_name!r}: {exc}") from exc

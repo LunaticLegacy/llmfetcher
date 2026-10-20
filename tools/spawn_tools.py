@@ -227,6 +227,7 @@ def create_swarm_tools(
                 query_fetcher=SemanticGraphWorker(llm_fetcher),
                 max_context_threshold=worker_max_context_threshold,
             ),
+            context_providers=(),
         )
         agent.add_tools(_bind_tools_for_worker(name, agent))
 
@@ -299,6 +300,7 @@ def create_swarm_tools(
                 query_fetcher=SemanticGraphWorker(llm_fetcher),
                 max_context_threshold=worker_max_context_threshold,
             ),
+            context_providers=(),
         )
         worker.add_tools(_bind_tools_for_worker(name, worker) + [
             create_task_report_tool(swarm, name, worker.request_completion),

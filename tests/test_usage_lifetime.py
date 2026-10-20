@@ -55,6 +55,7 @@ def _make_agent(fetcher: _ScriptedFetcher) -> Agent:
         system_prompt="system",
         context_handler=handler,
         context_path=None,
+        context_providers=(),
     )
 
 

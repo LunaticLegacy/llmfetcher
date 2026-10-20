@@ -519,6 +519,7 @@ class TLBRAGHandler:
             system_prompt=build_base_prompt(
                 self.root, index_file_name=self.index_file_name
             ),
+            context_providers=(),
         )
         worker.add_tool(read_tool)
 
