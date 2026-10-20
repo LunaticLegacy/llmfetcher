@@ -1485,6 +1485,7 @@ class ExecutionGraph:
         max_rounds: int | None = None,
         control: AgentRunControl | None = None,
         target_agent: str | None = None,
+        entry_agent: str | None = None,
     ) -> dict[str, Any]:
         """Execute the graph using dependency-driven concurrent scheduling.
 
@@ -1511,6 +1512,10 @@ class ExecutionGraph:
             target_agent:
                 Optional concrete Agent to execute in isolation. Its normal
                 predecessors and successors are not scheduled for this turn.
+            entry_agent:
+                Optional Agent used as the only initial root while preserving
+                normal successor activation and dynamic dispatch. Mutually
+                exclusive with ``target_agent``.
 
         Returns:
             Mapping from every executed agent name to its raw output. A failed
@@ -1536,6 +1541,10 @@ class ExecutionGraph:
                 return {}
             if target_agent is not None and target_agent not in self.agent_dict:
                 raise KeyError(f"Unknown Agent: {target_agent}")
+            if entry_agent is not None and entry_agent not in self.agent_dict:
+                raise KeyError(f"Unknown entry Agent: {entry_agent}")
+            if target_agent is not None and entry_agent is not None:
+                raise ValueError("target_agent and entry_agent are mutually exclusive")
         self._shutdown_requested.clear()
 
         self._emit("graph", "", "graph:start", str(message))
@@ -1550,16 +1559,22 @@ class ExecutionGraph:
             # Persisted dispatched workers remain graph vertices across
             # browser turns. Their terminal assignment must not turn them
             # into implicit roots on every later ``run`` invocation.
-            ready = deque(
-                (target_agent,)
-                if target_agent is not None else (
+            if target_agent is not None:
+                ready = deque((target_agent,))
+            elif entry_agent is not None:
+                if remaining_dependencies.get(entry_agent, 0) != 0:
+                    raise ValueError(
+                        f"Entry Agent {entry_agent!r} has unresolved predecessors"
+                    )
+                ready = deque((entry_agent,))
+            else:
+                ready = deque(
                     name
                     for name, dependency_count in remaining_dependencies.items()
                     if dependency_count == 0
                     and task_states.get(self._task_by_agent.get(name, ""))
                     not in {"completed", "failed", "interrupted", "cancelled"}
                 )
-            )
 
             if not ready:
                 raise ValueError("Execution graph contains a cycle")
@@ -1843,12 +1858,26 @@ class ExecutionGraph:
 
         # --- final validation: detect deadlocks -------------------------
         with self._topology_lock:
-            never_ran = ([] if target_agent is not None else [
-                n for n in self.agent_dict
-                if n not in outputs
-                and n not in self._routing_nodes
-                and n not in routed_out
-            ])
+            if target_agent is not None:
+                never_ran = []
+            else:
+                reachable = None
+                if entry_agent is not None:
+                    reachable = set()
+                    stack = [entry_agent]
+                    while stack:
+                        name = stack.pop()
+                        if name in reachable:
+                            continue
+                        reachable.add(name)
+                        stack.extend(self._successors.get(name, ()))
+                never_ran = [
+                    n for n in self.agent_dict
+                    if n not in outputs
+                    and n not in self._routing_nodes
+                    and n not in routed_out
+                    and (reachable is None or n in reachable)
+                ]
         if never_ran:
             unresolved = {
                 n: remaining_dependencies.get(n, -1)

@@ -512,6 +512,7 @@ class AgentSwarm:
         max_rounds: int | None = None,
         control: AgentRunControl | None = None,
         target_agent: str | None = None,
+        entry_agent: str | None = None,
     ) -> dict[str, Any]:
         """Execute the graph with an optional cooperative Agent control.
 
@@ -522,6 +523,8 @@ class AgentSwarm:
             control: Optional stop and steering source shared by graph Agents.
             target_agent: When set, run only this named Agent and do not
                 activate its graph neighbours.  ``None`` runs the workflow.
+            entry_agent: When set, use only this Agent as the initial root
+                while keeping normal successor activation and dynamic dispatch.
 
         Returns:
             Mapping of agent name to its raw output; a failed agent maps to an
@@ -534,7 +537,7 @@ class AgentSwarm:
         try:
             return self._graph.run(
                 message, max_rounds=max_rounds, control=control,
-                target_agent=target_agent,
+                target_agent=target_agent, entry_agent=entry_agent,
             )
         finally:
             self._graph.finalize_tasks()
