@@ -33,6 +33,21 @@ class PersistedContextPage:
     total: int
 
 
+@dataclass(frozen=True)
+class PersistedArchivePage:
+    """One bounded archive-only page returned from durable storage.
+
+    Attributes:
+        rows: Deserialized archived payloads in chronological order.
+        next_before: Exclusive older-than cursor, or ``None`` when exhausted.
+        has_more: Whether at least one older archived row exists.
+    """
+
+    rows: list[dict[str, Any]]
+    next_before: int | None
+    has_more: bool
+
+
 def is_sqlite_context_pointer(pointer: Any) -> bool:
     """Return whether a parsed checkpoint is a schema-3 SQLite pointer.
 
@@ -109,6 +124,25 @@ class ContextStorage(Protocol):
 
         Returns:
             One chronological page plus its older cursor and total.
+        """
+
+    def read_archive_page(
+        self,
+        checkpoint: Path,
+        *,
+        before_timeline: int | None = None,
+        limit: int = 50,
+    ) -> PersistedArchivePage:
+        """Read one archive-only page using the checkpoint's database pointer.
+
+        Args:
+            checkpoint: Pointer JSON that names the sidecar database.
+            before_timeline: Exclusive older-than timeline cursor.
+            limit: Maximum returned rows; implementations bound this value.
+
+        Returns:
+            One chronological archive page plus its older cursor and whether
+            another older page exists.
         """
 
     def read_rows(
@@ -223,6 +257,30 @@ class SQLiteContextStorage:
             "CREATE INDEX IF NOT EXISTS archive_timeline_desc "
             "ON archive(timeline DESC)"
         )
+
+    @staticmethod
+    def _database_path(checkpoint: Path) -> Path:
+        """Resolve and validate the sidecar database named by a checkpoint.
+
+        Args:
+            checkpoint: Pointer JSON written by a schema-3 context handler.
+
+        Returns:
+            The sibling SQLite database path.
+
+        Raises:
+            ValueError: If the pointer is malformed or names an unsafe path.
+            OSError: If the pointer cannot be read.
+        """
+        pointer = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if not isinstance(pointer, dict):
+            raise ValueError("checkpoint must be an object")
+        if not is_sqlite_context_pointer(pointer):
+            raise ValueError("checkpoint is not a SQLite context pointer")
+        database_name = pointer.get("database")
+        if not isinstance(database_name, str) or Path(database_name).name != database_name:
+            raise ValueError("checkpoint database reference is invalid")
+        return checkpoint.with_name(database_name)
 
     def append_rows(
         self,
@@ -351,15 +409,7 @@ class SQLiteContextStorage:
             OSError: If the pointer cannot be read.
         """
         # Parse and validate the pointer before touching any database.
-        pointer = json.loads(checkpoint.read_text(encoding="utf-8"))
-        if not isinstance(pointer, dict):
-            raise ValueError("checkpoint must be an object")
-        if not is_sqlite_context_pointer(pointer):
-            raise ValueError("checkpoint is not a SQLite context pointer")
-        # The pointer must name a sibling file, never an arbitrary path.
-        database_name = pointer.get("database")
-        if not isinstance(database_name, str) or Path(database_name).name != database_name:
-            raise ValueError("checkpoint database reference is invalid")
+        database = self._database_path(checkpoint)
         # Bound the page size regardless of what the caller asked for.
         bounded = max(1, min(int(limit), 200))
         # Active rows only, or the shared timeline of active and archived rows.
@@ -375,7 +425,6 @@ class SQLiteContextStorage:
             where = " WHERE timeline < ?"
             values = (before_timeline,)
         # Resolve the sidecar path next to the pointer and read read-only.
-        database = checkpoint.with_name(database_name)
         connection = self._connect(database, readonly=True)
         try:
             # Total visible rows is independent of the cursor.
@@ -398,6 +447,58 @@ class SQLiteContextStorage:
             rows=[json.loads(row[1]) for row in reversed(rows)],
             next_before=rows[-1][0] if rows and older else None,
             total=int(total_row[0] if total_row else 0),
+        )
+
+    def read_archive_page(
+        self,
+        checkpoint: Path,
+        *,
+        before_timeline: int | None = None,
+        limit: int = 50,
+    ) -> PersistedArchivePage:
+        """Read one bounded, archive-only page from the pointer's database.
+
+        This deliberately queries only ``archive`` instead of reusing
+        :meth:`read_page` with ``include_archive=True``: active and archived
+        rows have different semantics, and an archive browser must not pay for
+        a ``UNION ALL`` or a total count on every page.
+
+        Args:
+            checkpoint: Pointer JSON that names the sidecar database.
+            before_timeline: Exclusive older-than timeline cursor.
+            limit: Maximum returned rows, clamped to 200.
+
+        Returns:
+            A chronological archive page, the next older cursor, and whether
+            another older page exists.
+
+        Raises:
+            ValueError: If the pointer is malformed or the limit is invalid.
+            OSError: If the pointer or database cannot be read.
+        """
+        database = self._database_path(checkpoint)
+        bounded = max(1, min(int(limit), 200))
+        where = ""
+        values: tuple[object, ...] = ()
+        if before_timeline is not None:
+            where = " WHERE timeline < ?"
+            values = (before_timeline,)
+        connection = self._connect(database, readonly=True)
+        try:
+            # Fetch one extra row so ``has_more`` never requires COUNT(*).
+            rows = connection.execute(
+                f"SELECT timeline, payload FROM archive{where} "
+                "ORDER BY timeline DESC LIMIT ?",
+                (*values, bounded + 1),
+            ).fetchall()
+        finally:
+            connection.close()
+        has_more = len(rows) > bounded
+        page_rows = rows[:bounded]
+        return PersistedArchivePage(
+            rows=[json.loads(row[1]) for row in reversed(page_rows)],
+            next_before=page_rows[-1][0] if has_more and page_rows else None,
+            has_more=has_more,
         )
 
     def count(self, database: Path, table: str) -> int:
@@ -442,6 +543,7 @@ class SQLiteContextStorage:
 
 __all__ = [
     "ContextStorage",
+    "PersistedArchivePage",
     "PersistedContextPage",
     "SQLiteContextStorage",
     "is_sqlite_context_pointer",

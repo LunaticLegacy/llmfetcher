@@ -66,4 +66,46 @@ def read_persisted_context_page(
     return [context_from_dict(item) for item in selected], next_cursor, len(entries_raw)
 
 
-__all__ = ["read_persisted_context_page"]
+def read_persisted_archive_page(
+    path: str | Path,
+    *,
+    before_timeline: int | None = None,
+    limit: int = 50,
+    storage: ContextStorage | None = None,
+) -> tuple[list[LLMContext], int | None, bool]:
+    """Read one archive-only page without loading the active transcript.
+
+    Legacy full-JSON checkpoints are rejected: their archive is a plain array
+    with no random access, so serving it would require the read-all-then-slice
+    behavior this pager exists to avoid.
+
+    Args:
+        path: Schema-3 SQLite context pointer.
+        before_timeline: Exclusive older-than timeline cursor.
+        limit: Maximum returned entries, bounded to 200.
+        storage: Optional durable reader; defaults to the SQLite implementation.
+
+    Returns:
+        Chronological archived entries, the next older cursor, and whether
+        another older page exists.
+
+    Raises:
+        ValueError: If the checkpoint is legacy or malformed.
+        OSError: If the checkpoint or database cannot be read.
+    """
+    target = Path(path)
+    pointer = json.loads(target.read_text(encoding="utf-8"))
+    if not isinstance(pointer, dict):
+        raise ValueError("checkpoint must be an object")
+    if not is_sqlite_context_pointer(pointer):
+        raise ValueError("archive paging requires a schema-3 SQLite checkpoint")
+    bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
+    page = (storage or SQLiteContextStorage()).read_archive_page(
+        target,
+        before_timeline=before_timeline,
+        limit=bounded,
+    )
+    return [context_from_dict(row) for row in page.rows], page.next_before, page.has_more
+
+
+__all__ = ["read_persisted_context_page", "read_persisted_archive_page"]

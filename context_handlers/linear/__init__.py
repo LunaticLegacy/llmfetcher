@@ -29,7 +29,7 @@ from .compaction import (
     parse_compacted_abstract,
 )
 from .handler import ContextHandlerLinear
-from .paging import read_persisted_context_page
+from .paging import read_persisted_archive_page, read_persisted_context_page
 from .rendering import append_context_entry, render_messages
 
 __all__ = [
@@ -37,6 +37,7 @@ __all__ = [
     "CompactionFetcher",
     "CompactionRequestPreview",
     "read_persisted_context_page",
+    "read_persisted_archive_page",
     "build_request_preview",
     "estimate_context_size",
     "parse_compacted_abstract",
