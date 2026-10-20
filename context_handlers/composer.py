@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from ..llm_types import MessageRole, RequestMessage
 
@@ -104,13 +104,30 @@ class ContextComposer:
             owns this Composer; sources are never inherited from a handler.
     """
 
-    def __init__(self, providers: Sequence[ContextProvider]) -> None:
+    def __init__(
+        self,
+        providers: Sequence[ContextProvider],
+        *,
+        priority_overrides: Mapping[str, int] | None = None,
+    ) -> None:
         """Create a composer with its complete externally supplied sources.
 
         Args:
             providers: Providers to register in declaration order.
+            priority_overrides: Optional source-id to priority overrides.
+                ``source`` is the identity a block already exposes, so an
+                override pins a block without inventing a new position.  An
+                entry whose source is absent from the current request is
+                ignored, letting a saved order survive a removed plugin.
         """
         self._providers: list[ContextSource] = list(providers)
+        self._priority_overrides: dict[str, int] = {}
+        for source, priority in (priority_overrides or {}).items():
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError("context priority override sources must be non-empty strings")
+            if isinstance(priority, bool) or not isinstance(priority, int):
+                raise ValueError("context priority overrides must be integers")
+            self._priority_overrides[source] = priority
 
     @property
     def providers(self) -> tuple[ContextSource, ...]:
@@ -141,10 +158,10 @@ class ContextComposer:
             snapshot: Request snapshot passed to every provider.
 
         Returns:
-            Enabled, non-empty blocks ordered by priority and declaration
-            order.
+            Enabled, non-empty blocks ordered by priority, then position,
+            then declaration order.
         """
-        result: list[tuple[int, int, ContextBlock]] = []
+        result: list[tuple[int, int, int, ContextBlock]] = []
         sequence = 0
         for provider in self._providers:
             provider_blocks = provider.build_blocks(snapshot)
@@ -156,7 +173,8 @@ class ContextComposer:
                     and not (block.message is not None and block.message.tool_calls)
                 ):
                     continue
-                result.append((int(block.position), block.priority, sequence, block))
+                priority = self._priority_overrides.get(block.source, block.priority)
+                result.append((priority, int(block.position), sequence, block))
                 sequence += 1
         result.sort(key=lambda item: (item[0], item[1], item[2]))
         return [item[3] for item in result]

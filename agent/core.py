@@ -10,7 +10,7 @@ import hashlib
 import uuid
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import List, Any, Optional, Dict, Protocol, Callable
+from typing import List, Any, Optional, Dict, Mapping, Protocol, Callable
 from pathlib import Path
 
 from ..llm_fetcher import LLMBackendConfig, LLMFetcher, LLMBackendHandler
@@ -61,6 +61,7 @@ class Agent:
         tool_result_context_limit: int = 0,
         tool_result_transformer: Callable[[str, str, str], str] | None = None,
         context_providers: tuple[ContextProvider, ...],
+        context_block_order: Mapping[str, int] | None = None,
     ):
         """Initialize one tool-using Agent.
 
@@ -86,6 +87,9 @@ class Agent:
             context_providers: Complete externally supplied context sources
                 registered beside the Agent's context handler. The Agent owns
                 the only Composer; no sources are inherited from the handler.
+            context_block_order: Optional ``ContextBlock.source`` to priority
+                overrides. Unmatched sources are ignored, so a saved order
+                survives a provider that is no longer present.
             tool_result_transformer: Optional host-owned transformation applied
                 to a completed tool result before it enters model context. It
                 receives the tool name, call ID, and complete string result.
@@ -143,7 +147,10 @@ class Agent:
         # The Agent is the sole Composer owner. Every source other than the
         # handler is supplied explicitly by the host; no source is inherited
         # from a ContextHandler-owned registry.
-        self.context_composer = ContextComposer((self.context_handler,))
+        self.context_composer = ContextComposer(
+            (self.context_handler,),
+            priority_overrides=context_block_order,
+        )
         for provider in context_providers:
             self.context_composer.register(provider)
 

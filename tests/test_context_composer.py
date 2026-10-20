@@ -18,7 +18,7 @@ class _Provider:
         self,
         provider_id: str = "workspace",
         position: ContextPosition = ContextPosition.PERSISTENT,
-        priority: int = 10,
+        priority: int = 0,
         content: str = "<workspace>stable</workspace>",
     ) -> None:
         self.provider_id = provider_id
@@ -114,7 +114,7 @@ class ContextComposerTests(unittest.TestCase):
         first_tool_turn = next(item for item in handler.messages if item.tool_calls)
         self.assertEqual(first_tool_turn.tool_calls[0].result, "complete-0")
 
-    def test_custom_position_uses_priority_before_registration_order(self) -> None:
+    def test_priority_precedes_position(self) -> None:
         handler = ContextHandlerLinear(_Compactor())
         composer = ContextComposer((
             handler,
@@ -125,7 +125,26 @@ class ContextComposerTests(unittest.TestCase):
         messages = composer.compose(snapshot=ContextSnapshot(handler=handler))
         self.assertEqual(
             [message.content for message in messages],
-            ["early", "late", "worktree"],
+            ["worktree", "early", "late"],
+        )
+
+    def test_source_priority_overrides_position_and_missing_sources_are_ignored(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        composer = ContextComposer(
+            (
+                handler,
+                _Provider("workspace", ContextPosition.PERSISTENT, content="workspace"),
+                _Provider("notes", ContextPosition.CUSTOM, content="notes"),
+            ),
+            priority_overrides={"notes": -5, "uninstalled.plugin": 1},
+        )
+        messages = composer.compose(
+            snapshot=ContextSnapshot(handler=handler),
+            system_prompt="system",
+        )
+        self.assertEqual(
+            [message.content for message in messages],
+            ["system", "notes", "workspace"],
         )
 
 
