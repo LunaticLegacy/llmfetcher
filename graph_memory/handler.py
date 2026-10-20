@@ -311,10 +311,6 @@ class GraphContextHandler(ContextHandler):
         messages: list[RequestMessage] = []
         if system_prompt:
             messages.append(RequestMessage(role="system", content=system_prompt))
-        provider_messages = self.provider_messages(system_prompt=system_prompt)
-        if provider_messages:
-            messages.extend(provider_messages)
-
         previous, last_round, current_user = self._linear_message_sections()
         messages.extend(render_messages(previous, pending_resume=self.linear._pending_resume and not current_user))
         retrieved_memory = "\n\n".join(

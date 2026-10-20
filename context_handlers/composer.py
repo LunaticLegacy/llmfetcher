@@ -15,6 +15,7 @@ class ContextPosition(IntEnum):
     PERSISTENT = 10
     PREVIOUS = 20
     MEMORY = 30
+    CUSTOM = 35
     WORKTREE = 40
     LAST_ROUND = 50
     CURRENT_INPUT = 60
@@ -99,11 +100,12 @@ class ContextComposer:
     """Validate, order, and render provider-produced blocks.
 
     Args:
-        providers: Initial providers in declaration order.
+        providers: Complete source collection in declaration order. The Agent
+            owns this Composer; sources are never inherited from a handler.
     """
 
-    def __init__(self, providers: Sequence[ContextProvider] = ()) -> None:
-        """Create a composer with optional initial providers.
+    def __init__(self, providers: Sequence[ContextProvider]) -> None:
+        """Create a composer with its complete externally supplied sources.
 
         Args:
             providers: Providers to register in declaration order.

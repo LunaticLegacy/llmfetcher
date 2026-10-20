@@ -14,19 +14,29 @@ class _Compactor:
 
 
 class _Provider:
-    provider_id = "workspace"
+    def __init__(
+        self,
+        provider_id: str = "workspace",
+        position: ContextPosition = ContextPosition.PERSISTENT,
+        priority: int = 10,
+        content: str = "<workspace>stable</workspace>",
+    ) -> None:
+        self.provider_id = provider_id
+        self.position = position
+        self.priority = priority
+        self.content = content
 
     def build_blocks(self, snapshot: ContextSnapshot):
         return [ContextBlock(
-            role="user", content="<workspace>stable</workspace>",
-            source=self.provider_id, priority=10, persistent=True,
-            position=ContextPosition.PERSISTENT,
+            role="user", content=self.content,
+            source=self.provider_id, priority=self.priority, persistent=True,
+            position=self.position,
         )]
 
 
 class ContextComposerTests(unittest.TestCase):
     def test_orders_blocks_and_skips_disabled_or_empty(self) -> None:
-        composer = ContextComposer()
+        composer = ContextComposer(())
 
         class Provider:
             provider_id = "test"
@@ -45,10 +55,12 @@ class ContextComposerTests(unittest.TestCase):
 
     def test_provider_injection_is_rendered_without_becoming_history(self) -> None:
         handler = ContextHandlerLinear(_Compactor())
-        handler.register_context_provider(_Provider())
         handler.add_user_message("hello")
 
-        messages = handler.build_messages(system_prompt="system")
+        messages = ContextComposer((handler, _Provider())).compose(
+            snapshot=ContextSnapshot(handler=handler),
+            system_prompt="system",
+        )
 
         self.assertEqual(
             [(message.role, message.content) for message in messages],
@@ -101,6 +113,20 @@ class ContextComposerTests(unittest.TestCase):
         self.assertEqual(results[2].content, "complete-2")
         first_tool_turn = next(item for item in handler.messages if item.tool_calls)
         self.assertEqual(first_tool_turn.tool_calls[0].result, "complete-0")
+
+    def test_custom_position_uses_priority_before_registration_order(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        composer = ContextComposer((
+            handler,
+            _Provider("late", ContextPosition.CUSTOM, priority=20, content="late"),
+            _Provider("early", ContextPosition.CUSTOM, priority=10, content="early"),
+            _Provider("worktree", ContextPosition.WORKTREE, priority=0, content="worktree"),
+        ))
+        messages = composer.compose(snapshot=ContextSnapshot(handler=handler))
+        self.assertEqual(
+            [message.content for message in messages],
+            ["early", "late", "worktree"],
+        )
 
 
 if __name__ == "__main__":

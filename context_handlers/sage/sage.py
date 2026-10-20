@@ -207,9 +207,6 @@ class SageContext(ContextHandler):
         messages: List[RequestMessage] = []
         if system_prompt:
             messages.append(RequestMessage(role="system", content=system_prompt))
-        provider_messages = self.provider_messages(system_prompt=system_prompt)
-        if provider_messages:
-            messages.extend(provider_messages)
         by_timeline = {
             item.timeline: item
             for item in self.raw_contexts_info

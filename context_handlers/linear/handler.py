@@ -511,10 +511,6 @@ class ContextHandlerLinear(ContextHandler):
         )
         if system_prompt:
             messages.insert(0, RequestMessage(role="system", content=system_prompt))
-        provider_messages = self.provider_messages(system_prompt=system_prompt)
-        if provider_messages:
-            insert_at = 1 if system_prompt else 0
-            messages[insert_at:insert_at] = provider_messages
         return messages
 
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
