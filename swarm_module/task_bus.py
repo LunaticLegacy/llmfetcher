@@ -9,6 +9,31 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping
 
 
+SUBAGENT_REPORT_INSTRUCTION = (
+    "After finishing your job, a call for tool report_task for structured "
+    "abstract, evidence, reference for artifact and problems needs to solve "
+    "SHOULD be done."
+)
+
+
+def append_subagent_report_instruction(system_prompt: str) -> str:
+    """Append the fixed terminal-report instruction to a subagent prompt.
+
+    Args:
+        system_prompt: Original worker-specific system instructions.
+
+    Returns:
+        The prompt with the report instruction appended once, or the
+        instruction alone when the original prompt is blank.
+    """
+    base = system_prompt.rstrip()
+    if not base:
+        return SUBAGENT_REPORT_INSTRUCTION
+    if SUBAGENT_REPORT_INSTRUCTION in base:
+        return base
+    return f"{base}\n\n{SUBAGENT_REPORT_INSTRUCTION}"
+
+
 @dataclass(frozen=True)
 class TaskAssignment:
     """Immutable work package delivered to one subagent.

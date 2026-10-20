@@ -76,7 +76,12 @@ from ..context_handlers import ContextHandlerLinear
 from ..events import ExecutionEvent, ExecutionHook
 from ..llm_fetcher import LLMFetcher
 from ..llm_types import LLMBackendConfig
-from .task_bus import TaskAssignment, TaskBus, TaskReport
+from .task_bus import (
+    TaskAssignment,
+    TaskBus,
+    TaskReport,
+    append_subagent_report_instruction,
+)
 
 
 MapperFn = Callable[[Mapping[str, Any]], str]
@@ -1043,6 +1048,9 @@ class ExecutionGraph:
                 "task_id": assignment.id,
                 "updated_at": time.time(),
             }
+            agent_instance.system_prompt = append_subagent_report_instruction(
+                agent_instance.system_prompt
+            )
             agent_instance._agent_name_in_graph = agent_name
             self._attach_agent_events(agent_instance)
         self._dynamic_ready.put(agent_name)
@@ -1125,6 +1133,9 @@ class ExecutionGraph:
                     f"Agent {agent_name!r} cannot be revived while task "
                     f"{previous_task_id!r} is {previous_state or 'unknown'}"
                 )
+            agent.system_prompt = append_subagent_report_instruction(
+                agent.system_prompt
+            )
             assignment = self.task_bus.create_assignment(
                 recipient=agent_name,
                 reply_to=reply_to,

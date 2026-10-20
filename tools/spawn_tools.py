@@ -28,7 +28,7 @@ from ..llm_fetcher import LLMFetcher
 from ..graph_memory import GraphContextHandler, SemanticGraphWorker
 from ..llm_types import Tool, ToolParameter, ToolSchema
 from ..swarm_module.swarm import AgentSwarm
-from ..swarm_module.task_bus import TaskAssignment
+from ..swarm_module.task_bus import TaskAssignment, append_subagent_report_instruction
 
 
 def create_task_report_tool(
@@ -284,9 +284,10 @@ def create_swarm_tools(
         if plan_task_id and plan_task_validator is not None and not plan_task_validator(plan_task_id):
             raise ValueError("plan_task_id must identify an existing leaf task")
         task_id = uuid.uuid4().hex
+        worker_prompt = append_subagent_report_instruction(system_prompt)
         worker = Agent(
             llm_fetcher=llm_fetcher,
-            system_prompt=system_prompt,
+            system_prompt=worker_prompt,
             max_context_threshold=worker_max_context_threshold,
             context_path=context_path_factory(name) if context_path_factory else None,
             default_max_rounds=worker_max_rounds,
