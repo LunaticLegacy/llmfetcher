@@ -6,7 +6,9 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, cast
+
+from ..llm_types import JsonObject, JsonValue
 
 
 SUBAGENT_REPORT_INSTRUCTION = (
@@ -432,7 +434,7 @@ class TaskBus:
         with self._condition:
             return dict(self._task_states)
 
-    def to_snapshot(self) -> dict[str, Any]:
+    def to_snapshot(self) -> JsonObject:
         """Return a JSON-compatible, point-in-time copy of TaskBus state.
 
         The returned payload includes assignments, lifecycle states, reports,
@@ -442,20 +444,23 @@ class TaskBus:
         ``running`` cannot be resumed safely after process restart.
 
         Returns:
-            Dictionary accepted by :meth:`from_snapshot`.
+            Document accepted by :meth:`from_snapshot`.
         """
         with self._condition:
             # Copy immutable dataclasses while holding the bus lock so the four
             # correlated indexes describe one consistent mailbox state.
-            return {
-                "assignments": [asdict(item) for item in self._assignments.values()],
-                "task_states": dict(self._task_states),
-                "reports": [asdict(item) for item in self._reports.values()],
-                "inboxes": {name: list(ids) for name, ids in self._inboxes.items()},
+            inboxes: dict[str, JsonValue] = {
+                name: list(ids) for name, ids in self._inboxes.items()
             }
+            return cast("JsonObject", {
+                "assignments": [asdict(item) for item in self._assignments.values()],
+                "task_states": cast("JsonValue", dict(self._task_states)),
+                "reports": [asdict(item) for item in self._reports.values()],
+                "inboxes": inboxes,
+            })
 
     @classmethod
-    def from_snapshot(cls, snapshot: Mapping[str, Any]) -> "TaskBus":
+    def from_snapshot(cls, snapshot: JsonObject) -> "TaskBus":
         """Restore a TaskBus from :meth:`to_snapshot` output.
 
         Args:

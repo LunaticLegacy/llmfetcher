@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from ..agent import Agent, AgentRunControl
 from ..events import ExecutionHook
+from ..llm_types import JsonObject
 from .execution_graph import (
     AgentResolver,
     CallbackResolver,
@@ -20,6 +21,7 @@ from .execution_graph import (
     MapperFn,
     RouterFn,
 )
+from .snapshots import SwarmViewSnapshot
 from .task_bus import TaskAssignment, TaskReport
 
 
@@ -71,7 +73,7 @@ class AgentSwarm:
         self,
         path: str | Path,
         *,
-        agent_serializer: Callable[[str, Agent], dict[str, Any]] | None = None,
+        agent_serializer: Callable[[str, Agent], JsonObject] | None = None,
         callback_serializer: CallbackSerializer | None = None,
     ) -> Path:
         """Persist a quiescent Swarm through its execution-graph snapshot.
@@ -393,12 +395,12 @@ class AgentSwarm:
         """
         return self._graph.remove_hook(hook)
 
-    def view_snapshot(self) -> dict[str, Any]:
+    def view_snapshot(self) -> SwarmViewSnapshot:
         """Return a safe, UI-oriented snapshot of the active graph topology.
 
         Returns:
-            JSON-compatible node, edge, assignment, and task-state data from
-            the underlying :class:`ExecutionGraph`.
+            Typed node, edge, assignment, and task-state snapshot from the
+            underlying :class:`ExecutionGraph`.
         """
         return self._graph.view_snapshot()
 

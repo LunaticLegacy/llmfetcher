@@ -69,65 +69,66 @@ from pathlib import Path
 import threading
 import time
 from queue import Empty, SimpleQueue
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, cast
+from uuid import uuid4
 
-from ..agent import Agent, AgentRunControl, AgentRunStopped
-from ..context_handlers import ContextHandlerLinear
-from ..events import ExecutionEvent, ExecutionHook
-from ..llm_fetcher import LLMFetcher
-from ..llm_types import LLMBackendConfig
-from .task_bus import (
+from ...agent import Agent, AgentRunControl, AgentRunStopped
+from ...context_handlers import ContextHandlerLinear
+from ...events import ExecutionEvent, ExecutionHook
+from ...llm_fetcher import LLMFetcher
+from ...llm_types import JsonObject, LLMBackendConfig, LLMOutput
+from ..snapshots import (
+    ExecutionGraphSnapshot,
+    GraphCallbackIds,
+    GraphDeclarativeCallbacks,
+    GraphEdgeView,
+    GraphNodeState,
+    GraphNodeView,
+    GraphSpecEdge,
+    GraphSpecNode,
+    SwarmViewSnapshot,
+)
+from ..task_bus import (
     TaskAssignment,
     TaskBus,
     TaskReport,
     append_subagent_report_instruction,
 )
+from .errors import AgentFailure, GraphPersistenceError
+from .serialization import (
+    SNAPSHOT_VERSION as _SNAPSHOT_VERSION,
+    default_agent_resolver,
+    default_agent_serializer,
+)
+from .types import (
+    AgentResolver,
+    AgentSerializer,
+    CallbackResolver,
+    CallbackSerializer,
+    MapperFn,
+    RouterFn,
+)
 
 
-MapperFn = Callable[[Mapping[str, Any]], str]
-"""Node-level mapper: receives a ``{predecessor_name: raw_output}`` mapping
-and returns the input string for the agent."""
-
-RouterFn = Callable[[str], list[str]]
-"""Post-completion router: receives the agent's output text and returns the
-list of successor names that should be activated.  Successors not in the
-returned list are skipped for this run."""
-
-AgentSerializer = Callable[[str, Agent], dict[str, Any]]
-AgentResolver = Callable[[str, Mapping[str, Any]], Agent]
-CallbackSerializer = Callable[[str, str, Callable[..., Any]], str]
-CallbackResolver = Callable[[str, str, str], Callable[..., Any]]
+_SAVE_LOCKS: dict[Path, threading.RLock] = {}
+_SAVE_LOCKS_GUARD = threading.Lock()
 
 
-class GraphPersistenceError(ValueError):
-    """Raised when an ExecutionGraph cannot be safely saved or restored."""
+def _save_lock(destination: Path) -> threading.RLock:
+    """Return the per-destination lock serialising snapshot replacement.
 
-
-@dataclass
-class AgentFailure:
-    """Non-fatal marker placed in :meth:`ExecutionGraph.run` outputs when an
-    Agent raises during execution.
-
-    The graph keeps running: independent Agents are unaffected, the failure
-    is delivered to the coordinator through the task bus (``status="failed"``
-    report) and to observers through the ``agent:failed`` event, and the
-    failed Agent's downstream dependents are skipped.
-
-    Attributes:
-        agent_name: Graph name of the Agent that raised.
-        error: Bounded error message.
-        exception: The original exception, when available.
+    ``os.replace`` is atomic but contended on Windows: two threads replacing
+    the same destination can make one fail with access denied. One lock per
+    destination keeps last-writer-wins while letting independent graph files
+    proceed in parallel.
     """
-
-    agent_name: str
-    error: str
-    exception: Exception | None = None
-
-    def __str__(self) -> str:
-        return f"[{self.agent_name} failed] {self.error}"
-
-
-_SNAPSHOT_VERSION = 1
+    resolved = destination.resolve()
+    with _SAVE_LOCKS_GUARD:
+        lock = _SAVE_LOCKS.get(resolved)
+        if lock is None:
+            lock = threading.RLock()
+            _SAVE_LOCKS[resolved] = lock
+        return lock
 
 
 class ExecutionGraph:
@@ -207,7 +208,7 @@ class ExecutionGraph:
         self.task_bus = TaskBus()
         self._task_by_agent: dict[str, str] = {}
         self._task_by_id: dict[str, str] = {}
-        self._node_states: dict[str, dict[str, Any]] = {}
+        self._node_states: dict[str, GraphNodeState] = {}
         self._dynamic_ready: SimpleQueue[str] = SimpleQueue()
 
         # Topology mutations are short and independent from Agent execution.
@@ -235,71 +236,25 @@ class ExecutionGraph:
         return self.dynamic_get_info()
 
     @staticmethod
-    def _default_agent_serializer(agent_name: str, agent: Agent) -> dict[str, Any]:
+    def _default_agent_serializer(agent_name: str, agent: Agent) -> JsonObject:
         """Serialize a standard tool-free Agent into JSON-compatible config.
-
-        Args:
-            agent_name: Graph-local name used in validation errors.
-            agent: Agent whose LLM, context-path, and execution settings are saved.
 
         Returns:
             Versioned Agent specification that :meth:`_default_agent_resolver` restores.
-
-        Raises:
-            GraphPersistenceError: If tools or a custom context handler need an
-                application-supplied serializer.
         """
-        if not isinstance(agent.context_handler, ContextHandlerLinear):
-            raise GraphPersistenceError(f"Agent {agent_name!r} uses custom context; provide agent_serializer")
-        if agent.tool_handler.get_all_tools():
-            raise GraphPersistenceError(f"Agent {agent_name!r} has tools; provide agent_serializer")
-        try:
-            result = {
-                "kind": "llmfetcher.agent.v1",
-                "backends": [asdict(item) for item in agent.llm_fetcher.backend_configs.values()],
-                "default_backend": agent.llm_fetcher.default_backend,
-                "system_prompt": agent.system_prompt,
-                "max_concurrency": agent.max_concurrency,
-                "max_context_threshold": agent.max_context_threshold,
-                "context_path": str(agent.context_path) if agent.context_path else None,
-                "default_max_rounds": agent.default_max_rounds,
-                "default_max_tokens": agent.default_max_tokens,
-            }
-            json.dumps(result)
-            return result
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise GraphPersistenceError(f"Cannot serialize Agent {agent_name!r}: {exc}") from exc
+        return default_agent_serializer(agent_name, agent)
 
     @staticmethod
-    def _default_agent_resolver(agent_name: str, spec: Mapping[str, Any]) -> Agent:
+    def _default_agent_resolver(agent_name: str, spec: JsonObject) -> Agent:
         """Recreate a standard tool-free Agent from a persisted specification.
-
-        Args:
-            agent_name: Graph-local name used in validation errors.
-            spec: JSON-decoded standard Agent configuration.
 
         Returns:
             Reconstructed Agent without application tools.
-
-        Raises:
-            GraphPersistenceError: If ``spec`` is unsupported or malformed.
         """
-        if spec.get("kind") != "llmfetcher.agent.v1":
-            raise GraphPersistenceError(f"Agent {agent_name!r} requires a custom agent_resolver")
-        try:
-            backends = [LLMBackendConfig(**dict(item)) for item in spec["backends"]]
-            return Agent(
-                llm_fetcher=LLMFetcher(backends, default_backend=spec.get("default_backend")),
-                system_prompt=str(spec["system_prompt"]), max_concurrency=int(spec["max_concurrency"]),
-                max_context_threshold=int(spec["max_context_threshold"]), context_path=spec.get("context_path"),
-                default_max_rounds=int(spec["default_max_rounds"]), default_max_tokens=int(spec["default_max_tokens"]),
-                context_providers=(),
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise GraphPersistenceError(f"Invalid Agent spec for {agent_name!r}: {exc}") from exc
+        return default_agent_resolver(agent_name, spec)
 
     def to_snapshot(self, *, agent_serializer: AgentSerializer | None = None,
-                    callback_serializer: CallbackSerializer | None = None) -> dict[str, Any]:
+                    callback_serializer: CallbackSerializer | None = None) -> ExecutionGraphSnapshot:
         """Create a JSON-compatible snapshot of a quiescent graph.
 
         Args:
@@ -314,46 +269,59 @@ class ExecutionGraph:
         """
         serializer = agent_serializer or self._default_agent_serializer
         with self._topology_lock:
-            nodes = []
+            nodes: list[GraphSpecNode] = []
             for name in sorted(self.agent_dict):
                 if name in self._routing_nodes:
-                    nodes.append({"name": name, "kind": "routing"})
+                    nodes.append(GraphSpecNode(name=name, kind="routing"))
                 else:
                     agent = self.agent_dict[name]
                     if agent is None:
                         raise GraphPersistenceError(f"Missing Agent instance for {name!r}")
-                    nodes.append({"name": name, "kind": "agent", "spec": serializer(name, agent)})
+                    nodes.append(
+                        GraphSpecNode(
+                            name=name, kind="agent", spec=serializer(name, agent)
+                        )
+                    )
             custom_mappers = set(self._mappers) - set(self._declarative_mappers)
             custom_routers = set(self._routers) - set(self._declarative_routers)
             if (custom_mappers or custom_routers) and callback_serializer is None:
                 raise GraphPersistenceError("Graph callbacks require callback_serializer")
-            callbacks = {
-                "mappers": {
-                    name: callback_serializer(name, "mapper", self._mappers[name])
-                    for name in custom_mappers
-                } if callback_serializer else {},
-                "routers": {
-                    name: callback_serializer(name, "router", self._routers[name])
-                    for name in custom_routers
-                } if callback_serializer else {},
-            }
-            snapshot = {
-                "version": _SNAPSHOT_VERSION, "max_concurrency_agents": self.max_concurrency_agents,
-                "nodes": nodes,
-                "edges": [{"source": source, "target": target} for source in sorted(self._successors) for target in sorted(self._successors[source])],
-                "callbacks": callbacks,
-                "declarative_callbacks": {
-                    "mappers": dict(self._declarative_mappers),
-                    "routers": {
-                        name: list(targets)
+            snapshot = ExecutionGraphSnapshot(
+                version=_SNAPSHOT_VERSION,
+                max_concurrency_agents=self.max_concurrency_agents,
+                nodes=tuple(nodes),
+                edges=tuple(
+                    GraphSpecEdge(source=source, target=target)
+                    for source in sorted(self._successors)
+                    for target in sorted(self._successors[source])
+                ),
+                callbacks=GraphCallbackIds(
+                    mappers={
+                        name: callback_serializer(name, "mapper", self._mappers[name])
+                        for name in custom_mappers
+                    } if callback_serializer else {},
+                    routers={
+                        name: callback_serializer(name, "router", self._routers[name])
+                        for name in custom_routers
+                    } if callback_serializer else {},
+                ),
+                declarative_callbacks=GraphDeclarativeCallbacks(
+                    mappers=dict(self._declarative_mappers),
+                    routers={
+                        name: tuple(targets)
                         for name, targets in self._declarative_routers.items()
                     },
+                ),
+                router_scopes={
+                    name: tuple(sorted(scope))
+                    for name, scope in self._router_scopes.items()
                 },
-                "router_scopes": {name: sorted(scope) for name, scope in self._router_scopes.items()},
-                "task_bus": self.task_bus.to_snapshot(), "task_by_agent": dict(self._task_by_agent), "task_by_id": dict(self._task_by_id),
-            }
+                task_bus=self.task_bus.to_snapshot(),
+                task_by_agent=dict(self._task_by_agent),
+                task_by_id=dict(self._task_by_id),
+            )
         try:
-            json.dumps(snapshot)
+            json.dumps(snapshot.to_json())
         except (TypeError, ValueError) as exc:
             raise GraphPersistenceError(f"Snapshot is not JSON-compatible: {exc}") from exc
         return snapshot
@@ -372,10 +340,11 @@ class ExecutionGraph:
         """
         destination = Path(path)
         snapshot = self.to_snapshot(agent_serializer=agent_serializer, callback_serializer=callback_serializer)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_suffix(destination.suffix + ".tmp")
-        temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(destination)
+        with _save_lock(destination):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+            temporary.write_text(json.dumps(snapshot.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(destination)
         return destination
 
     @classmethod
@@ -395,51 +364,72 @@ class ExecutionGraph:
             GraphPersistenceError: If snapshot structure or required resolvers are invalid.
         """
         try:
-            snapshot = json.loads(Path(path).read_text(encoding="utf-8"))
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise GraphPersistenceError(f"Invalid graph snapshot JSON: {exc}") from exc
-        if not isinstance(snapshot, Mapping) or snapshot.get("version") != _SNAPSHOT_VERSION:
+        try:
+            snapshot = ExecutionGraphSnapshot.from_json(raw)
+        except ValueError as exc:
+            raise GraphPersistenceError(f"Invalid graph snapshot: {exc}") from exc
+        if snapshot.version != _SNAPSHOT_VERSION:
             raise GraphPersistenceError("Unsupported graph snapshot version")
         try:
-            graph = cls(int(snapshot["max_concurrency_agents"]))
-            nodes, edges = snapshot["nodes"], snapshot["edges"]
-            callbacks = snapshot.get("callbacks", {})
-            declarative = snapshot.get("declarative_callbacks", {})
-            if not isinstance(nodes, list) or not isinstance(edges, list) or not isinstance(callbacks, Mapping) or not isinstance(declarative, Mapping):
-                raise ValueError("nodes, edges, and callbacks are required")
-            routers = callbacks.get("routers", {})
-            mappers = callbacks.get("mappers", {})
-            if not isinstance(routers, Mapping) or not isinstance(mappers, Mapping):
-                raise ValueError("callback maps must be objects")
+            graph = cls(snapshot.max_concurrency_agents)
             resolver = agent_resolver or cls._default_agent_resolver
-            for node in nodes:
-                name, kind = str(node["name"]), node["kind"]
-                if kind == "agent":
-                    if not graph.add_agent(name, resolver(name, node["spec"])): raise ValueError(f"Duplicate node {name}")
-                elif kind == "routing":
-                    if callback_resolver is None or name not in routers: raise GraphPersistenceError(f"Routing node {name!r} needs callback_resolver")
-                    if not graph.add_routing_node(name, callback_resolver(name, "router", str(routers[name]))): raise ValueError(f"Duplicate node {name}")
-                else: raise ValueError(f"Unknown node kind {kind!r}")
-            for edge in edges:
-                graph.add_connection(str(edge["source"]), str(edge["target"]))
-            declared_mappers = declarative.get("mappers", {})
-            declared_routers = declarative.get("routers", {})
-            if not isinstance(declared_mappers, Mapping) or not isinstance(declared_routers, Mapping):
-                raise ValueError("declarative callback maps must be objects")
-            for name, mode in declared_mappers.items():
-                graph._restore_declarative_mapper(str(name), str(mode))
-            for name, targets in declared_routers.items():
-                if not isinstance(targets, list):
-                    raise ValueError("declarative router targets must be arrays")
-                graph._restore_declarative_router(str(name), [str(target) for target in targets])
-            if (mappers or routers) and callback_resolver is None: raise GraphPersistenceError("Graph callbacks require callback_resolver")
-            for name, callback_id in mappers.items(): graph.set_mapper(str(name), callback_resolver(str(name), "mapper", str(callback_id)))
-            for name, callback_id in routers.items():
-                if name not in graph._routing_nodes: graph.set_router(str(name), callback_resolver(str(name), "router", str(callback_id)))
-            graph._router_scopes = {str(name): set(str(target) for target in targets) for name, targets in snapshot.get("router_scopes", {}).items()}
-            graph.task_bus = TaskBus.from_snapshot(snapshot.get("task_bus", {}))
-            graph._task_by_agent = {str(name): str(task_id) for name, task_id in snapshot.get("task_by_agent", {}).items()}
-            graph._task_by_id = {str(task_id): str(name) for task_id, name in snapshot.get("task_by_id", {}).items()}
+
+            def resolve_callback(
+                name: str, kind: str, callback_id: str
+            ) -> Callable[..., Any]:
+                """Resolve one saved mapper or router identifier."""
+                if callback_resolver is None:
+                    raise GraphPersistenceError(
+                        "Graph callbacks require callback_resolver"
+                    )
+                return callback_resolver(name, kind, callback_id)
+
+            if (
+                snapshot.callbacks.mappers or snapshot.callbacks.routers
+            ) and callback_resolver is None:
+                raise GraphPersistenceError("Graph callbacks require callback_resolver")
+            for node in snapshot.nodes:
+                if node.kind == "agent":
+                    if node.spec is None:
+                        raise ValueError(f"Agent node {node.name!r} has no spec")
+                    if not graph.add_agent(node.name, resolver(node.name, node.spec)):
+                        raise ValueError(f"Duplicate node {node.name}")
+                else:
+                    callback_id = snapshot.callbacks.routers.get(node.name)
+                    if callback_id is None:
+                        raise GraphPersistenceError(
+                            f"Routing node {node.name!r} needs a saved router"
+                        )
+                    if not graph.add_routing_node(
+                        node.name,
+                        resolve_callback(node.name, "router", callback_id),
+                    ):
+                        raise ValueError(f"Duplicate node {node.name}")
+            for edge in snapshot.edges:
+                graph.add_connection(edge.source, edge.target)
+            for name, mode in snapshot.declarative_callbacks.mappers.items():
+                graph._restore_declarative_mapper(name, mode)
+            for name, targets in snapshot.declarative_callbacks.routers.items():
+                graph._restore_declarative_router(name, list(targets))
+            for name, callback_id in snapshot.callbacks.mappers.items():
+                graph.set_mapper(
+                    name, resolve_callback(name, "mapper", callback_id)
+                )
+            for name, callback_id in snapshot.callbacks.routers.items():
+                if name not in graph._routing_nodes:
+                    graph.set_router(
+                        name, resolve_callback(name, "router", callback_id)
+                    )
+            graph._router_scopes = {
+                name: set(targets)
+                for name, targets in snapshot.router_scopes.items()
+            }
+            graph.task_bus = TaskBus.from_snapshot(snapshot.task_bus)
+            graph._task_by_agent = dict(snapshot.task_by_agent)
+            graph._task_by_id = dict(snapshot.task_by_id)
             return graph
         except GraphPersistenceError:
             raise
@@ -477,7 +467,7 @@ class ExecutionGraph:
                 return False
             return True
 
-    def view_snapshot(self) -> dict[str, Any]:
+    def view_snapshot(self) -> SwarmViewSnapshot:
         """Return a JSON-safe live topology view without executable objects.
 
         The view is deliberately distinct from :meth:`to_snapshot`: it is
@@ -485,12 +475,12 @@ class ExecutionGraph:
         needs to draw nodes, hierarchy, edges, assignments, and current task states.
 
         Returns:
-            Mapping with ``nodes``, ``edges``, concurrency limit, task
+            Typed snapshot of nodes, edges, the concurrency limit, task
             assignments, and TaskBus states. Node entries never contain Agent
             instances, credentials, prompts, or tool handlers.
         """
         with self._topology_lock:
-            task_parents = {}
+            task_parents: dict[str, str] = {}
             for task_id, agent_name in self._task_by_id.items():
                 try:
                     task_parents[agent_name] = self.task_bus.get_assignment(task_id).reply_to
@@ -498,35 +488,30 @@ class ExecutionGraph:
                     # A task can disappear between topology and mailbox reads.
                     # The graph view remains useful without that optional parent.
                     continue
-            nodes = [
-                {
-                    "id": name,
-                    "kind": "routing" if name in self._routing_nodes else "agent",
-                    "dynamic": name in self._task_by_agent,
-                    "parent": task_parents.get(name),
-                }
+            nodes = tuple(
+                GraphNodeView(
+                    id=name,
+                    kind="routing" if name in self._routing_nodes else "agent",
+                    dynamic=name in self._task_by_agent,
+                    parent=task_parents.get(name),
+                )
                 for name in sorted(self.agent_dict)
-            ]
-            edges = [
-                {"source": source, "target": target, "kind": "dependency"}
+            )
+            edges = tuple(
+                GraphEdgeView(source=source, target=target, kind="dependency")
                 for source in sorted(self._successors)
                 for target in sorted(self._successors[source])
-            ]
-            assignments = {
-                task_id: agent_name for task_id, agent_name in self._task_by_id.items()
-            }
-            node_states = {
-                agent_name: dict(record)
-                for agent_name, record in self._node_states.items()
-            }
-        return {
-            "nodes": nodes,
-            "edges": edges,
-            "max_concurrency_agents": self.max_concurrency_agents,
-            "assignments": assignments,
-            "task_states": self.task_bus.task_states(),
-            "node_states": node_states,
-        }
+            )
+            assignments = dict(self._task_by_id)
+            node_states = dict(self._node_states)
+        return SwarmViewSnapshot(
+            nodes=nodes,
+            edges=edges,
+            max_concurrency_agents=self.max_concurrency_agents,
+            assignments=assignments,
+            task_states=self.task_bus.task_states(),
+            node_states=node_states,
+        )
 
     def finalize_tasks(self) -> dict[str, str]:
         """Close every unfinished dynamic task after the scheduler stops.
@@ -647,14 +632,12 @@ class ExecutionGraph:
             return
         with self._topology_lock:
             task_id = self._task_by_agent.get(agent_name, "")
-            record: dict[str, Any] = {
-                "state": state,
-                "message": message,
-                "updated_at": time.time(),
-            }
-            if task_id:
-                record["task_id"] = task_id
-            self._node_states[agent_name] = record
+            self._node_states[agent_name] = GraphNodeState(
+                state=state,
+                message=message,
+                updated_at=time.time(),
+                task_id=task_id or None,
+            )
 
     def _attach_agent_events(self, agent: Agent) -> None:
         """Forward one graph member's lifecycle events to graph hooks.
@@ -686,9 +669,7 @@ class ExecutionGraph:
                 data.setdefault("plan_task_id", assignment.plan_task_id)
             self._emit(event.source, event.agent_name, event.event_type, event.message, data)
 
-        add_hook = getattr(agent, "add_hook", None)
-        if callable(add_hook):
-            add_hook(forward)
+        agent.add_hook(forward)
 
     # ------------------------------------------------------------------
     # Graph construction  —  agents
@@ -717,11 +698,11 @@ class ExecutionGraph:
             self.agent_dict[agent_name] = agent_instance
             self._successors[agent_name] = set()
             self._predecessors[agent_name] = set()
-            self._node_states[agent_name] = {
-                "state": "idle",
-                "message": "尚未开始",
-                "updated_at": 0.0,
-            }
+            self._node_states[agent_name] = GraphNodeState(
+                state="idle",
+                message="尚未开始",
+                updated_at=0.0,
+            )
             # Tag the agent so its own hook events carry its graph name.
             agent_instance._agent_name_in_graph = agent_name
             self._attach_agent_events(agent_instance)
@@ -757,11 +738,11 @@ class ExecutionGraph:
             self._predecessors[name] = set()
             self._routing_nodes.add(name)
             self._routers[name] = router
-            self._node_states[name] = {
-                "state": "idle",
-                "message": "尚未开始",
-                "updated_at": 0.0,
-            }
+            self._node_states[name] = GraphNodeState(
+                state="idle",
+                message="尚未开始",
+                updated_at=0.0,
+            )
             return True
 
     def remove_agent(self, agent_name: str) -> bool:
@@ -1042,12 +1023,12 @@ class ExecutionGraph:
             self._predecessors[agent_name] = set()
             self._task_by_agent[agent_name] = assignment.id
             self._task_by_id[assignment.id] = agent_name
-            self._node_states[agent_name] = {
-                "state": "queued",
-                "message": "等待调度",
-                "task_id": assignment.id,
-                "updated_at": time.time(),
-            }
+            self._node_states[agent_name] = GraphNodeState(
+                state="queued",
+                message="等待调度",
+                task_id=assignment.id,
+                updated_at=time.time(),
+            )
             agent_instance.system_prompt = append_subagent_report_instruction(
                 agent_instance.system_prompt
             )
@@ -1149,12 +1130,12 @@ class ExecutionGraph:
             # report_task and the scheduler resolve this new assignment.
             self._task_by_agent[agent_name] = assignment.id
             self._task_by_id[assignment.id] = agent_name
-            self._node_states[agent_name] = {
-                "state": "queued",
-                "message": "已复活，等待新任务调度",
-                "task_id": assignment.id,
-                "updated_at": time.time(),
-            }
+            self._node_states[agent_name] = GraphNodeState(
+                state="queued",
+                message="已复活，等待新任务调度",
+                task_id=assignment.id,
+                updated_at=time.time(),
+            )
         self._dynamic_ready.put(agent_name)
         self._emit(
             "graph",
@@ -2041,10 +2022,8 @@ class ExecutionGraph:
         If the output exposes a non-``None`` ``content`` attribute, that value
         is preferred. Otherwise, ``str(output)`` is used.
         """
-        content = getattr(output, "content", None)
-
-        if content is not None:
-            return str(content)
+        if isinstance(output, LLMOutput) and output.content is not None:
+            return str(output.content)
 
         return str(output)
 
