@@ -22,6 +22,7 @@ from ..llm_types import (
     LLMRequestCancelled,
     LLMToolCall,
     TokenUsage,
+    RemoteRequestSnapshot,
 )
 from ..tool_handler import ToolHandler
 from ..tool_executor import ToolBatchCancelled, ToolExecutor
@@ -142,7 +143,7 @@ class Agent:
             max_context_threshold=self.max_context_threshold,
         )
         self.context_handler.tool_result_context_limit = tool_result_context_limit
-        configured_linear = getattr(self.context_handler, "linear", self.context_handler)
+        configured_linear = self.context_handler.linear
         configured_linear.tool_result_context_limit = tool_result_context_limit
         # The Agent is the sole Composer owner. Every source other than the
         # handler is supplied explicitly by the host; no source is inherited
@@ -154,20 +155,16 @@ class Agent:
         for provider in context_providers:
             self.context_composer.register(provider)
 
-        # Meaningless code.
         if context_handler is not None:
-            configured_linear = getattr(context_handler, "linear", context_handler)
-            if hasattr(configured_linear, "compress_threshold"):
-                self.max_context_threshold = configured_linear.compress_threshold
+            configured_linear = context_handler.linear
+            self.max_context_threshold = configured_linear.compress_threshold
 
         # Route compaction lifecycle events from the inner linear handler into
         # this Agent's event stream (source="context"), so they persist into
         # events.ndjson and reach the SSE stream. Custom handlers (e.g. the
         # retrieval wrapper) expose the linear handler through ``.linear``.
-        linear = getattr(self.context_handler, "linear", self.context_handler)
-        set_hook = getattr(linear, "set_compaction_event_hook", None)
-        if set_hook is not None:
-            set_hook(self._compaction_event_hook)
+        linear = self.context_handler.linear
+        linear.set_compaction_event_hook(self._compaction_event_hook)
 
         # This attribute will be assigned by ExecutionGraph so Agent-level events retain their node.
         self._agent_name_in_graph: str = ""
@@ -349,9 +346,7 @@ class Agent:
             raise ValueError("max_context_threshold must be at least 1024")
         self.max_context_threshold = max_context_threshold
         handler = self.context_handler
-        linear = getattr(handler, "linear", handler)
-        if not hasattr(linear, "compress_threshold"):
-            return False
+        linear = handler.linear
         linear.compress_threshold = max_context_threshold
         if persist and self.context_path is not None:
             return bool(handler.save(self.context_path))
@@ -426,14 +421,14 @@ class Agent:
         }
 
     @staticmethod
-    def _request_index(request: Any, round_idx: int) -> RequestIndex:
+    def _request_index(request: RemoteRequestSnapshot, round_idx: int) -> RequestIndex:
         """Build a durable, content-free index for one remote LLM request.
 
         The request body is intentionally never copied into the lifecycle
         event.  Operators can inspect composition, provenance identifiers,
         schema hashes, and sizing without persisting prompts or tool payloads.
         """
-        messages = request.messages if isinstance(getattr(request, "messages", None), list) else []
+        messages = request.messages
         encoded = json.dumps(messages, ensure_ascii=False, sort_keys=True, default=str)
         roles: dict[str, int] = {}
         source_ids: list[str] = []
@@ -450,14 +445,14 @@ class Agent:
             content = message.get("content", "")
             characters += len(content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str))
         tool_hashes = []
-        for tool in getattr(request, "tools", []) or []:
+        for tool in request.tools:
             serialized = json.dumps(tool, ensure_ascii=False, sort_keys=True, default=str)
             tool_hashes.append(hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16])
         return RequestIndex(
             request_id=uuid.uuid4().hex,
             round=round_idx,
-            model=str(getattr(request, "model", "")),
-            stream=bool(getattr(request, "stream", False)),
+            model=request.model,
+            stream=request.stream,
             message_count=len(messages),
             message_roles=roles,
             source_ids=list(dict.fromkeys(source_ids)),
@@ -466,10 +461,10 @@ class Agent:
             input_sha256=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
             tool_count=len(tool_hashes),
             tool_schema_hashes=tool_hashes,
-            temperature=getattr(request, "temperature", None),
-            max_tokens=getattr(request, "max_tokens", None),
-            thinking_mode=getattr(request, "thinking_mode", "auto"),
-            reasoning_effort=getattr(request, "reasoning_effort", "auto"),
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            thinking_mode=request.thinking_mode,
+            reasoning_effort=request.reasoning_effort,
         )
 
     # The calls ledger renders a readable per-round request preview.  A later
@@ -480,7 +475,7 @@ class Agent:
     _REQUEST_CONTENT_CHARACTER_LIMIT = 200000
 
     @classmethod
-    def _request_content(cls, request: Any, round_idx: int) -> RequestContent:
+    def _request_content(cls, request: RemoteRequestSnapshot, round_idx: int) -> RequestContent:
         """Build a capped, readable preview of one dispatch-ready request.
 
         The companion index from ``_request_index`` never carries content; this
@@ -496,9 +491,7 @@ class Agent:
             ``model`` plus a capped tail of ``messages`` and the count of
             earlier messages dropped from that tail.
         """
-        raw_messages = getattr(request, "messages", None)
-        messages = [message for message in raw_messages
-                    if isinstance(message, dict)] if isinstance(raw_messages, list) else []
+        messages = [message for message in request.messages if isinstance(message, dict)]
         kept = messages[-cls._REQUEST_CONTENT_MESSAGE_LIMIT:]
         rendered: list[dict[str, Any]] = []
         for message in kept:
@@ -513,17 +506,14 @@ class Agent:
             ))
         return RequestContent(
             round=round_idx,
-            model=str(getattr(request, "model", "")),
+            model=request.model,
             messages=rendered,
             omitted_messages=max(0, len(messages) - len(kept)),
         )
 
     def _drain_internal_usage(self, name: str) -> None:
         """Publish and aggregate each hidden LLM call once, if supported."""
-        drain = getattr(self.context_handler, "drain_usage_records", None)
-        if drain is None:
-            return
-        for record in drain():
+        for record in self.context_handler.drain_usage_records():
             if not isinstance(record, UsageRecord):
                 continue
             add_usage(self.usage, record.usage)
@@ -598,7 +588,7 @@ class Agent:
         if self.context_path is None:
             return True
         if not self.context_handler.save(self.context_path):
-            cause = getattr(self.context_handler, "last_save_error", None)
+            cause = self.context_handler.last_save_error
             detail = (
                 f" ({type(cause).__name__}: {str(cause)[:500]})"
                 if isinstance(cause, Exception)
@@ -620,10 +610,7 @@ class Agent:
         explicit compaction cannot drift from automatic behavior.
         """
         controller = control if _supports_force_control(control) else None
-        compact = getattr(self.context_handler, "compact", None)
-        if not callable(compact):
-            raise RuntimeError("context handler does not support compaction")
-        compacted = bool(compact(controller=controller))
+        compacted = bool(self.context_handler.compact(controller=controller))
         if compacted:
             self._save_context()
         return compacted
@@ -644,8 +631,8 @@ class Agent:
             [],
         )[-8:]
         if not self.compact_context(control=control):
-            linear = getattr(self.context_handler, "linear", self.context_handler)
-            reason = getattr(linear, "last_compaction_error", None) or "unknown error"
+            linear = self.context_handler.linear
+            reason = linear.last_compaction_error or "unknown error"
             raise RuntimeError(f"Image budget compaction failed: {reason}")
         if recent_images:
             self.context_handler.add_user_message(UserMessage(
@@ -900,9 +887,8 @@ class Agent:
                 raise ContextLoadError(f"Could not load context checkpoint: {context_file}")
         # The run configuration is authoritative for this turn. Apply it
         # after loading so a prior checkpoint cannot overwrite the UI choice.
-        loaded_linear = getattr(self.context_handler, "linear", self.context_handler)
-        if hasattr(loaded_linear, "compress_threshold"):
-            loaded_linear.compress_threshold = desired_context_threshold
+        loaded_linear = self.context_handler.linear
+        loaded_linear.compress_threshold = desired_context_threshold
         if verbose:
             if not load_result:
                 print(
@@ -1197,9 +1183,7 @@ class Agent:
                 created_at=response_completed_at,
                 controller=(control if _supports_force_control(control) else None),
             )
-            apply_branch_commands = getattr(self.context_handler, "apply_pending_branch_commands", None)
-            if callable(apply_branch_commands):
-                apply_branch_commands()
+            self.context_handler.apply_pending_branch_commands()
             self._drain_internal_usage(name)
 
             # A completed model response and its complete tool batch form the

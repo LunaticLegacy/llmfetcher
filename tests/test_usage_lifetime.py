@@ -64,6 +64,16 @@ class _LegacyAgent:
 
     def __init__(self, usage: TokenUsage) -> None:
         self.usage = usage
+        self.hooks: list[object] = []
+
+    def add_hook(self, hook: object) -> None:
+        """Accept the event hook an ExecutionGraph attaches on registration."""
+        self.hooks.append(hook)
+
+    def remove_hook(self, hook: object) -> None:
+        """Drop a previously attached event hook."""
+        if hook in self.hooks:
+            self.hooks.remove(hook)
 
 
 class UsageLifetimeTests(unittest.TestCase):
