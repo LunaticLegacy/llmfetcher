@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Iterable, Mapping, Optional, Sequence, List
 
 from ..llm_types import LLMOutput, LLMToolCall, Tool
@@ -50,6 +51,47 @@ class OpenAIHandler(LLMBackendHandler):
                 msg = {**msg, "tool_calls": normalized}
             out.append(msg)
         return out
+
+    def _requires_native_reasoning_content(self) -> bool:
+        """Return whether this OpenAI-compatible endpoint requires replaying thinking.
+
+        Kimi/Moonshot thinking endpoints use the OpenAI wire format but reject
+        a follow-up request unless the prior assistant reasoning is sent back
+        in ``reasoning_content``. Ordinary OpenAI-compatible endpoints do not
+        accept that provider-specific field, so keep the behavior opt-in by
+        connector profile, model, or endpoint URL.
+        """
+        profile = str(self.backend.compatibility_profile or "").strip().lower()
+        model = str(self.backend.model or "").strip().lower()
+        api_url = str(self.backend.api_url or "").strip().lower()
+        return (
+            profile in {"kimi", "moonshot"}
+            or "kimi" in model
+            or "moonshot" in model
+            or "kimi" in api_url
+            or "moonshot" in api_url
+        )
+
+    @staticmethod
+    def _restore_native_reasoning(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Move rendered ``<think>`` blocks back to ``reasoning_content``."""
+        pattern = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+        result: list[dict[str, Any]] = []
+        for message in messages:
+            if message.get("role") != "assistant" or not isinstance(message.get("content"), str):
+                result.append(message)
+                continue
+            content = message["content"]
+            matches = [match.strip() for match in pattern.findall(content) if match.strip()]
+            if not matches:
+                result.append(message)
+                continue
+            clean = pattern.sub("", content).strip()
+            restored = {**message, "content": clean}
+            if not restored.get("reasoning_content"):
+                restored["reasoning_content"] = "\n\n".join(matches)
+            result.append(restored)
+        return result
 
     def prepare_tools(
         self,
@@ -291,8 +333,11 @@ class OpenAIHandler(LLMBackendHandler):
         thinking_mode: str = "auto",
         reasoning_effort: str = "auto",
     ):
-        messages = self._normalize_messages(openai_image_messages(
-            messages, bounded_resolver(getattr(self.fetcher, 'image_resolver', None))))
+        messages = openai_image_messages(
+            messages, bounded_resolver(getattr(self.fetcher, 'image_resolver', None)))
+        if self._requires_native_reasoning_content():
+            messages = self._restore_native_reasoning(messages)
+        messages = self._normalize_messages(messages)
         kwargs = {
             "model": self.backend.model,
             "messages": messages,

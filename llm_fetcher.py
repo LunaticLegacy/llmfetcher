@@ -15,15 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import time
+from math import isfinite
 from typing import (
-    Any,
-    AsyncGenerator,
     Generator,
     Dict,
     Callable,
     List,
     Optional,
+    Protocol,
     Sequence,
+    cast,
+    runtime_checkable,
 )
 
 from .llm_types import (
@@ -34,6 +36,7 @@ from .llm_types import (
     LLMBackendError,
     LLMRequestCancelled,
     JsonObject,
+    JsonValue,
     RemoteRequestSnapshot,
     RequestMessage,
     TokenUsage,
@@ -49,6 +52,51 @@ from .fetcher_handlers import (
 from .context_handlers import ContextHandler, ContextComposer, ContextSnapshot
 from .execution import ExecutionController, StopMode
 
+
+_USAGE_FIELDS = (
+    "input_tokens", "output_tokens", "total_tokens",
+    "prompt_tokens", "completion_tokens", "cached_tokens",
+    "cache_read_input_tokens", "cache_creation_input_tokens",
+    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
+    "reasoning_tokens",
+)
+
+
+@runtime_checkable
+class _ModelDumpable(Protocol):
+    """A provider payload that can render itself as a plain mapping."""
+
+    def model_dump(self) -> object: ...
+
+
+def _json_value(value: object) -> JsonValue | None:
+    """Return a JSON value, or ``None`` when the provider value is not JSON."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if isfinite(value) else None
+    if isinstance(value, list):
+        items: list[JsonValue] = []
+        for item in cast("list[object]", value):
+            parsed = _json_value(item)
+            if parsed is not None:
+                items.append(parsed)
+        return items
+    if isinstance(value, dict):
+        return _json_fields(cast("dict[object, object]", value))
+    return None
+
+
+def _json_fields(value: object) -> dict[str, JsonValue]:
+    """Project an untrusted provider mapping onto JSON-safe fields."""
+    if not isinstance(value, dict):
+        return {}
+    fields: dict[str, JsonValue] = {}
+    for key, item in cast("dict[object, object]", value).items():
+        parsed = _json_value(item)
+        if isinstance(key, str) and parsed is not None:
+            fields[key] = parsed
+    return fields
 
 
 class StreamUsageCapture:
@@ -69,34 +117,32 @@ class StreamUsageCapture:
     __slots__ = ("_fields",)
 
     def __init__(self) -> None:
-        self._fields: dict[str, Any] = {}
+        self._fields: dict[str, JsonValue] = {}
 
-    def merge(self, raw_usage: Any) -> None:
+    def merge(self, raw_usage: object) -> None:
         """Merge one raw usage payload (dict or provider object)."""
         if raw_usage is None:
             return
         if isinstance(raw_usage, dict):
-            fields = raw_usage
-        elif hasattr(raw_usage, "model_dump"):
-            dumped = raw_usage.model_dump()
-            fields = dumped if isinstance(dumped, dict) else {}
+            fields = _json_fields(cast("dict[object, object]", raw_usage))
+        elif isinstance(raw_usage, _ModelDumpable):
+            fields = _json_fields(raw_usage.model_dump())
         else:
+            attributes: dict[str, object]
+            try:
+                attributes = vars(raw_usage)
+            except TypeError:
+                attributes = {}
             fields = {
-                name: value
-                for name in (
-                    "input_tokens", "output_tokens", "total_tokens",
-                    "prompt_tokens", "completion_tokens", "cached_tokens",
-                    "cache_read_input_tokens", "cache_creation_input_tokens",
-                    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens",
-                    "reasoning_tokens",
-                )
-                if (value := getattr(raw_usage, name, None)) is not None
+                name: parsed
+                for name in _USAGE_FIELDS
+                if (parsed := _json_value(attributes.get(name))) is not None
             }
         for key, value in fields.items():
             self._fields[key] = value
 
     @property
-    def raw(self) -> dict[str, Any] | None:
+    def raw(self) -> dict[str, JsonValue] | None:
         """Return the merged raw usage mapping, or ``None`` when absent."""
         return dict(self._fields) if self._fields else None
 

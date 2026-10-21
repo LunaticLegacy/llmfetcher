@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from ..llm_types import Tool, ToolSchema, ToolParameter
 from ..rag_module.knowledge_base import KnowledgeBase
 
@@ -23,7 +21,7 @@ def create_knowledge_tools(knowledge_base: KnowledgeBase | None = None) -> list[
 
     kb = knowledge_base
 
-    def _search_knowledge(**kwargs: Any) -> str:
+    def _search_knowledge(query: str = "", limit: int = 5) -> str:
         """Search the knowledge base and format ranked result excerpts.
 
         Args:
@@ -33,8 +31,8 @@ def create_knowledge_tools(knowledge_base: KnowledgeBase | None = None) -> list[
         Returns:
             Formatted search results or an error message.
         """
-        query = str(kwargs.get("query", "")).strip()
-        limit = min(int(kwargs.get("limit", 5)), 10)
+        query = str(query).strip()
+        limit = min(int(limit), 10)
 
         if not query:
             return "Error: query parameter is required"
@@ -72,7 +70,7 @@ def create_knowledge_tools(knowledge_base: KnowledgeBase | None = None) -> list[
         except Exception as exc:
             return f"Error searching knowledge base: {exc}"
 
-    def _read_knowledge_full(**kwargs: Any) -> str:
+    def _read_knowledge_full(path: str = "") -> str:
         """Read and format a knowledge document identified by its path.
 
         Args:
@@ -81,7 +79,7 @@ def create_knowledge_tools(knowledge_base: KnowledgeBase | None = None) -> list[
         Returns:
             The complete document text, or an error message.
         """
-        path = str(kwargs.get("path", "")).strip()
+        path = str(path).strip()
         if not path:
             return "Error: path parameter is required"
 

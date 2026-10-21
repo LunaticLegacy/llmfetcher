@@ -51,10 +51,9 @@ def create_shell_tools(
             "takeown ", "icacls ", "powershell -encodedcommand",
         ])
 
-    def _shell(**kwargs: Any) -> str:
-        command: str = kwargs["command"]
-        timeout: float = min(kwargs.get("timeout", 30.0), max_timeout)
-        requested_cwd: Optional[str] = kwargs.get("cwd")
+    def _shell(command: str, timeout: float = 30.0, cwd: Optional[str] = None) -> str:
+        timeout = min(timeout, max_timeout)
+        requested_cwd = cwd
         controller = current_execution_controller()
 
         def force_stopped() -> bool:

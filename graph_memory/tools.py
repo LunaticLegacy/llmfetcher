@@ -85,7 +85,7 @@ class GraphToolProvider:
         ]
 
     def _timeline(self) -> int:
-        return int(getattr(getattr(self.context, "linear", None), "_round", 0) or 0) + 1
+        return int(self.context.linear._round or 0) + 1
 
     def _entity(self, value: str):
         store = self.context.store
@@ -101,12 +101,12 @@ class GraphToolProvider:
     def _dump(value: object) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
-    def search(self, query: str, **_: Any) -> str:
+    def search(self, query: str) -> str:
         if not str(query).strip():
             raise ValueError("query must not be empty")
         return self._dump(self.context.retrieve(str(query)).to_dict())
 
-    def get_neighbors(self, entity: str, hop: int = 1, **_: Any) -> str:
+    def get_neighbors(self, entity: str, hop: int = 1) -> str:
         node = self._entity(entity)
         distance = max(1, min(int(hop), 3))
         neighbors = self.context.store.neighbors(node.id, distance)
@@ -126,7 +126,6 @@ class GraphToolProvider:
         entity_type: str = "concept",
         aliases: list[str] | None = None,
         summary: str = "",
-        **_: Any,
     ) -> str:
         node = self.context.store.upsert_entity(
             name=str(name).strip(),
@@ -143,7 +142,6 @@ class GraphToolProvider:
         target: str,
         relation: str,
         evidence: list[int] | None = None,
-        **_: Any,
     ) -> str:
         source_node = self._entity(source)
         target_node = self._entity(target)
@@ -158,7 +156,7 @@ class GraphToolProvider:
             raise ValueError("relation endpoints must exist in the graph")
         return self._dump({"relation": edge.to_dict(), "created_or_updated": True})
 
-    def invalidate_relation(self, source: str, target: str, **_: Any) -> str:
+    def invalidate_relation(self, source: str, target: str) -> str:
         source_node = self._entity(source)
         target_node = self._entity(target)
         return self._dump({
@@ -167,7 +165,7 @@ class GraphToolProvider:
             "invalidated": self.context.store.invalidate_relation(source_node.id, target_node.id),
         })
 
-    def delete_relation(self, source: str, target: str, relation: str = "", **_: Any) -> str:
+    def delete_relation(self, source: str, target: str, relation: str = "") -> str:
         source_node = self._entity(source)
         target_node = self._entity(target)
         removed = self.context.store.delete_relation(
@@ -180,7 +178,7 @@ class GraphToolProvider:
             "deleted_relations": removed,
         })
 
-    def delete_entity(self, entity: str, **_: Any) -> str:
+    def delete_entity(self, entity: str) -> str:
         node = self._entity(entity)
         result = self.context.store.delete_entity(node.id)  
         return self._dump({"entity": node.id, "deleted": result})

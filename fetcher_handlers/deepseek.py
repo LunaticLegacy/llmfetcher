@@ -142,17 +142,35 @@ class DeepSeekHandler(OpenAIHandler):
         self,
         messages: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Strip context-handler ``<think>`` wrappers from assistant turns."""
+        """Restore native reasoning fields on assistant history turns.
+
+        The provider-neutral renderer stores reasoning in a ``<think>``
+        wrapper because generic chat APIs expose only ``content``. DeepSeek
+        reasoner endpoints require that same reasoning to be sent back as
+        ``reasoning_content`` on the assistant message. Removing the wrapper
+        without restoring the field makes the next tool/model round fail with
+        ``reasoning_content ... must be passed back``.
+        """
         out: list[dict[str, Any]] = []
         for msg in messages:
-            if (
-                isinstance(msg, dict)
-                and msg.get("role") == "assistant"
-                and isinstance(msg.get("content"), str)
-                and "<think>" in msg["content"]
-            ):
-                msg = {**msg, "content": self._strip_think_blocks(msg["content"])}
-            out.append(dict(msg) if isinstance(msg, dict) else msg)
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                # DeepSeek validates this field on every historical assistant
+                # turn while thinking mode is enabled, including tool-only
+                # turns whose content is None and final turns without a
+                # visible <think> wrapper.
+                restored = dict(msg)
+                content = restored.get("content")
+                reasoning = ""
+                if isinstance(content, str) and "<think>" in content:
+                    clean_content, reasoning = self._split_think_blocks(content)
+                    restored["content"] = clean_content
+                if "reasoning_content" not in restored:
+                    restored["reasoning_content"] = reasoning
+                elif reasoning and not restored.get("reasoning_content"):
+                    restored["reasoning_content"] = reasoning
+                out.append(restored)
+            else:
+                out.append(dict(msg) if isinstance(msg, dict) else msg)
         return out
 
     def create_completion(

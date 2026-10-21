@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import cast
 
 from ..agent import Agent
 from ..llm_fetcher import LLMFetcher
@@ -29,6 +32,149 @@ from ..graph_memory import GraphContextHandler, SemanticGraphWorker
 from ..llm_types import Tool, ToolParameter, ToolSchema
 from ..swarm_module.swarm import AgentSwarm
 from ..swarm_module.task_bus import TaskAssignment, append_subagent_report_instruction
+
+
+def _text(arguments: Mapping[str, object], key: str, default: str = "") -> str:
+    """Return one string argument, treating JSON null as absent."""
+    value = arguments.get(key, default)
+    if value is None:
+        return default
+    return value if isinstance(value, str) else str(value)
+
+
+def _string_list(value: object) -> tuple[str, ...]:
+    """Normalize one model-provided scalar or array into string values."""
+    if isinstance(value, list):
+        return tuple(str(item) for item in cast("list[object]", value))
+    return (str(value),) if value else ()
+
+
+def _artifact_list(value: object) -> tuple[str, ...]:
+    """Normalize expected artifact names, rejecting non-array scalars."""
+    if isinstance(value, str):
+        return (value,)
+    if not isinstance(value, list):
+        raise ValueError("expected_artifacts must be an array")
+    return tuple(str(item) for item in cast("list[object]", value))
+
+
+def _as_int(value: object, field: str) -> int:
+    """Coerce a model-provided integer without accepting booleans."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{field} must be an integer.")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer.") from exc
+
+
+def _as_float(value: object, field: str) -> float:
+    """Coerce a model-provided number without accepting booleans."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{field} must be a number.")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a number.") from exc
+
+
+@dataclass(frozen=True)
+class DispatchSpecification:
+    """One coordinator request to dispatch a fresh worker."""
+
+    name: str
+    system_prompt: str
+    objective: str
+    handoff: str
+    reply_to: str
+    expected_artifacts: tuple[str, ...]
+    plan_task_id: str
+
+    @classmethod
+    def from_arguments(
+        cls, arguments: Mapping[str, object], *, default_reply_to: str
+    ) -> "DispatchSpecification":
+        """Decode one tool call, rejecting missing required fields."""
+        name = _text(arguments, "name").strip()
+        system_prompt = _text(arguments, "system_prompt").strip()
+        objective = _text(arguments, "objective").strip()
+        if not name or not system_prompt or not objective:
+            raise ValueError("name, system_prompt, and objective are required")
+        return cls(
+            name=name,
+            system_prompt=system_prompt,
+            objective=objective,
+            handoff=_text(arguments, "handoff").strip(),
+            reply_to=(
+                _text(arguments, "reply_to", default_reply_to).strip()
+                or default_reply_to
+            ),
+            expected_artifacts=_artifact_list(
+                arguments.get("expected_artifacts", [])
+            ),
+            plan_task_id=_text(arguments, "plan_task_id").strip(),
+        )
+
+
+@dataclass(frozen=True)
+class ReviveSpecification:
+    """One coordinator request to reuse a terminal worker."""
+
+    name: str
+    objective: str
+    handoff: str
+    reply_to: str
+    expected_artifacts: tuple[str, ...]
+    plan_task_id: str
+
+    @classmethod
+    def from_arguments(
+        cls, arguments: Mapping[str, object], *, default_reply_to: str
+    ) -> "ReviveSpecification":
+        """Decode one revive tool call, rejecting missing required fields."""
+        name = _text(arguments, "name").strip()
+        objective = _text(arguments, "objective").strip()
+        if not name or not objective:
+            raise ValueError("name and objective are required")
+        return cls(
+            name=name,
+            objective=objective,
+            handoff=_text(arguments, "handoff").strip(),
+            reply_to=(
+                _text(arguments, "reply_to", default_reply_to).strip()
+                or default_reply_to
+            ),
+            expected_artifacts=_artifact_list(
+                arguments.get("expected_artifacts", [])
+            ),
+            plan_task_id=_text(arguments, "plan_task_id").strip(),
+        )
+
+
+@dataclass(frozen=True)
+class TaskReport:
+    """One worker's terminal structured report."""
+
+    status: str
+    summary: str
+    findings: tuple[str, ...]
+    evidence: tuple[str, ...]
+    artifacts: tuple[str, ...]
+    open_questions: tuple[str, ...]
+    recommended_next_action: str
+
+    @classmethod
+    def from_arguments(cls, arguments: Mapping[str, object]) -> "TaskReport":
+        """Decode one report tool call with the documented defaults."""
+        return cls(
+            status=_text(arguments, "status", "completed") or "completed",
+            summary=_text(arguments, "summary"),
+            findings=_string_list(arguments.get("findings", [])),
+            evidence=_string_list(arguments.get("evidence", [])),
+            artifacts=_string_list(arguments.get("artifacts", [])),
+            open_questions=_string_list(arguments.get("open_questions", [])),
+            recommended_next_action=_text(arguments, "recommended_next_action"),
+        )
 
 
 def create_task_report_tool(
@@ -47,24 +193,35 @@ def create_task_report_tool(
         A ``report_task`` tool that always resolves the worker's latest task
         ID, including after an explicit revival or process-restart restore.
     """
-    def _report_task(**kwargs: Any) -> str:
+    def _report_task(
+        status: str = "completed",
+        summary: str = "",
+        findings: list[str] | None = None,
+        evidence: list[str] | None = None,
+        artifacts: list[str] | None = None,
+        open_questions: list[str] | None = None,
+        recommended_next_action: str = "",
+    ) -> str:
         """Submit a bounded structured report to the worker's current task."""
-        def as_list(value: Any) -> list[str]:
-            """Normalize one model-provided scalar or list into string values."""
-            if isinstance(value, list):
-                return [str(item) for item in value]
-            return [str(value)] if value else []
-
+        specification = TaskReport(
+            status=status or "completed",
+            summary=summary,
+            findings=tuple(findings or ()),
+            evidence=tuple(evidence or ()),
+            artifacts=tuple(artifacts or ()),
+            open_questions=tuple(open_questions or ()),
+            recommended_next_action=recommended_next_action,
+        )
         report = swarm.report_task(
             task_id=swarm.task_id_for_agent(reporter),
             reporter=reporter,
-            status=str(kwargs.get("status", "completed")),
-            summary=str(kwargs.get("summary", "")),
-            findings=as_list(kwargs.get("findings", [])),
-            evidence=as_list(kwargs.get("evidence", [])),
-            artifacts=as_list(kwargs.get("artifacts", [])),
-            open_questions=as_list(kwargs.get("open_questions", [])),
-            recommended_next_action=str(kwargs.get("recommended_next_action", "")),
+            status=specification.status,
+            summary=specification.summary,
+            findings=list(specification.findings),
+            evidence=list(specification.evidence),
+            artifacts=list(specification.artifacts),
+            open_questions=list(specification.open_questions),
+            recommended_next_action=specification.recommended_next_action,
         )
         on_report()
         return f"Report submitted for task {report.task_id} to {report.recipient}."
@@ -101,7 +258,7 @@ def create_swarm_tools(
     worker_max_context_threshold: int = 262144,
     worker_enable_stop_turn: bool = False,
     worker_default_stream: bool = False,
-    context_path_factory: Callable[[str], Any] | None = None,
+    context_path_factory: Callable[[str], str | Path | None] | None = None,
     require_plan_task_id: bool = False,
     plan_task_validator: Callable[[str], bool] | None = None,
 ) -> list[Tool]:
@@ -196,7 +353,7 @@ def create_swarm_tools(
             return list(worker_tool_binder(name, agent, tools))
         return tools
 
-    def _dynamic_add_agent(**kwargs: Any) -> str:
+    def _dynamic_add_agent(name: str = "", system_prompt: str = "") -> str:
         """Create and register a new worker agent in the swarm.
 
         Each new agent receives the configured shared pool or a fresh
@@ -204,8 +361,8 @@ def create_swarm_tools(
 
         Required parameters: ``name`` (unique agent name), ``system_prompt``.
         """
-        name: str = kwargs.get("name", "")
-        system_prompt: str = kwargs.get("system_prompt", "")
+        name = name.strip()
+        system_prompt = system_prompt.strip()
 
         if not name or not system_prompt:
             return "Error: both 'name' and 'system_prompt' are required."
@@ -233,7 +390,11 @@ def create_swarm_tools(
 
         return swarm.dynamic_add_agent(name, agent)
 
-    def _dispatch_subagent(**kwargs: Any) -> str:
+    def _dispatch_subagent(
+        name: str = "", system_prompt: str = "", objective: str = "",
+        handoff: str = "", reply_to: str = "", expected_artifacts: list[str] | None = None,
+        plan_task_id: str = "",
+    ) -> str:
         """Create, task, and immediately schedule one independent worker.
 
         Args:
@@ -244,7 +405,14 @@ def create_swarm_tools(
             Task identifier and worker name for a later ``wait_for_reports`` call.
         """
         try:
-            assignment = _create_assignment(kwargs)
+            specification = DispatchSpecification(
+                name=name.strip(), system_prompt=system_prompt.strip(), objective=objective.strip(),
+                handoff=handoff.strip(), reply_to=reply_to.strip() or coordinator_name,
+                expected_artifacts=tuple(expected_artifacts or ()), plan_task_id=plan_task_id.strip(),
+            )
+            if not specification.name or not specification.system_prompt or not specification.objective:
+                raise ValueError("name, system_prompt, and objective are required")
+            assignment = _create_assignment(specification)
         except ValueError as exc:
             return f"Error: {exc}"
         return (
@@ -252,44 +420,39 @@ def create_swarm_tools(
             "Call wait_for_reports with this task_id before synthesizing results."
         )
 
-    def _create_assignment(specification: dict[str, Any]) -> TaskAssignment:
+    def _create_assignment(specification: DispatchSpecification) -> TaskAssignment:
         """Create one worker and its explicit task assignment from a tool spec.
 
         Args:
-            specification: Model-provided worker name, prompt, objective,
-                handoff, report recipient, and artifact expectations.
+            specification: Validated worker name, prompt, objective, handoff,
+                report recipient, and artifact expectations.
 
         Returns:
             Accepted task assignment from the shared swarm task bus.
 
         Raises:
-            ValueError: If required fields are missing or the graph rejects
-                the requested worker identity.
+            ValueError: If the plan task is required but missing, or the graph
+                rejects the requested worker identity.
         """
-        name = str(specification.get("name", "")).strip()
-        plan_task_id = str(specification.get("plan_task_id", "")).strip()
-        system_prompt = str(specification.get("system_prompt", "")).strip()
-        objective = str(specification.get("objective", "")).strip()
-        handoff = str(specification.get("handoff", "")).strip()
-        reply_to = str(specification.get("reply_to", coordinator_name)).strip() or coordinator_name
-        expected_artifacts = specification.get("expected_artifacts", [])
-        if isinstance(expected_artifacts, str):
-            expected_artifacts = [expected_artifacts]
-        if not isinstance(expected_artifacts, list):
-            raise ValueError("expected_artifacts must be an array")
-        if not name or not system_prompt or not objective:
-            raise ValueError("name, system_prompt, and objective are required")
-        if require_plan_task_id and not plan_task_id:
+        if require_plan_task_id and not specification.plan_task_id:
             raise ValueError("plan_task_id is required for dispatched work")
-        if plan_task_id and plan_task_validator is not None and not plan_task_validator(plan_task_id):
+        if (
+            specification.plan_task_id
+            and plan_task_validator is not None
+            and not plan_task_validator(specification.plan_task_id)
+        ):
             raise ValueError("plan_task_id must identify an existing leaf task")
         task_id = uuid.uuid4().hex
-        worker_prompt = append_subagent_report_instruction(system_prompt)
+        worker_prompt = append_subagent_report_instruction(specification.system_prompt)
         worker = Agent(
             llm_fetcher=llm_fetcher,
             system_prompt=worker_prompt,
             max_context_threshold=worker_max_context_threshold,
-            context_path=context_path_factory(name) if context_path_factory else None,
+            context_path=(
+                context_path_factory(specification.name)
+                if context_path_factory
+                else None
+            ),
             default_max_rounds=worker_max_rounds,
             default_max_tokens=worker_max_tokens,
             enable_stop_turn=worker_enable_stop_turn,
@@ -303,21 +466,23 @@ def create_swarm_tools(
             ),
             context_providers=(),
         )
-        worker.add_tools(_bind_tools_for_worker(name, worker) + [
-            create_task_report_tool(swarm, name, worker.request_completion),
+        worker.add_tools(_bind_tools_for_worker(specification.name, worker) + [
+            create_task_report_tool(
+                swarm, specification.name, worker.request_completion
+            ),
         ])
         return swarm.dispatch_task(
-            agent_name=name,
+            agent_name=specification.name,
             agent_instance=worker,
-            objective=objective,
-            handoff=handoff,
-            reply_to=reply_to,
-            expected_artifacts=[str(item) for item in expected_artifacts],
+            objective=specification.objective,
+            handoff=specification.handoff,
+            reply_to=specification.reply_to,
+            expected_artifacts=list(specification.expected_artifacts),
             task_id=task_id,
-            plan_task_id=plan_task_id,
+            plan_task_id=specification.plan_task_id,
         )
 
-    def _dispatch_subagents(**kwargs: Any) -> str:
+    def _dispatch_subagents(assignments: list[Mapping[str, object]] | None = None, expected_count: int = 0) -> str:
         """Dispatch a complete independent worker group in one tool call.
 
         Args:
@@ -328,22 +493,39 @@ def create_swarm_tools(
             JSON containing every worker name and task ID for one subsequent
             ``wait_for_reports`` call.
         """
-        specifications = kwargs.get("assignments", [])
+        raw_specifications = assignments or []
         try:
-            expected_count = int(kwargs.get("expected_count", 0))
-        except (TypeError, ValueError):
-            return "Error: expected_count must be an integer."
-        if not isinstance(specifications, list) or not specifications:
+            expected_count = _as_int(
+                expected_count, "expected_count"
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        if not isinstance(raw_specifications, list) or not raw_specifications:
             return "Error: assignments must be a non-empty array."
-        if expected_count and len(specifications) != expected_count:
+        specifications_value = cast("list[object]", raw_specifications)
+        if expected_count and len(specifications_value) != expected_count:
             return f"Error: expected exactly {expected_count} assignments."
-        if not all(isinstance(specification, dict) for specification in specifications):
-            return "Error: every assignment must be an object."
-        names = [str(specification.get("name", "")).strip() for specification in specifications]
-        if len(names) != len(set(names)) or not all(names):
+        specifications: list[DispatchSpecification] = []
+        for item in specifications_value:
+            if not isinstance(item, dict):
+                return "Error: every assignment must be an object."
+            try:
+                specifications.append(
+                    DispatchSpecification.from_arguments(
+                        cast("Mapping[str, object]", item),
+                        default_reply_to=coordinator_name,
+                    )
+                )
+            except ValueError as exc:
+                return f"Error: {exc}"
+        names = [specification.name for specification in specifications]
+        if len(names) != len(set(names)):
             return "Error: every assignment needs a unique non-empty name."
         try:
-            assignments = [_create_assignment(specification) for specification in specifications]
+            assignments = [
+                _create_assignment(specification)
+                for specification in specifications
+            ]
         except ValueError as exc:
             return f"Error: {exc}"
         return json.dumps(
@@ -356,7 +538,10 @@ def create_swarm_tools(
             ensure_ascii=False,
         )
 
-    def _revive_agent(**kwargs: Any) -> str:
+    def _revive_agent(
+        name: str = "", objective: str = "", handoff: str = "", reply_to: str = "",
+        expected_artifacts: list[str] | None = None, plan_task_id: str = "",
+    ) -> str:
         """Queue a fresh task for an existing terminal dispatched worker.
 
         Args:
@@ -366,30 +551,32 @@ def create_swarm_tools(
         Returns:
             New task ID on success, or a safe validation message on failure.
         """
-        name = str(kwargs.get("name", "")).strip()
-        plan_task_id = str(kwargs.get("plan_task_id", "")).strip()
-        objective = str(kwargs.get("objective", "")).strip()
-        handoff = str(kwargs.get("handoff", "")).strip()
-        reply_to = str(kwargs.get("reply_to", coordinator_name)).strip() or coordinator_name
-        expected_artifacts = kwargs.get("expected_artifacts", [])
-        if isinstance(expected_artifacts, str):
-            expected_artifacts = [expected_artifacts]
-        if not isinstance(expected_artifacts, list):
-            return "Error: expected_artifacts must be an array."
-        if not name or not objective:
-            return "Error: name and objective are required."
-        if require_plan_task_id and not plan_task_id:
+        try:
+            specification = ReviveSpecification(
+                name=name.strip(), objective=objective.strip(), handoff=handoff.strip(),
+                reply_to=reply_to.strip() or coordinator_name,
+                expected_artifacts=tuple(expected_artifacts or ()), plan_task_id=plan_task_id.strip(),
+            )
+            if not specification.name or not specification.objective:
+                raise ValueError("name and objective are required")
+        except ValueError as exc:
+            return f"Error: {exc}"
+        if require_plan_task_id and not specification.plan_task_id:
             return "Error: plan_task_id is required for revived work."
-        if plan_task_id and plan_task_validator is not None and not plan_task_validator(plan_task_id):
+        if (
+            specification.plan_task_id
+            and plan_task_validator is not None
+            and not plan_task_validator(specification.plan_task_id)
+        ):
             return "Error: plan_task_id must identify an existing leaf task."
         try:
             assignment = swarm.redispatch_task(
-                agent_name=name,
-                objective=objective,
-                handoff=handoff,
-                reply_to=reply_to,
-                expected_artifacts=[str(item) for item in expected_artifacts],
-                plan_task_id=plan_task_id,
+                agent_name=specification.name,
+                objective=specification.objective,
+                handoff=specification.handoff,
+                reply_to=specification.reply_to,
+                expected_artifacts=list(specification.expected_artifacts),
+                plan_task_id=specification.plan_task_id,
             )
         except (KeyError, ValueError) as exc:
             return f"Error: {exc}"
@@ -398,7 +585,7 @@ def create_swarm_tools(
             "Wait for its new report with wait_for_reports."
         )
 
-    def _wait_for_reports(**kwargs: Any) -> str:
+    def _wait_for_reports(task_ids: list[str] | str | None = None, timeout_seconds: float = 120.0) -> str:
         """Wait for selected worker reports and return their bounded JSON form.
 
         Args:
@@ -407,17 +594,29 @@ def create_swarm_tools(
         Returns:
             JSON object containing received structured reports only.
         """
-        task_ids = kwargs.get("task_ids", [])
-        if isinstance(task_ids, str):
-            task_ids = [task_ids]
-        timeout_seconds = max(1.0, min(float(kwargs.get("timeout_seconds", 120.0)), 900.0))
+        raw_task_ids = task_ids or []
+        if isinstance(raw_task_ids, str):
+            task_ids = [raw_task_ids]
+        elif isinstance(raw_task_ids, list):
+            task_ids = [
+                str(item) for item in cast("list[object]", raw_task_ids)
+            ]
+        else:
+            task_ids = []
+        try:
+            timeout_seconds = _as_float(
+                timeout_seconds, "timeout_seconds"
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
+        timeout_seconds = max(1.0, min(timeout_seconds, 900.0))
         reports = swarm.wait_for_reports(task_ids, timeout_seconds)
         return json.dumps(
             {"requested_task_ids": task_ids, "reports": [report.as_dict() for report in reports]},
             ensure_ascii=False,
         )
 
-    def _dynamic_add_connection(**kwargs: Any) -> str:
+    def _dynamic_add_connection(source: str = "", target: str = "") -> str:
         """Add a directed dependency edge between two agents.
 
         After this call, *target* waits for *source* to complete before
@@ -425,49 +624,53 @@ def create_swarm_tools(
 
         Required: ``source``, ``target``.
         """
-        source: str = kwargs.get("source", "")
-        target: str = kwargs.get("target", "")
+        source = source.strip()
+        target = target.strip()
 
         if not source or not target:
             return "Error: both 'source' and 'target' are required."
 
         return swarm.dynamic_add_connection(source, target)
 
-    def _dynamic_remove_agent(**kwargs: Any) -> str:
+    def _dynamic_remove_agent(name: str = "") -> str:
         """Remove an agent and every edge connected to it."""
-        name: str = kwargs.get("name", "")
+        name = name.strip()
         if not name:
             return "Error: 'name' is required."
         return swarm.dynamic_remove_agent(name)
 
-    def _dynamic_remove_connection(**kwargs: Any) -> str:
+    def _dynamic_remove_connection(source: str = "", target: str = "") -> str:
         """Remove a dependency edge from the editable graph."""
-        source = str(kwargs.get("source", ""))
-        target = str(kwargs.get("target", ""))
+        source = source.strip()
+        target = target.strip()
         if not source or not target:
             return "Error: both 'source' and 'target' are required."
         return swarm.dynamic_remove_connection(source, target)
 
-    def _dynamic_set_mapper(**kwargs: Any) -> str:
+    def _dynamic_set_mapper(agent_name: str = "", mode: str = "labelled") -> str:
         """Set a declarative fan-in mapper on a target Agent."""
-        agent_name = str(kwargs.get("agent_name", ""))
-        mode = str(kwargs.get("mode", "labelled"))
+        agent_name = agent_name.strip()
+        mode = mode.strip() or "labelled"
         if not agent_name:
             return "Error: 'agent_name' is required."
         return swarm.dynamic_set_mapper(agent_name, mode)
 
-    def _dynamic_set_router(**kwargs: Any) -> str:
+    def _dynamic_set_router(agent_name: str = "", targets: list[str] | str | None = None) -> str:
         """Set a fixed successor subset for a source Agent."""
-        agent_name = str(kwargs.get("agent_name", ""))
-        targets = kwargs.get("targets", [])
-        if isinstance(targets, str):
-            targets = [targets]
-        targets = [str(target) for target in targets]
+        agent_name = agent_name.strip()
+        raw_targets = targets or []
+        if isinstance(raw_targets, str):
+            raw_targets = [raw_targets]
+        targets = (
+            [str(target) for target in cast("list[object]", raw_targets)]
+            if isinstance(raw_targets, list)
+            else []
+        )
         if not agent_name:
             return "Error: 'agent_name' is required."
         return swarm.dynamic_set_router(agent_name, targets)
 
-    def _dynamic_get_info(**kwargs: Any) -> str:
+    def _dynamic_get_info() -> str:
         """Return the current graph topology as structured text.
 
         Useful for inspecting which agents are registered and how they

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, wait, FIRST_COMPLETED
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List
+from typing import Generic, TypeVar
 
-from .llm_types import LLMToolCall, Tool
 from .execution import ExecutionController, bind_execution_controller
+
+_Result = TypeVar("_Result")
+ToolHandler = Callable[..., object]
 
 
 class ToolBatchCancelled(RuntimeError):
@@ -15,7 +18,7 @@ class ToolBatchCancelled(RuntimeError):
 
 
 @dataclass
-class ToolExecution:
+class ToolExecution(Generic[_Result]):
     """One tool handler execution: its result and wall-clock duration.
 
     Attributes:
@@ -24,7 +27,7 @@ class ToolExecution:
         duration_ms: Wall-clock time spent in the handler, in milliseconds.
     """
 
-    result: Any
+    result: _Result | Exception
     duration_ms: int
 
 
@@ -58,17 +61,17 @@ class ToolExecutor:
 
     def execute(
         self,
-        handler: Callable[..., Any],
-        arguments: Dict[str, Any],
-    ) -> Any:
+        handler: Callable[..., _Result],
+        arguments: Mapping[str, object],
+    ) -> _Result:
         """Run a single tool handler in the calling thread."""
         return handler(**arguments)
 
     def execute_timed(
         self,
-        handler: Callable[..., Any],
-        arguments: Dict[str, Any],
-    ) -> ToolExecution:
+        handler: Callable[..., _Result],
+        arguments: Mapping[str, object],
+    ) -> ToolExecution[_Result]:
         """Run a single tool handler in the calling thread with timing.
 
         Unlike :meth:`execute`, exceptions are caught and stored in the
@@ -84,12 +87,13 @@ class ToolExecutor:
             raised ``Exception``) and its wall-clock duration in milliseconds.
         """
         started_at = time.perf_counter()
+        result: _Result | Exception
         try:
             result = handler(**arguments)
         except Exception as exc:
             result = exc
         duration_ms = round((time.perf_counter() - started_at) * 1000)
-        return ToolExecution(result=result, duration_ms=duration_ms)
+        return ToolExecution[_Result](result=result, duration_ms=duration_ms)
 
     # ------------------------------------------------------------------
     # Batch (parallel) execution
@@ -97,10 +101,10 @@ class ToolExecutor:
 
     def execute_batch(
         self,
-        handlers: List[Callable[..., Any] | None],
-        arguments_list: List[Dict[str, Any]],
+        handlers: Sequence[ToolHandler | None],
+        arguments_list: Sequence[Mapping[str, object]],
         controller: ExecutionController | None = None,
-    ) -> List[Any]:
+    ) -> list[object]:
         """Execute tool handlers in parallel using a thread pool.
 
         Results are returned in the same order as the input lists.
@@ -129,10 +133,10 @@ class ToolExecutor:
 
     def execute_batch_timed(
         self,
-        handlers: List[Callable[..., Any] | None],
-        arguments_list: List[Dict[str, Any]],
+        handlers: Sequence[ToolHandler | None],
+        arguments_list: Sequence[Mapping[str, object]],
         controller: ExecutionController | None = None,
-    ) -> List[ToolExecution]:
+    ) -> list[ToolExecution[object]]:
         """Execute tool handlers in parallel, measuring each one's duration.
 
         Results are returned in the same order as the input lists, wrapped in
@@ -156,15 +160,15 @@ class ToolExecutor:
         if n == 0:
             return []
 
-        results: List[Any] = [None] * n
-        durations: List[int] = [0] * n
+        results: list[object] = [None] * n
+        durations: list[int] = [0] * n
         lock = threading.Lock()
 
         if controller is not None and controller.force_stopped.is_set():
             raise ToolBatchCancelled("Tool batch cancelled by force-stop")
 
         executor = ThreadPoolExecutor(max_workers=self._max_concurrency)
-        futures: list[Future[Any]] = []
+        futures: list[Future[None]] = []
         force_cancelled = False
         try:
 
@@ -178,8 +182,8 @@ class ToolExecutor:
 
                 def submit_one(
                     i: int,
-                    handler: Callable[..., Any],
-                    kwargs: Dict[str, Any],
+                    handler: ToolHandler,
+                    kwargs: Mapping[str, object],
                 ) -> None:
                     started_at = time.perf_counter()
                     try:
@@ -215,7 +219,7 @@ class ToolExecutor:
             executor.shutdown(wait=not force_cancelled, cancel_futures=force_cancelled)
 
         return [
-            ToolExecution(result=results[i], duration_ms=durations[i])
+            ToolExecution[object](result=results[i], duration_ms=durations[i])
             for i in range(n)
         ]
 

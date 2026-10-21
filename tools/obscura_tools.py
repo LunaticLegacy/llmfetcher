@@ -447,7 +447,11 @@ def _relevant_search_results(query: str, results: list[dict[str, Any]]) -> list[
     return relevant
 
 
-def _web_search(**kwargs: Any) -> dict[str, Any]:
+def _web_search(
+    query: str = "",
+    max_results: int = 5,
+    timeout: int = 20,
+) -> dict[str, Any]:
     """Search domestic-first providers through curl with bounded fallback.
 
     Args:
@@ -456,9 +460,9 @@ def _web_search(**kwargs: Any) -> dict[str, Any]:
     Returns:
         Normalized result payload with provider attempt metadata.
     """
-    query = str(kwargs.get("query", "")).strip()
-    max_results = max(1, min(int(kwargs.get("max_results", 5)), 10))
-    timeout = max(3, min(int(kwargs.get("timeout", 20)), 60))
+    query = str(query).strip()
+    max_results = max(1, min(int(max_results), 10))
+    timeout = max(3, min(int(timeout), 60))
     if not query:
         return {"ok": False, "error": "query is required", "results": []}
     settings = get_web_search_store().get_settings()
@@ -488,7 +492,16 @@ def _web_search(**kwargs: Any) -> dict[str, Any]:
     return {"ok": False, "query": query, "transport": "curl", "duration_ms": sum(item["duration_ms"] for item in attempts), "results": [], "attempts": attempts, "error": "all search providers failed"}
 
 
-def _obscura_fetch_cli(**kwargs: Any) -> dict[str, Any]:
+def _obscura_fetch_cli(
+    url: str,
+    mode: str = "text",
+    selector: str = "",
+    wait: int = 3,
+    wait_until: str = "load",
+    stealth: bool = False,
+    eval_js: str = "",
+    include_images: bool = True,
+) -> dict[str, Any]:
     """Execute obscura fetch via CLI.
 
     Args:
@@ -498,14 +511,14 @@ def _obscura_fetch_cli(**kwargs: Any) -> dict[str, Any]:
     Returns:
         Obscura exit status and captured page output.
     """
-    url = str(kwargs["url"])
-    mode = str(kwargs.get("mode", "text"))
-    selector = str(kwargs.get("selector", ""))
-    wait = max(0, min(int(kwargs.get("wait", 3)), 30))
-    wait_until = str(kwargs.get("wait_until", "load"))
-    stealth = bool(kwargs.get("stealth", False))
-    eval_js = str(kwargs.get("eval_js", ""))
-    include_images = bool(kwargs.get("include_images", True))
+    url = str(url)
+    mode = str(mode)
+    selector = str(selector)
+    wait = max(0, min(int(wait), 30))
+    wait_until = str(wait_until)
+    stealth = bool(stealth)
+    eval_js = str(eval_js)
+    include_images = bool(include_images)
     requested_mode = mode
     if include_images and mode == "text":
         mode = "html"
@@ -557,7 +570,12 @@ def _obscura_fetch_cli(**kwargs: Any) -> dict[str, Any]:
     return payload
 
 
-def _obscura_scrape_cli(**kwargs: Any) -> dict[str, Any]:
+def _obscura_scrape_cli(
+    urls: list[str] | str,
+    concurrency: int = 5,
+    timeout: int = 30,
+    eval_js: str = "",
+) -> dict[str, Any]:
     """Batch-scrape URLs with Obscura workers.
 
     Args:
@@ -567,13 +585,13 @@ def _obscura_scrape_cli(**kwargs: Any) -> dict[str, Any]:
     Returns:
         Obscura exit status plus parsed and raw JSON output.
     """
-    urls = kwargs.get("urls", [])
+    urls = urls
     if isinstance(urls, str):
         urls = [urls]
     urls = [str(url) for url in urls]
-    concurrency = max(1, min(int(kwargs.get("concurrency", 5)), 12))
-    timeout = max(1, min(int(kwargs.get("timeout", 30)), 120))
-    eval_js = str(kwargs.get("eval_js", ""))
+    concurrency = max(1, min(int(concurrency), 12))
+    timeout = max(1, min(int(timeout), 120))
+    eval_js = str(eval_js)
 
     cmd_parts = [
         _get_obscura_bin(),
