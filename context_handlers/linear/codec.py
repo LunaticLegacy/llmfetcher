@@ -30,12 +30,23 @@ def context_from_dict(data: Dict[str, Any]) -> LLMContext:
             source=tc["call"].get("source"),
         )
         tool_calls.append(ToolInfo(call=call, result=tc.get("result"), images=validate_images(tc.get('images', []))))
+    # Older Session/context projections used ``reasoning`` or
+    # ``reasoning_content`` for the same durable value.  Keep those records
+    # usable after restart; otherwise DeepSeek history is rebuilt without the
+    # native reasoning it requires on the next request.
+    content_reasoning = data.get("content_reasoning")
+    if not isinstance(content_reasoning, str):
+        content_reasoning = data.get("reasoning_content")
+    if not isinstance(content_reasoning, str):
+        content_reasoning = data.get("reasoning", "")
+    if not isinstance(content_reasoning, str):
+        content_reasoning = ""
     return LLMContext(
         role=data["role"],
         timeline=data["timeline"],
         content=data.get("content", ""),
         images=validate_images(data.get('images', [])),
-        content_reasoning=data.get("content_reasoning", ""),
+        content_reasoning=content_reasoning,
         tool_calls=tool_calls,
         tags=data.get("tags", []),
         usage=dict(data.get("usage") or {}),

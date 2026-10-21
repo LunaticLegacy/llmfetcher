@@ -45,6 +45,7 @@ class ContextHandler(ABC):
     """
 
     source_id = "context_handler"
+    compress_threshold: int = 262144
 
     def __init__(self) -> None:
         """Initialize the base context handler with a usage counter.
@@ -63,6 +64,16 @@ class ContextHandler(ABC):
         self.last_save_error: Exception | None = None
         self._composer_source_build = False
         self.tool_result_context_limit = 0
+        self._linear_handler: ContextHandler | None = None
+
+    @property
+    def linear(self) -> "ContextHandler":
+        """Return the linear context surface owned by this handler."""
+        return self._linear_handler or self
+
+    @linear.setter
+    def linear(self, value: "ContextHandler") -> None:
+        self._linear_handler = value
 
     def limit_tool_result_messages(
         self,
@@ -73,7 +84,7 @@ class ContextHandler(ABC):
         Durable context remains untouched; this projection is applied after
         the handler and plugin providers have produced request messages.
         """
-        limit = int(getattr(self, "tool_result_context_limit", 0) or 0)
+        limit = int(self.tool_result_context_limit or 0)
         if limit <= 0:
             return messages
         tool_indexes = [
@@ -159,10 +170,26 @@ class ContextHandler(ABC):
                 configured default and ``0`` summarises the whole active
                 transcript.
         """
-        linear = getattr(self, "linear", None)
-        if linear is None or linear is self:
+        linear = self.linear
+        if linear is self:
             raise NotImplementedError("context handler does not support compaction")
         return bool(linear.compact(controller=controller, keep_recent=keep_recent))
+
+    def _init_session_state(self) -> None:
+        """Reset transient composed-handler state when no reset is needed."""
+        return None
+
+    def set_compaction_event_hook(self, hook: object) -> None:
+        """Install a compaction event hook when the handler supports one."""
+        return None
+
+    def drain_usage_records(self) -> list[object]:
+        """Return internal usage records accumulated by this handler."""
+        return []
+
+    def apply_pending_branch_commands(self) -> list[dict[str, str]]:
+        """Apply pending branch commands when the handler supports them."""
+        return []
 
     @abstractmethod
     def add_user_message(

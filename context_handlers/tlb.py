@@ -7,6 +7,7 @@ from .base import ContextHandler
 from ..rag_module_tlb.core import TLBRAGHandler
 from ..llm_fetcher import LLMFetcher
 from ..llm_types import LLMOutput, RequestMessage
+from ..multimodal import UserMessage
 from ..execution.control import ExecutionController
 
 

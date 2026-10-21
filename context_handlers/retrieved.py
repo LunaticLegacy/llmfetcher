@@ -9,19 +9,66 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
+import threading
 import time
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..llm_types import LLMOutput, RequestMessage, Tool, ToolParameter, ToolSchema
-from ..multimodal import image_reference_markers
+from ..llm_types import LLMContext, LLMOutput, RequestMessage, Tool, ToolParameter, ToolSchema
+from ..multimodal import ImageReference, UserMessage, image_reference_markers
 from .base import ContextHandler
 from .linear import CompactionFetcher, ContextHandlerLinear
 from ..execution.control import ExecutionController
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class _RenderedMessage:
+    """One message projected onto the archival render shape.
+
+    ``linear`` stores durable :class:`LLMContext` entries while
+    ``build_messages`` returns rendered :class:`RequestMessage` values.  Both
+    are converted to this record first, so the renderer handles exactly one
+    type instead of branching on its inputs.
+    """
+
+    role: str
+    content: str
+    images: tuple[ImageReference, ...]
+    tool_calls: tuple[tuple[str, tuple[ImageReference, ...]], ...]
+
+
+_INDEX_LOCKS: dict[Path, threading.RLock] = {}
+_INDEX_LOCKS_GUARD = threading.Lock()
+
+
+def _index_lock(path: Path) -> threading.RLock:
+    """Return the process-local lock protecting one archive INDEX.md."""
+    key = path.resolve()
+    with _INDEX_LOCKS_GUARD:
+        return _INDEX_LOCKS.setdefault(key, threading.RLock())
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Publish one UTF-8 text file without exposing a partial write."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 _CLASSIFY_PROMPT = (
     "You are a conversation archivist. Given the root INDEX.md of a "
@@ -301,7 +348,7 @@ class RetrievedContextHandler(ContextHandler):
         if self._has_retrieved:
             # "auto" allows re-retrieval after compaction.
             if self.retrieval_trigger == "auto":
-                current_gen = getattr(self.linear, "compaction_generation", 0)
+                current_gen = self.linear.compaction_generation
                 if current_gen > self._last_compaction_gen:
                     self._has_retrieved = False
                     self._last_compaction_gen = current_gen
@@ -441,7 +488,7 @@ class RetrievedContextHandler(ContextHandler):
         filepath = target_dir / filename
 
         try:
-            filepath.write_text(session_md, encoding="utf-8")
+            _write_text_atomic(filepath, session_md)
         except OSError as exc:
             return False, None, f"Write failed: {exc}"
 
@@ -473,31 +520,24 @@ class RetrievedContextHandler(ContextHandler):
         """
         parts = []
 
-        abstract = getattr(self.linear, "abstract", None)
+        abstract = self.linear.abstract
         if abstract is not None:
             try:
                 parts.append(f"## Earlier Context (Compacted)\n\n{abstract.abstract_msg}")
             except AttributeError:
                 pass
 
-        msgs = getattr(self.linear, "messages", [])
+        msgs = self.linear.messages
         if msgs:
-            rendered = []
-            for m in msgs:
-                if not hasattr(m, "role") or not hasattr(m, "content"):
-                    continue
-                rendered.append({
-                    "role": m.role,
-                    "content": m.content,
-                    "images": list(getattr(m, "images", []) or []),
-                    "tool_calls": [
-                        {"name": ti.call.name, "images": list(getattr(ti, "images", []) or [])}
-                        for ti in (getattr(m, "tool_calls", []) or [])
-                    ],
-                })
-            parts.append(self._messages_to_text(rendered))
-        elif hasattr(self.linear, "build_messages"):
-            parts.append(self._messages_to_text(self.linear.build_messages()))
+            parts.append(
+                self._messages_to_text([self._render_context(m) for m in msgs])
+            )
+        else:
+            parts.append(
+                self._messages_to_text(
+                    [self._render_request(m) for m in self.linear.build_messages()]
+                )
+            )
 
         return "\n\n".join(parts)
 
@@ -664,55 +704,68 @@ class RetrievedContextHandler(ContextHandler):
         }
 
     @staticmethod
-    def _messages_to_text(messages: list[RequestMessage | dict[str, Any]]) -> str:
-        """Flatten messages into retrieval text.
+    def _render_context(message: LLMContext) -> "_RenderedMessage":
+        """Project one durable context entry onto the archival render shape."""
+        return _RenderedMessage(
+            role=message.role,
+            content=message.content,
+            images=tuple(message.images),
+            tool_calls=tuple(
+                (info.call.name, tuple(info.images)) for info in message.tool_calls
+            ),
+        )
 
-        ``linear`` returns request messages while this handler's own seeding
-        path builds reduced mappings, so both shapes are accepted here.
-        """
-        def field(message: RequestMessage | dict[str, Any], key: str, default: Any = None) -> Any:
-            if isinstance(message, RequestMessage):
-                return getattr(message, key, default)
-            return message.get(key, default) if isinstance(message, dict) else default
+    @staticmethod
+    def _render_request(message: RequestMessage) -> "_RenderedMessage":
+        """Project one rendered request message onto the archival render shape."""
+        return _RenderedMessage(
+            role=message.role,
+            content=message.content or "",
+            images=tuple(message.images),
+            tool_calls=tuple((call.name, ()) for call in message.tool_calls),
+        )
 
-        parts = []
-        for msg in messages:
-            role = field(msg, "role", "")
-            content = field(msg, "content", "") or ""
-            images = _image_markers(field(msg, "images"))
-            if role == "user":
-                parts.append(f"## User\n\n{content}{images}")
-            elif role == "assistant":
-                parts.append(f"## Assistant\n\n{content}{images}")
-                for tc in field(msg, "tool_calls", []) or []:
-                    parts.append(f"[Tool: {field(tc, 'name', '?')}]{_image_markers(field(tc, 'images'))}")
-            elif role == "tool":
-                parts.append(f"[Tool result: {str(content)[:2000]}]{images}")
+    @staticmethod
+    def _messages_to_text(messages: Sequence["_RenderedMessage"]) -> str:
+        """Flatten one archival render shape into retrieval text."""
+        parts: list[str] = []
+        for message in messages:
+            images = _image_markers(message.images)
+            if message.role == "user":
+                parts.append(f"## User\n\n{message.content}{images}")
+            elif message.role == "assistant":
+                parts.append(f"## Assistant\n\n{message.content}{images}")
+                for name, call_images in message.tool_calls:
+                    parts.append(f"[Tool: {name}]{_image_markers(call_images)}")
+            elif message.role == "tool":
+                parts.append(
+                    f"[Tool result: {str(message.content)[:2000]}]{images}"
+                )
         return "\n\n".join(parts)
 
     @staticmethod
     def _update_index(index_path: Path, filename: str, topic: str, reason: str) -> None:
         entry = f"- [{topic}]({filename}) — {reason}\n"
-        if index_path.exists():
-            existing = index_path.read_text(encoding="utf-8")
-            link = f"]({filename})"
-            if link in existing:
-                lines = existing.splitlines()
-                index_path.write_text(
-                    "\n".join(
-                        entry.rstrip() if link in line else line
-                        for line in lines
-                    ) + "\n",
-                    encoding="utf-8",
+        with _index_lock(index_path):
+            if index_path.exists():
+                existing = index_path.read_text(encoding="utf-8")
+                link = f"]({filename})"
+                if link in existing:
+                    lines = existing.splitlines()
+                    _write_text_atomic(
+                        index_path,
+                        "\n".join(
+                            entry.rstrip() if link in line else line
+                            for line in lines
+                        ) + "\n",
+                    )
+                    return
+                _write_text_atomic(index_path, existing.rstrip() + "\n" + entry)
+            else:
+                _write_text_atomic(
+                    index_path,
+                    f"# {index_path.parent.name}\n\n{entry}",
                 )
-                return
-            index_path.write_text(existing.rstrip() + "\n" + entry, encoding="utf-8")
-        else:
-            index_path.parent.mkdir(parents=True, exist_ok=True)
-            index_path.write_text(
-                f"# {index_path.parent.name}\n\n{entry}",
-                encoding="utf-8",
-            )
 
     @staticmethod
     def _slugify(text: str) -> str:
