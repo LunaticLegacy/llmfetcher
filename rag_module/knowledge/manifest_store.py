@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
+import threading
 from typing import Any
 
 from .config import KnowledgeConfig
@@ -29,6 +32,7 @@ class KnowledgeManifestStore:
         # so status calls have deterministic fields before the manifest is read.
         self.config = config
         self.meta = self.build_meta(entry_count=0, chunk_count=0, backend_ready=False, last_error='')
+        self._lock = threading.RLock()
 
     def load(self, path: Path | None = None) -> dict[str, KnowledgeIndexEntry] | None:
         """Load index entries from the manifest file.
@@ -106,23 +110,35 @@ class KnowledgeManifestStore:
         """
         # Rebuild metadata immediately before writing so entry count and backend
         # state always match the payload being serialized.
-        self.meta = self.build_meta(
-            entry_count=len(entries),
-            chunk_count=chunk_count,
-            backend_ready=backend_ready,
-            last_error=last_error,
-        )
+        with self._lock:
+            self.meta = self.build_meta(
+                entry_count=len(entries),
+                chunk_count=chunk_count,
+                backend_ready=backend_ready,
+                last_error=last_error,
+            )
 
-        # Preserve the old manifest shape by merging header fields with an
-        # `entries` object at the root of the JSON document.
-        payload = {
-            **self.meta.to_dict(),
-            'entries': {key: value.to_dict() for key, value in entries.items()},
-        }
+            # Preserve the old manifest shape by merging header fields with an
+            # `entries` object at the root of the JSON document.
+            payload = {
+                **self.meta.to_dict(),
+                'entries': {key: value.to_dict() for key, value in entries.items()},
+            }
 
-        # Write UTF-8 JSON with non-ASCII characters preserved for easier manual
-        # inspection of Chinese titles and paths.
-        self.config.index_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+            # Write UTF-8 JSON with non-ASCII characters preserved for easier
+            # manual inspection of Chinese titles and paths.
+            target = self.config.index_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
 
     def build_meta(self, *, entry_count: int, chunk_count: int, backend_ready: bool, last_error: str) -> ManifestMeta:
         """Build manifest metadata using configured constants.
