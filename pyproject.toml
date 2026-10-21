@@ -33,11 +33,13 @@ packages = [
     "llmfetcher.execution",
     "llmfetcher.fetcher_handlers",
     "llmfetcher.graph_memory",
+    "llmfetcher.llm_types",
     "llmfetcher.memory",
     "llmfetcher.rag_module",
     "llmfetcher.rag_module.knowledge",
     "llmfetcher.rag_module_tlb",
     "llmfetcher.swarm_module",
+    "llmfetcher.swarm_module.execution_graph",
     "llmfetcher.tools",
 ]
 
