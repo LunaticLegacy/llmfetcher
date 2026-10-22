@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, override
 
-from ..base import ContextHandler, checkpoint_lock
+from ..base import ContextHandler, checkpoint_lock, replace_checkpoint
 from ..composer import ContextBlock, ContextPosition, ContextSnapshot
 from ..storage import ContextStorage, SQLiteContextStorage
 from ...llm_types import (
@@ -683,7 +683,7 @@ class ContextHandlerLinear(ContextHandler):
                     temp_file.write(serialized)
                     temp_file.flush()
                     os.fsync(temp_file.fileno())
-                os.replace(temp_path, target)
+                replace_checkpoint(temp_path, target)
             except OSError:
                 if temp_path is not None:
                     try:
@@ -716,7 +716,8 @@ class ContextHandlerLinear(ContextHandler):
 
         try:
             target = Path(path)
-            raw = json.loads(target.read_text(encoding="utf-8"))
+            with checkpoint_lock(target):
+                raw = json.loads(target.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return False
 

@@ -15,6 +15,12 @@ from .retriever import (
     render_graph_memory,
 )
 from .handler import GraphContextHandler
+from .projection import (
+    ContextGraphProjection,
+    ProjectedCommunity,
+    ProjectedEntity,
+    ProjectedRelation,
+)
 from .tools import GraphToolProvider, create_graph_tools
 from .semantic import SemanticGraphWorker
 
@@ -31,6 +37,10 @@ __all__ = [
     "RetrievalConfig",
     "render_graph_memory",
     "GraphContextHandler",
+    "ContextGraphProjection",
+    "ProjectedCommunity",
+    "ProjectedEntity",
+    "ProjectedRelation",
     "GraphToolProvider",
     "create_graph_tools",
     "SemanticGraphWorker",

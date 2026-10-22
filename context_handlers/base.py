@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
+import os
 import threading
+import time
 
 from ..llm_types import LLMOutput, RequestMessage, TokenUsage
 from ..multimodal import UserMessage
@@ -18,6 +20,7 @@ TOOL_RESULT_OMITTED_PLACEHOLDER = (
 
 if TYPE_CHECKING:
     from ..execution.control import ExecutionController
+    from ..graph_memory.projection import ContextGraphProjection
 
 
 _CHECKPOINT_LOCKS: dict[str, threading.RLock] = {}
@@ -33,6 +36,35 @@ def checkpoint_lock(path: str | Path) -> threading.RLock:
             lock = threading.RLock()
             _CHECKPOINT_LOCKS[key] = lock
         return lock
+
+
+_REPLACE_ATTEMPTS = 5
+_REPLACE_DELAY = 0.05
+
+
+def replace_checkpoint(temporary: str | Path, target: str | Path) -> None:
+    """Publish ``temporary`` as ``target``, absorbing a transient Windows denial.
+
+    Windows refuses a rename onto a destination that any handle still holds
+    open without delete sharing -- including a plain ``read_text`` from another
+    thread -- and a scanner can hold the freshly written temporary file for a
+    few milliseconds. Rename with a bounded, growing retry and re-raise the
+    last denial, so a persistent failure still reaches ``last_save_error``
+    instead of being reported as success.
+
+    Raises:
+        PermissionError: When every attempt was denied.
+    """
+    delay = _REPLACE_DELAY
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, target)
+            return
+        except PermissionError:
+            if attempt + 1 == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 
 class ContextHandler(ABC):
@@ -74,6 +106,22 @@ class ContextHandler(ABC):
     @linear.setter
     def linear(self, value: "ContextHandler") -> None:
         self._linear_handler = value
+
+    def graph_projection(self) -> "ContextGraphProjection":
+        """Return this handler's long-term entity graph for inspection.
+
+        Only the graph handler owns an entity graph. Every other handler
+        answers with an explicit empty projection, so a reader never has to
+        guess whether a ``store`` member exists.
+
+        Returns:
+            A projection whose ``available`` flag is ``False`` by default.
+        """
+        # Imported lazily: graph_memory imports this module, so a module-level
+        # import here would close the cycle.
+        from ..graph_memory.projection import ContextGraphProjection
+
+        return ContextGraphProjection.empty()
 
     def limit_tool_result_messages(
         self,

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .models import CommunitySummary, EntityNode, GraphMemoryState, RelationEdge
+from ..context_handlers.base import replace_checkpoint
 
 # ---------------------------------------------------------------------------
 # Normalization
@@ -537,7 +538,7 @@ class GraphStore:
                     temp_file.write(serialized)
                     temp_file.flush()
                     os.fsync(temp_file.fileno())
-                os.replace(temp_path, target)
+                replace_checkpoint(temp_path, target)
             except OSError:
                 if temp_path is not None:
                     try:

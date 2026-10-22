@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from ..storage import ContextStorage, SQLiteContextStorage, is_sqlite_context_pointer
+from ..base import checkpoint_lock
 from ...llm_types import LLMContext
 from .codec import context_from_dict
 
@@ -42,28 +43,31 @@ def read_persisted_context_page(
         OSError: If the checkpoint cannot be read.
     """
     target = Path(path)
-    pointer = json.loads(target.read_text(encoding="utf-8"))
-    if not isinstance(pointer, dict):
-        raise ValueError("checkpoint must be an object")
-    bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
-    if is_sqlite_context_pointer(pointer):
-        page = (storage or SQLiteContextStorage()).read_page(
-            target,
-            before_timeline=before_timeline,
-            limit=bounded,
-            include_archive=include_archive,
-        )
-        return [context_from_dict(row) for row in page.rows], page.next_before, page.total
-    # Legacy compatibility is deliberately bounded for callers. Migration is
-    # the required route for large checkpoints because a JSON array is not
-    # randomly addressable.
-    entries_raw = pointer.get("messages", [])
-    if not isinstance(entries_raw, list):
-        raise ValueError("legacy checkpoint messages must be a list")
-    filtered = [item for item in entries_raw if isinstance(item, dict) and (before_timeline is None or item.get("timeline", 0) < before_timeline)]
-    selected = filtered[-bounded:]
-    next_cursor = selected[0].get("timeline") if len(filtered) > len(selected) and selected else None
-    return [context_from_dict(item) for item in selected], next_cursor, len(entries_raw)
+    # Readers take the same lock as ``save``: on Windows a read handle on the
+    # pointer denies the atomic replace that commits a new generation.
+    with checkpoint_lock(target):
+        pointer = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(pointer, dict):
+            raise ValueError("checkpoint must be an object")
+        bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
+        if is_sqlite_context_pointer(pointer):
+            page = (storage or SQLiteContextStorage()).read_page(
+                target,
+                before_timeline=before_timeline,
+                limit=bounded,
+                include_archive=include_archive,
+            )
+            return [context_from_dict(row) for row in page.rows], page.next_before, page.total
+        # Legacy compatibility is deliberately bounded for callers. Migration is
+        # the required route for large checkpoints because a JSON array is not
+        # randomly addressable.
+        entries_raw = pointer.get("messages", [])
+        if not isinstance(entries_raw, list):
+            raise ValueError("legacy checkpoint messages must be a list")
+        filtered = [item for item in entries_raw if isinstance(item, dict) and (before_timeline is None or item.get("timeline", 0) < before_timeline)]
+        selected = filtered[-bounded:]
+        next_cursor = selected[0].get("timeline") if len(filtered) > len(selected) and selected else None
+        return [context_from_dict(item) for item in selected], next_cursor, len(entries_raw)
 
 
 def read_persisted_archive_page(
@@ -94,18 +98,19 @@ def read_persisted_archive_page(
         OSError: If the checkpoint or database cannot be read.
     """
     target = Path(path)
-    pointer = json.loads(target.read_text(encoding="utf-8"))
-    if not isinstance(pointer, dict):
-        raise ValueError("checkpoint must be an object")
-    if not is_sqlite_context_pointer(pointer):
-        raise ValueError("archive paging requires a schema-3 SQLite checkpoint")
-    bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
-    page = (storage or SQLiteContextStorage()).read_archive_page(
-        target,
-        before_timeline=before_timeline,
-        limit=bounded,
-    )
-    return [context_from_dict(row) for row in page.rows], page.next_before, page.has_more
+    with checkpoint_lock(target):
+        pointer = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(pointer, dict):
+            raise ValueError("checkpoint must be an object")
+        if not is_sqlite_context_pointer(pointer):
+            raise ValueError("archive paging requires a schema-3 SQLite checkpoint")
+        bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
+        page = (storage or SQLiteContextStorage()).read_archive_page(
+            target,
+            before_timeline=before_timeline,
+            limit=bounded,
+        )
+        return [context_from_dict(row) for row in page.rows], page.next_before, page.has_more
 
 
 __all__ = ["read_persisted_context_page", "read_persisted_archive_page"]

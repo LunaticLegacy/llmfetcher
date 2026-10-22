@@ -39,6 +39,7 @@ from ..llm_types import LLMContext, LLMOutput, RequestMessage, ToolInfo
 from ..execution.control import ExecutionController
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
+from .projection import ContextGraphProjection
 from .retriever import GraphRetriever, GraphRetrievalResult, RetrievalConfig
 from ..usage_ledger import UsageRecord
 
@@ -204,6 +205,17 @@ class GraphContextHandler(ContextHandler):
         self._has_retrieved = True
         self._last_retrieved_gen = self._compaction_generation
         return result
+
+    def graph_projection(self) -> ContextGraphProjection:
+        """Return the console projection of this Agent's entity graph.
+
+        ``stale`` is reported from the linear editing state so a graph that no
+        longer matches an edited transcript is visible instead of implied.
+        """
+        return ContextGraphProjection.from_state(
+            self.store.to_state(),
+            stale=bool(self.linear.context_editing.get("graph_stale")),
+        )
 
     def compact(
         self,
