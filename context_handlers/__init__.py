@@ -9,6 +9,7 @@ from .composer import (
     HandlerContextSource,
 )
 from .linear import CompactionRequestPreview, ContextHandlerLinear
+from .placement import ToolResultPlacement
 from .registry import (
     CONTEXT_HANDLERS,
     DEFAULT_CONTEXT_HANDLER,
@@ -44,6 +45,7 @@ __all__ = [
     "ContextSource",
     "ContextSnapshot",
     "HandlerContextSource",
+    "ToolResultPlacement",
     "ContextHandlerLinear",
     "ContextHandlerSpec",
     "ContextSettingSpec",

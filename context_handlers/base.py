@@ -12,6 +12,7 @@ from .composer import (
     ContextPosition,
     ContextSnapshot,
 )
+from .placement import ToolResultPlacement
 
 TOOL_RESULT_OMITTED_PLACEHOLDER = (
     "[Earlier tool result omitted from the active context. "
@@ -78,6 +79,7 @@ class ContextHandler(ABC):
 
     source_id = "context_handler"
     compress_threshold: int = 262144
+    tool_result_placement: ToolResultPlacement = ToolResultPlacement.INTERLEAVED
 
     def __init__(self) -> None:
         """Initialize the base context handler with a usage counter.

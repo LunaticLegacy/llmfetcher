@@ -15,6 +15,12 @@ surface: ``ContextHandlerLinear``, ``CompactionFetcher``,
 
 from __future__ import annotations
 
+from .assembly import (
+    AssembledContext,
+    ContextAssembler,
+    ContextAssemblyError,
+    ContextObservation,
+)
 from .codec import (
     compacted_from_dict,
     compacted_to_dict,
@@ -33,6 +39,10 @@ from .paging import read_persisted_archive_page, read_persisted_context_page
 from .rendering import append_context_entry, render_messages
 
 __all__ = [
+    "AssembledContext",
+    "ContextAssembler",
+    "ContextAssemblyError",
+    "ContextObservation",
     "ContextHandlerLinear",
     "CompactionFetcher",
     "CompactionRequestPreview",

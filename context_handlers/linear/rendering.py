@@ -11,10 +11,7 @@ from typing import List, cast
 
 from ...llm_types import LLMContext, LLMContextCompacted, MessageRole, RequestMessage, ToolCallPayload
 from ...multimodal import validate_images
-
-# Appended once after a successful compaction so the next request still has an
-# explicit user turn; some providers reject a request without one.
-_RESUME_PROMPT = "Continue user's job from your checkpoint, now."
+from ..placement import RESUME_PROMPT as _RESUME_PROMPT
 
 
 def append_context_entry(messages: List[RequestMessage], item: LLMContext) -> None:
