@@ -26,6 +26,10 @@ class _Provider:
         self.priority = priority
         self.content = content
 
+    @property
+    def source_id(self) -> str:
+        return self.provider_id
+
     def build_blocks(self, snapshot: ContextSnapshot):
         return [ContextBlock(
             role="user", content=self.content,
@@ -40,6 +44,7 @@ class ContextComposerTests(unittest.TestCase):
 
         class Provider:
             provider_id = "test"
+            source_id = "test"
 
             def build_blocks(self, snapshot):
                 return [

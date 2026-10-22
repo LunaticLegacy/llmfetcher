@@ -8,12 +8,24 @@ declarations grouped by concern.
 - :mod:`.json` — JSON value aliases.
 - :mod:`.errors` — the LLM exception hierarchy.
 - :mod:`.messages` — conversation entries, model output, token usage.
+- :mod:`.context_records` — explicit context items and tool-result references.
 - :mod:`.request` — outbound request description and backend configuration.
 - :mod:`.tools` — tool declarations, schemas, and the handler contract.
 """
 
 from __future__ import annotations
 
+from .context_records import (
+    AssistantContextItem,
+    ContextItem,
+    ContextItemId,
+    ContextStore,
+    ContextSummaryItem,
+    ToolCallRecord,
+    ToolResultId,
+    ToolResultRecord,
+    UserContextItem,
+)
 from .errors import (
     LLMBackendError,
     LLMError,

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Mapping, Protocol, Sequence
 
-from ..llm_types import MessageRole, RequestMessage
+from ..llm_types import JsonObject, JsonValue, MessageRole, RequestMessage
 
 
 class ContextPosition(IntEnum):
@@ -44,7 +44,7 @@ class ContextBlock:
     priority: int = 0
     persistent: bool = False
     enabled: bool = True
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, JsonValue] = field(default_factory=dict)
     message: RequestMessage | None = None
 
 
@@ -55,6 +55,29 @@ class ContextSource(Protocol):
 
     def build_blocks(self, snapshot: ContextSnapshot) -> Sequence[ContextBlock]:
         """Project source state into request blocks."""
+        ...
+
+
+class ContextHandlerPort(Protocol):
+    """Handler capability the composer itself invokes for one request."""
+
+    def limit_tool_result_messages(
+        self,
+        messages: list[RequestMessage],
+    ) -> list[RequestMessage]:
+        """Bound tool-result text for the outgoing model request."""
+        ...
+
+
+class HandlerBlockSource(Protocol):
+    """Read-only handler surface used by :class:`HandlerContextSource`."""
+
+    def build_messages(
+        self,
+        *,
+        system_prompt: str | None = None,
+    ) -> list[RequestMessage]:
+        """Return the handler's complete provider-neutral context."""
         ...
 
 
@@ -69,10 +92,10 @@ class ContextSnapshot:
         metadata: Host-provided request metadata.
     """
 
-    handler: Any
+    handler: ContextHandlerPort | None
     system_prompt: str | None = None
     current_message: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, JsonValue] = field(default_factory=dict)
 
 
 class ContextProvider(ContextSource, Protocol):
@@ -106,7 +129,7 @@ class ContextComposer:
 
     def __init__(
         self,
-        providers: Sequence[ContextProvider],
+        providers: Sequence[ContextSource],
         *,
         priority_overrides: Mapping[str, int] | None = None,
     ) -> None:
@@ -138,16 +161,16 @@ class ContextComposer:
         """Register a provider for future requests.
 
         Args:
-            provider: Provider implementing ``provider_id`` and
+            provider: Provider implementing ``source_id`` and
                 ``build_blocks``.
 
         Raises:
-            ValueError: If the provider ID is empty or already registered.
+            ValueError: If the source ID is empty or already registered.
         """
-        provider_id = str(getattr(provider, "source_id", getattr(provider, "provider_id", ""))).strip()
+        provider_id = provider.source_id.strip()
         if not provider_id:
-            raise ValueError("context provider must define provider_id")
-        if any(getattr(item, "source_id", getattr(item, "provider_id", None)) == provider_id for item in self._providers):
+            raise ValueError("context provider must define a non-empty source_id")
+        if any(item.source_id == provider_id for item in self._providers):
             raise ValueError(f"context provider already registered: {provider_id}")
         self._providers.append(provider)
 
@@ -219,9 +242,8 @@ class ContextComposer:
         if effective.system_prompt:
             messages.append(RequestMessage(role="system", content=effective.system_prompt))
         messages.extend(self.render(blocks))
-        limiter = getattr(effective.handler, "limit_tool_result_messages", None)
-        if callable(limiter):
-            messages = limiter(messages)
+        if effective.handler is not None:
+            messages = effective.handler.limit_tool_result_messages(messages)
         return messages
 
     def describe(
@@ -229,15 +251,19 @@ class ContextComposer:
         *,
         snapshot: ContextSnapshot,
         system_prompt: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Describe the exact composed messages with source provenance."""
+    ) -> list[JsonObject]:
+        """Describe the exact composed messages with source provenance.
+
+        Rows stay JSON objects because this is the preview boundary consumed
+        by the host API; the values are already typed scalars.
+        """
         effective = ContextSnapshot(
             handler=snapshot.handler,
             system_prompt=system_prompt if system_prompt is not None else snapshot.system_prompt,
             current_message=snapshot.current_message,
             metadata=dict(snapshot.metadata),
         )
-        rows: list[dict[str, Any]] = []
+        rows: list[JsonObject] = []
         index = 0
         if effective.system_prompt:
             rows.append({
@@ -271,17 +297,12 @@ class HandlerContextSource:
 
     source_id = "context_handler"
 
-    def __init__(self, handler: Any) -> None:
+    def __init__(self, handler: HandlerBlockSource) -> None:
         self.handler = handler
 
     def build_blocks(self, snapshot: ContextSnapshot) -> Sequence[ContextBlock]:
         """Render the handler's durable context without its system prompt."""
-        previous = getattr(self.handler, "_composer_source_build", False)
-        self.handler._composer_source_build = True
-        try:
-            messages = self.handler.build_messages(system_prompt=None)
-        finally:
-            self.handler._composer_source_build = previous
+        messages = self.handler.build_messages(system_prompt=None)
         return [
             ContextBlock(
                 role=message.role,
