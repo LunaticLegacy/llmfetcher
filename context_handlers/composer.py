@@ -13,6 +13,10 @@ class ContextPosition(IntEnum):
     """Canonical position of a block in the assembled request."""
 
     PERSISTENT = 10
+    # Durable per-Session state that is re-read every request, such as the
+    # owning Agent's task plan: after stable environment facts, before the
+    # transcript, and never a history record of its own.
+    SESSION_STATE = 15
     PREVIOUS = 20
     MEMORY = 30
     CUSTOM = 35
