@@ -25,17 +25,28 @@ from __future__ import annotations
 import json
 import copy
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence, cast
 import uuid
 
 from ..context_handlers.base import ContextHandler, checkpoint_lock
 from ..context_handlers.composer import ContextBlock, ContextPosition, ContextSnapshot
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
-from ..context_handlers.linear.rendering import render_messages
+from ..context_handlers.linear.assembly import ContextAssembler
 from ..context_handlers.storage import ContextStorage
-from ..multimodal import ImageToolResult, UserMessage, validate_images
-from ..llm_types import LLMContext, LLMOutput, RequestMessage, ToolInfo
+from ..multimodal import UserMessage, validate_images
+from ..llm_types import (
+    AssistantContextItem,
+    AssistantTurnInput,
+    ContextItem,
+    ContextSummaryItem,
+    LLMContext,
+    LLMToolCall,
+    RequestMessage,
+    ToolInfo,
+    ToolResultInput,
+    UserContextItem,
+)
 from ..execution.control import ExecutionController
 from .builder import ExtractionFetcher, GraphBuilder
 from .graph_store import GraphStore
@@ -263,13 +274,9 @@ class GraphContextHandler(ContextHandler):
 
     def add_assistant_message(
         self,
-        message: LLMOutput,
-        tool_results: Optional[dict[str, str]] = None,
+        turn: AssistantTurnInput,
+        tool_results: Sequence[ToolResultInput] = (),
         *,
-        usage: Optional[dict[str, int]] = None,
-        model_duration_ms: Optional[int] = None,
-        round_duration_ms: Optional[int] = None,
-        created_at: Optional[float] = None,
         controller: ExecutionController | None = None,
     ) -> None:
         """Append an assistant output, detect compaction and flush the graph."""
@@ -280,29 +287,39 @@ class GraphContextHandler(ContextHandler):
         # linear transcript.  GraphBuilder renders a bounded summary of these
         # records, so useful file/command evidence is available to extraction
         # without copying unbounded tool output into the graph prompt.
-        bounded_tool_results = self.linear._bounded_tool_results(tool_results)
+        results_by_call = {result.call_id: result for result in tool_results}
         pending_tool_calls: list[ToolInfo] = []
-        for index, call in enumerate(message.tool_calls):
-            call_id = call.call_id or f"call_{index}"
-            result = bounded_tool_results.get(call_id) if bounded_tool_results else None
-            pending_tool_calls.append(ToolInfo(call=call, result=str(result) if result is not None else None))
+        for call in turn.tool_calls:
+            result = results_by_call.get(call.call_id)
+            pending_tool_calls.append(ToolInfo(
+                call=LLMToolCall(
+                    name=call.name,
+                    arguments=call.arguments,
+                    call_id=call.call_id,
+                ),
+                result=result.output if result is not None else None,
+                images=list(result.images) if result is not None else [],
+            ))
         self._pending.append(LLMContext(
-            role=message.role,
+            role="assistant",
             timeline=timeline,
-            content=message.content or "",
-            content_reasoning=message.reasoning_content or "",
+            content=turn.content or "",
+            content_reasoning=turn.reasoning or "",
             tool_calls=pending_tool_calls,
-            usage=dict(usage or {}),
-            model_duration_ms=model_duration_ms,
-            round_duration_ms=round_duration_ms,
-            created_at=created_at,
+            usage={
+                "input": turn.usage.input_tokens,
+                "cached": turn.usage.cached_tokens,
+                "output": turn.usage.output_tokens,
+                "reasoning": turn.usage.reasoning_tokens,
+                "total": turn.usage.total_tokens,
+            },
+            model_duration_ms=turn.model_duration_ms,
+            round_duration_ms=turn.round_duration_ms,
+            created_at=turn.created_at,
         ))
         self.linear.add_assistant_message(
-            message, tool_results,
-            usage=usage,
-            model_duration_ms=model_duration_ms,
-            round_duration_ms=round_duration_ms,
-            created_at=created_at,
+            turn,
+            tool_results,
             controller=controller,
         )
         now = (len(self.linear.messages), self.linear.abstract is not None)
@@ -324,14 +341,17 @@ class GraphContextHandler(ContextHandler):
         if system_prompt:
             messages.append(RequestMessage(role="system", content=system_prompt))
         previous, last_round, current_user = self._linear_message_sections()
-        messages.extend(render_messages(previous, pending_resume=self.linear._pending_resume and not current_user))
+        messages.extend(self._render_items(
+            previous,
+            pending_resume=self.linear._pending_resume and not current_user,
+        ))
         retrieved_memory = "\n\n".join(
             block for block in (self._graph_memory, self._archive_memory) if block
         )
         if retrieved_memory:
             messages.append(RequestMessage(role="user", content=retrieved_memory))
-        messages.extend(render_messages(last_round, pending_resume=False))
-        messages.extend(render_messages(current_user, pending_resume=False))
+        messages.extend(self._render_items(last_round, pending_resume=False))
+        messages.extend(self._render_items(current_user, pending_resume=False))
         return messages
 
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
@@ -344,8 +364,12 @@ class GraphContextHandler(ContextHandler):
         previous, last_round, current_user = self._linear_message_sections()
         blocks: list[ContextBlock] = []
 
-        def add(messages: list[RequestMessage], position: ContextPosition, source: str) -> None:
-            for message in render_messages(messages, pending_resume=False):
+        def add_items(
+            items: Sequence[ContextItem],
+            position: ContextPosition,
+            source: str,
+        ) -> None:
+            for message in self._render_items(items, pending_resume=False):
                 blocks.append(ContextBlock(
                     role=message.role,
                     content=message.content or "",
@@ -354,18 +378,53 @@ class GraphContextHandler(ContextHandler):
                     message=message,
                 ))
 
-        add(previous, ContextPosition.PREVIOUS, "graph.previous")
+        def add_message(
+            message: RequestMessage,
+            position: ContextPosition,
+            source: str,
+        ) -> None:
+            blocks.append(ContextBlock(
+                role=message.role,
+                content=message.content or "",
+                source=source,
+                position=position,
+                message=message,
+            ))
+
+        add_items(previous, ContextPosition.PREVIOUS, "graph.previous")
         if self._graph_memory:
-            add([RequestMessage(role="user", content=self._graph_memory)], ContextPosition.MEMORY, "graph.memory")
+            add_message(
+                RequestMessage(role="user", content=self._graph_memory),
+                ContextPosition.MEMORY,
+                "graph.memory",
+            )
         if self._archive_memory:
-            add([RequestMessage(role="user", content=self._archive_memory)], ContextPosition.MEMORY, "graph.archive")
-        add(last_round, ContextPosition.LAST_ROUND, "graph.last_round")
-        add(current_user, ContextPosition.CURRENT_INPUT, "graph.current_input")
+            add_message(
+                RequestMessage(role="user", content=self._archive_memory),
+                ContextPosition.MEMORY,
+                "graph.archive",
+            )
+        add_items(last_round, ContextPosition.LAST_ROUND, "graph.last_round")
+        add_items(current_user, ContextPosition.CURRENT_INPUT, "graph.current_input")
         return blocks
+
+    def _render_items(
+        self,
+        items: Sequence[ContextItem],
+        *,
+        pending_resume: bool,
+    ) -> list[RequestMessage]:
+        """Render context items through the linear handler's assembler."""
+        assembled = ContextAssembler(self.linear).assemble(
+            items,
+            placement=self.linear.tool_result_placement,
+            pending_resume=pending_resume,
+        )
+        return list(assembled.messages)
 
     def _linear_message_sections(
         self,
-    ) -> tuple[list[Any], list[Any], list[Any]]:
+    ) -> tuple[list[ContextItem], list[ContextItem], list[ContextItem]]:
         """Split linear context into previous, last assistant, and current user.
 
         ``ContextHandlerLinear`` stores a flat timeline. GraphContext uses the
@@ -377,26 +436,26 @@ class GraphContextHandler(ContextHandler):
             (item.timeline for item in reversed(self._pending) if item.role == "user"),
             None,
         )
+        entries = list(self.linear.get_prev_messages())
         current_user = [
-            item for item in self.linear.messages
-            if current_timeline is not None and item.timeline == current_timeline
-            and item.role == "user"
+            item for item in entries
+            if item.kind == "user"
+            and current_timeline is not None
+            and item.timeline == current_timeline
         ]
         candidates = [
-            item for item in self.linear.messages
+            item for item in entries
             if current_timeline is None or item.timeline != current_timeline
         ]
         last_assistant = next(
-            (item for item in reversed(candidates) if item.role == "assistant"),
+            (item for item in reversed(candidates) if item.kind == "assistant"),
             None,
         )
         last_round = [last_assistant] if last_assistant is not None else []
         last_timeline = last_assistant.timeline if last_assistant is not None else None
         previous = [
-            item for item in self.linear.get_prev_messages()
-            if not isinstance(item, LLMContext) or (
-                item.timeline != current_timeline and item.timeline != last_timeline
-            )
+            item for item in entries
+            if item.timeline != current_timeline and item.timeline != last_timeline
         ]
         return previous, last_round, current_user
 
@@ -525,6 +584,59 @@ class GraphContextHandler(ContextHandler):
 
     # -- internal helpers --------------------------------------------------
 
+    def _archive_records(self) -> list[LLMContext]:
+        """Project archived context items onto the archive retriever's shape.
+
+        The durable archive holds typed items whose tool calls carry result
+        references; the lexical retriever reads complete records, so results
+        are resolved here. A dangling reference raises instead of shrinking
+        the evidence silently.
+        """
+        records: list[LLMContext] = []
+        for item in self.linear.archive:
+            match item.kind:
+                case "user":
+                    user = cast(UserContextItem, item)
+                    records.append(LLMContext(
+                        role="user",
+                        timeline=user.timeline,
+                        content=user.content,
+                        images=list(user.images),
+                    ))
+                case "assistant":
+                    assistant = cast(AssistantContextItem, item)
+                    tool_calls: list[ToolInfo] = []
+                    for call in assistant.tool_calls:
+                        result = (
+                            self.linear.resolve_tool_result(call.result_id)
+                            if call.result_id is not None
+                            else None
+                        )
+                        tool_calls.append(ToolInfo(
+                            call=LLMToolCall(
+                                name=call.name,
+                                arguments=call.arguments,
+                                call_id=call.call_id,
+                            ),
+                            result=result.output if result is not None else None,
+                            images=list(result.images) if result is not None else [],
+                        ))
+                    records.append(LLMContext(
+                        role="assistant",
+                        timeline=assistant.timeline,
+                        content=assistant.content,
+                        content_reasoning=assistant.reasoning,
+                        tool_calls=tool_calls,
+                    ))
+                case "summary":
+                    summary = cast(ContextSummaryItem, item)
+                    records.append(LLMContext(
+                        role="system",
+                        timeline=summary.timeline,
+                        content=summary.abstract,
+                    ))
+        return records
+
     def _retrieve_archive_evidence(self, query: str) -> str:
         """Render small, provenance-labelled raw evidence for a new query.
 
@@ -535,7 +647,7 @@ class GraphContextHandler(ContextHandler):
         """
         result = retrieve_archive(
             query,
-            self.linear.archive,
+            self._archive_records(),
             config=ArchiveRetrievalConfig(max_results=3, max_chars_per_record=1_000),
         )
         if not result.evidence:
@@ -578,9 +690,10 @@ class GraphContextHandler(ContextHandler):
     def _latest_user_query(self) -> str:
         """Return the newest non-empty user turn for empty previews."""
         for message in reversed(self.linear.messages):
-            if getattr(message, "role", "") != "user":
+            if message.kind != "user":
                 continue
-            content = str(getattr(message, "content", "") or "").strip()
+            user = cast(UserContextItem, message)
+            content = user.content.strip()
             if content:
                 return content
         return ""

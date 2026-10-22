@@ -6,7 +6,7 @@ import json
 import unittest
 
 from llmfetcher.graph_memory import GraphContextHandler, create_graph_tools
-from llmfetcher.llm_types import LLMBackendConfig, LLMOutput
+from llmfetcher.llm_types import AssistantTurnInput, LLMBackendConfig, TokenUsage
 
 
 class _Compactor:
@@ -19,9 +19,14 @@ class GraphToolTests(unittest.TestCase):
     def test_context_build_order_is_previous_graph_last_round_current_user(self) -> None:
         context = GraphContextHandler(compacting_fetcher=_Compactor(), retrieval_trigger="manual")
         context.add_user_message("previous user")
-        context.add_assistant_message(LLMOutput(
-            content="previous assistant", provider="test",
-            backend_name="test", model="test-model",
+        context.add_assistant_message(AssistantTurnInput(
+            content="previous assistant",
+            reasoning="",
+            tool_calls=(),
+            usage=TokenUsage(),
+            model_duration_ms=None,
+            round_duration_ms=None,
+            created_at=None,
         ))
         context.add_user_message("current user")
         context._graph_memory = "<graph_memory>retrieved</graph_memory>"

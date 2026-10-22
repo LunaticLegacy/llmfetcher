@@ -7,9 +7,21 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from llmfetcher.multimodal import UserMessage, ImageToolResult, bounded_resolver
-from llmfetcher.llm_types import LLMBackendConfig, LLMOutput, LLMToolCall, Tool, ToolSchema
+from llmfetcher.llm_types import (
+    AssistantContextItem,
+    AssistantTurnInput,
+    LLMBackendConfig,
+    LLMOutput,
+    LLMToolCall,
+    TokenUsage,
+    Tool,
+    ToolCallInput,
+    ToolResultInput,
+    ToolSchema,
+)
 from llmfetcher.llm_fetcher import LLMFetcher
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
+from llmfetcher.context_handlers.linear.codec import context_item_to_dict
 from llmfetcher.fetcher_handlers.openai import OpenAIHandler
 from llmfetcher.fetcher_handlers.anthropic import AnthropicHandler
 
@@ -21,9 +33,30 @@ class NativeVisionTests(unittest.TestCase):
     def context(self):
         context = ContextHandlerLinear(MagicMock())
         context.add_user_message(UserMessage('Inspect', [REF]))
-        context.add_assistant_message(LLMOutput('', 'fake', 'fake', 'fake', tool_calls=[
-            LLMToolCall('view_image', {}, 'a'), LLMToolCall('other', {}, 'b')]),
-            {'a': ImageToolResult('Opened image', [REF]), 'b': 'done'})
+        context.add_assistant_message(
+            AssistantTurnInput(
+                content='',
+                reasoning='',
+                tool_calls=(
+                    ToolCallInput(call_id='a', name='view_image', arguments={}),
+                    ToolCallInput(call_id='b', name='other', arguments={}),
+                ),
+                usage=TokenUsage(),
+                model_duration_ms=None,
+                round_duration_ms=None,
+                created_at=None,
+            ),
+            (
+                ToolResultInput(
+                    call_id='a', tool_name='view_image', output='Opened image',
+                    images=(REF,), ok=True, duration_ms=1, created_at=None,
+                ),
+                ToolResultInput(
+                    call_id='b', tool_name='other', output='done',
+                    images=(), ok=True, duration_ms=1, created_at=None,
+                ),
+            ),
+        )
         return context
 
     def handler(self, cls):
@@ -77,12 +110,16 @@ class NativeVisionTests(unittest.TestCase):
             self.assertTrue(context.save(path))
             loaded = ContextHandlerLinear(MagicMock())
             self.assertTrue(loaded.load(path))
-            self.assertEqual(loaded.messages[0].images, [REF])
-            self.assertEqual(loaded.messages[1].tool_calls[0].images, [REF])
+            self.assertEqual(loaded.messages[0].images, (REF,))
+            assistant = loaded.messages[1]
+            self.assertIsInstance(assistant, AssistantContextItem)
+            assert isinstance(assistant, AssistantContextItem)
+            result_id = assistant.tool_calls[0].result_id
+            assert result_id is not None
+            self.assertEqual(loaded.resolve_tool_result(result_id).images, (REF,))
             self.assertEqual(loaded.build_messages(), context.build_messages())
-            serialized = json.dumps(context._context_to_dict(context.messages[1]))
+            serialized = json.dumps(context_item_to_dict(context.messages[1]))
             self.assertNotIn(DATA, serialized)
-            self.assertEqual(context._context_from_dict(json.loads(serialized)).tool_calls[0].images, [REF])
 
     def test_preview_never_resolves_bytes_and_rejects_unsupported(self):
         handler = self.handler(OpenAIHandler)
@@ -126,7 +163,7 @@ class NativeVisionTests(unittest.TestCase):
             self.assertTrue(context.save(path))
             loaded = ContextHandlerLinear(MagicMock())
             self.assertTrue(loaded.load(path))
-            self.assertEqual(loaded.messages[0].images, [REF])
+            self.assertEqual(loaded.messages[0].images, (REF,))
             self.assertEqual(loaded.messages[0].content, '')
 
     def test_compaction_preview_keeps_marker_never_bytes(self):
@@ -142,7 +179,7 @@ class NativeVisionTests(unittest.TestCase):
         )
         handler.add_user_message(UserMessage('Inspect', [REF]))
         self.assertEqual(handler._pending[0].images, [REF])
-        self.assertEqual(handler.linear.messages[0].images, [REF])
+        self.assertEqual(handler.linear.messages[0].images, (REF,))
 
     def test_graph_builder_keeps_image_only_turn_reachable(self):
         from llmfetcher.graph_memory.builder import GraphBuilder

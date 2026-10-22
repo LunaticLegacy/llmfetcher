@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from llmfetcher.context_handlers.sage import SageContext, create_sage_tools
-from llmfetcher.llm_types import LLMOutput
+from llmfetcher.llm_types import AssistantTurnInput, LLMOutput, TokenUsage
 
 
 class _Compactor:
@@ -18,8 +18,16 @@ class _Compactor:
         return LLMOutput(content=self.body, provider="test", backend_name="test", model="test-model")
 
 
-def _assistant(content: str) -> LLMOutput:
-    return LLMOutput(content=content, provider="test", backend_name="test", model="test-model")
+def _assistant(content: str) -> AssistantTurnInput:
+    return AssistantTurnInput(
+        content=content,
+        reasoning="",
+        tool_calls=(),
+        usage=TokenUsage(),
+        model_duration_ms=None,
+        round_duration_ms=None,
+        created_at=None,
+    )
 
 
 class SageContextTests(unittest.TestCase):

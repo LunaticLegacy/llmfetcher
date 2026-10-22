@@ -15,7 +15,7 @@ from unittest.mock import patch
 from llmfetcher.context_handlers import SQLiteContextStorage, create_context_handler
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
 from llmfetcher.graph_memory import GraphContextHandler
-from llmfetcher.llm_types import LLMBackendConfig, LLMOutput
+from llmfetcher.llm_types import AssistantTurnInput, LLMBackendConfig, LLMOutput, TokenUsage
 
 
 class _ScriptedCompactor:
@@ -35,9 +35,17 @@ class _ScriptedCompactor:
         yield self.raw
 
 
-def _assistant(content: str) -> LLMOutput:
-    """Build one assistant output with the fields the handler requires."""
-    return LLMOutput(content=content, provider="test", backend_name="test", model="test-model")
+def _assistant(content: str) -> AssistantTurnInput:
+    """Build one assistant turn with the fields the handler requires."""
+    return AssistantTurnInput(
+        content=content,
+        reasoning="",
+        tool_calls=(),
+        usage=TokenUsage(),
+        model_duration_ms=None,
+        round_duration_ms=None,
+        created_at=None,
+    )
 
 
 class CompactionTailTests(unittest.TestCase):
@@ -92,7 +100,7 @@ class CompactionTailTests(unittest.TestCase):
 
         self.assertEqual([5, 6], [message.timeline for message in linear.messages])
         self.assertEqual([1, 2, 3, 4], [message.timeline for message in linear.archive])
-        self.assertEqual([1, 2, 3, 4], linear.abstract.source_timeline)
+        self.assertEqual((1, 2, 3, 4), linear.abstract.source_timeline)
 
     def test_retained_tail_suppresses_the_derived_resume_turn(self) -> None:
         """A retained tail is already the user-visible turn."""
@@ -143,7 +151,7 @@ class CompactionTailTests(unittest.TestCase):
         self.assertTrue(linear.compact(keep_recent=99))
 
         self.assertEqual([], linear.messages)
-        self.assertEqual([1], linear.abstract.source_timeline)
+        self.assertEqual((1,), linear.abstract.source_timeline)
         contents = [message.content for message in linear.build_messages()]
         self.assertIn("Continue user's job from your checkpoint, now.", contents)
 
@@ -157,7 +165,7 @@ class CompactionTailTests(unittest.TestCase):
         self.assertTrue(handler.compact(keep_recent=1))
 
         self.assertEqual([4], [message.timeline for message in handler.linear.messages])
-        self.assertEqual([1, 2, 3], handler.linear.abstract.source_timeline)
+        self.assertEqual((1, 2, 3), handler.linear.abstract.source_timeline)
 
     def test_graph_preview_retrieves_for_empty_next_input(self) -> None:
         """An empty preview uses the latest user turn as its graph query."""

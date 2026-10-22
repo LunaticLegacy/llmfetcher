@@ -1,12 +1,12 @@
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import override, Optional, List, Dict, Any
+from typing import override, List, Sequence
 from pathlib import Path
 
 from .base import ContextHandler
 from ..rag_module_tlb.core import TLBRAGHandler
 from ..llm_fetcher import LLMFetcher
-from ..llm_types import LLMOutput, RequestMessage
+from ..llm_types import AssistantTurnInput, RequestMessage, ToolResultInput
 from ..multimodal import UserMessage
 from ..execution.control import ExecutionController
 
@@ -62,25 +62,20 @@ class TLBContextHandler(ContextHandler):
     @override
     def add_assistant_message(
         self,
-        message: LLMOutput,
-        tool_results: Optional[Dict[str, str]] = None,
+        turn: AssistantTurnInput,
+        tool_results: Sequence[ToolResultInput] = (),
         *,
-        usage: Optional[Dict[str, int]] = None,
-        model_duration_ms: Optional[int] = None,
-        round_duration_ms: Optional[int] = None,
-        created_at: Optional[float] = None,
         controller: ExecutionController | None = None,
     ) -> None:
         """Record an LLM response into the conversation history.
 
+        This handler is a placeholder and intentionally stores nothing.
+
         Args:
-            message: The output produced by the LLM (includes content,
-                     tool calls, usage, etc.).
-            tool_results:
-                Mapping from ``call_id`` to execution result text.
-                When provided, each tool call in *message* is paired
-                with its result so that future ``build_messages`` calls
-                can emit the ``{"role": "tool", ...}`` feedback turn.
+            turn: The output produced by the LLM, with its calls, usage and
+                timing.
+            tool_results: Completed results for the calls in *turn*.
+            controller: Optional cancellation source.
         """
 
     @override

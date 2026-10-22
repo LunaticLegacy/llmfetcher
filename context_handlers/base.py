@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Sequence, TYPE_CHECKING
 from pathlib import Path
 import os
 import threading
 import time
 
-from ..llm_types import LLMOutput, RequestMessage, TokenUsage
+from ..llm_types import AssistantTurnInput, RequestMessage, TokenUsage, ToolResultInput
 from ..multimodal import UserMessage
 from .composer import (
     ContextBlock,
@@ -258,29 +258,21 @@ class ContextHandler(ABC):
     @abstractmethod
     def add_assistant_message(
         self,
-        message: LLMOutput,
-        tool_results: Optional[Dict[str, str]] = None,
+        turn: AssistantTurnInput,
+        tool_results: Sequence[ToolResultInput] = (),
         *,
-        usage: Optional[Dict[str, int]] = None,
-        model_duration_ms: Optional[int] = None,
-        round_duration_ms: Optional[int] = None,
-        created_at: Optional[float] = None,
         controller: "ExecutionController | None" = None,
     ) -> None:
-        """Record an LLM response into the conversation history.
+        """Record one completed assistant turn into the conversation history.
 
         Args:
-            message: The output produced by the LLM (includes content,
-                     tool calls, usage, etc.).
-            tool_results:
-                Mapping from ``call_id`` to execution result text.
-                When provided, each tool call in *message* is paired
-                with its result so that future ``build_messages`` calls
-                can emit the ``{"role": "tool", ...}`` feedback turn.
-            usage: Primary model-call token usage for this durable turn.
-            model_duration_ms: Wall time spent generating this model output.
-            round_duration_ms: Whole round wall time, including tools.
-            created_at: Unix timestamp when this response completed.
+            turn: The output produced by the LLM, including its tool calls,
+                token usage and timing.
+            tool_results: Completed results for the calls this turn made.
+                A result whose ``call_id`` answers no call in *turn* is
+                rejected rather than silently discarded.
+            controller: Optional cancellation source for any compaction this
+                turn may trigger.
         """
 
     @abstractmethod

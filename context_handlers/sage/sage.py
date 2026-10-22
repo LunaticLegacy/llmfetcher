@@ -13,7 +13,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, override
+from typing import Any, Dict, List, Optional, Sequence, Callable, Union, override
 from uuid import uuid4, UUID
 
 from ..base import ContextHandler
@@ -23,8 +23,17 @@ from .compaction import SageCompactionFetcher, build_sage_compaction_request, pa
 from ..storage import ContextStorage, SQLiteContextStorage
 from ..linear.codec import context_from_dict, context_to_dict
 from ...execution.control import ExecutionController
-from ...llm_types import LLMContext, LLMContextCompacted, LLMOutput, RequestMessage, TokenUsage, ToolInfo
-from ...multimodal import UserMessage, ImageToolResult, validate_images
+from ...llm_types import (
+    AssistantTurnInput,
+    LLMContext,
+    LLMContextCompacted,
+    LLMToolCall,
+    RequestMessage,
+    TokenUsage,
+    ToolInfo,
+    ToolResultInput,
+)
+from ...multimodal import UserMessage, validate_images
 
 from .status import BranchPhase, BranchVerdict, SageWorkTreeBranch
 from .commands import SageBranchCommand
@@ -127,56 +136,56 @@ class SageContext(ContextHandler):
     @override
     def add_assistant_message(
         self,
-        message: LLMOutput,
-        tool_results: Optional[Dict[str, str]] = None,
+        turn: AssistantTurnInput,
+        tool_results: Sequence[ToolResultInput] = (),
         *,
-        usage: Optional[Dict[str, int]] = None,
-        model_duration_ms: Optional[int] = None,
-        round_duration_ms: Optional[int] = None,
-        created_at: Optional[float] = None,
         controller: ExecutionController | None = None,
     ) -> None:
         """Append an assistant turn to ``raw_contexts_info``.
 
         Args:
-            message: The output produced by the LLM.
-            tool_results: Tool output keyed by provider tool-call ID.
-            usage: Primary model-call token usage for this durable turn.
-            model_duration_ms: Wall time spent generating this model output.
-            round_duration_ms: Whole round wall time, including tools.
-            created_at: Unix timestamp when this response completed.
+            turn: The output produced by the LLM, with its calls, usage and
+                timing.
+            tool_results: Completed results for the calls in *turn*.
             controller: Optional cancellation source for the compaction this
                 call may trigger.
         """
         # Pair every requested tool call with the result it produced, so the
         # entry can still render a tool feedback turn later.
-        results = {
-            call_id: raw_value if isinstance(raw_value, ImageToolResult) else str(raw_value)
-            for call_id, raw_value in (tool_results or {}).items()
-        }
+        results_by_call = {result.call_id: result for result in tool_results}
 
         # Extract tool calls.
         tool_calls: List[ToolInfo] = []
-        for index, call in enumerate(message.tool_calls):
-            result = results.get(call.call_id or f"call_{index}")
+        for call in turn.tool_calls:
+            result = results_by_call.get(call.call_id)
             tool_calls.append(ToolInfo(
-                call=call,
-                result=str(result) if result is not None else None,
-                images=validate_images(result.images) if isinstance(result, ImageToolResult) else [],
+                call=LLMToolCall(
+                    name=call.name,
+                    arguments=call.arguments,
+                    call_id=call.call_id,
+                ),
+                result=result.output if result is not None else None,
+                images=list(result.images) if result is not None else [],
             ))
         # Maybe I should make the long tool calls became a series of abstracted information,
         # instead of one of ...?
-        
+
         self.raw_contexts_info.append(LLMContext(
-            role=message.role,
+            role="assistant",
             timeline=self.timeline,
-            content=message.content,
-            content_reasoning=message.reasoning_content,
+            content=turn.content,
+            content_reasoning=turn.reasoning,
             tool_calls=tool_calls,
-            usage=dict(usage or {}),
-            model_duration_ms=model_duration_ms,
-            round_duration_ms=round_duration_ms,
-            created_at=created_at,
+            usage={
+                "input": turn.usage.input_tokens,
+                "cached": turn.usage.cached_tokens,
+                "output": turn.usage.output_tokens,
+                "reasoning": turn.usage.reasoning_tokens,
+                "total": turn.usage.total_tokens,
+            },
+            model_duration_ms=turn.model_duration_ms,
+            round_duration_ms=turn.round_duration_ms,
+            created_at=turn.created_at,
         ))
         
         # Commit any staged user/steering input before the assistant response.

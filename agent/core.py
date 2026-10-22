@@ -18,14 +18,17 @@ from ..llm_types import (
     Tool,
     ToolParameter,
     ToolSchema,
+    AssistantTurnInput,
     LLMOutput,
     LLMRequestCancelled,
     LLMToolCall,
     TokenUsage,
+    ToolCallInput,
+    ToolResultInput,
     RemoteRequestSnapshot,
 )
 from ..tool_handler import ToolHandler
-from ..tool_executor import ToolBatchCancelled, ToolExecutor
+from ..tool_executor import ToolBatchCancelled, ToolExecution, ToolExecutor
 from ..context_handlers import (
     ContextHandlerLinear,
     ContextHandler,
@@ -875,7 +878,6 @@ class Agent:
         )
 
         prompt: str = self._build_prompt()  # Build system prompt.
-        tool_results: Optional[Dict[str, str]] = None
         have_tool_call: bool = False
 
         desired_context_threshold: int = self.max_context_threshold
@@ -1082,23 +1084,9 @@ class Agent:
                         data=self.last_outcome.to_dict() if self.last_outcome else {},
                     )
                     raise AgentRunStopped(str(exc), last_output=result) from exc
-                results_list: List[Any] = [
-                    execution.result for execution in executions
-                ]
-                tool_results = {}
-                for i, (tool_call, raw_result) in enumerate(
-                    zip(result.tool_calls, results_list),
-                ):
-                    call_id = tool_call.call_id or f"call_{i}"
-                    result_text = str(raw_result)
-                    if self.tool_result_transformer is not None:
-                        result_text = self.tool_result_transformer(
-                            tool_call.name,
-                            call_id,
-                            result_text,
-                        )
-                    tool_results[call_id] = (ImageToolResult(result_text, raw_result.images)
-                                            if isinstance(raw_result, ImageToolResult) else result_text)
+                executed_calls: List[tuple[LLMToolCall, ToolExecution[Any]]] = list(
+                    zip(result.tool_calls, executions)
+                )
                 have_tool_call = True
 
                 # Preserve typed outcomes for event consumers while the model
@@ -1130,7 +1118,7 @@ class Agent:
                     },
                 )
             else:
-                tool_results = None
+                executed_calls = []
                 have_tool_call = False
 
             if not have_tool_call and not result.content.strip():
@@ -1151,6 +1139,40 @@ class Agent:
 
             round_duration_ms = round((time.perf_counter() - round_started_at) * 1000)
             response_completed_at = time.time()
+            tool_results: List[ToolResultInput] = []
+            for tool_call, execution in executed_calls:
+                if not tool_call.call_id:
+                    raise ValueError(
+                        f"tool call {tool_call.name!r} has no call_id; the durable "
+                        "turn cannot correlate its result"
+                    )
+                raw_result = execution.result
+                result_text = str(raw_result)
+                if self.tool_result_transformer is not None:
+                    result_text = self.tool_result_transformer(
+                        tool_call.name,
+                        tool_call.call_id,
+                        result_text,
+                    )
+                tool_results.append(ToolResultInput(
+                    call_id=tool_call.call_id,
+                    tool_name=tool_call.name,
+                    output=result_text,
+                    images=(
+                        tuple(raw_result.images)
+                        if isinstance(raw_result, ImageToolResult)
+                        else ()
+                    ),
+                    ok=(
+                        not isinstance(raw_result, Exception)
+                        and not (
+                            isinstance(raw_result, dict)
+                            and raw_result.get("ok") is False
+                        )
+                    ),
+                    duration_ms=execution.duration_ms,
+                    created_at=response_completed_at,
+                ))
             round_usage = self._usage_data(copy_usage(result.usage))
             self._emit(
                 "agent", name, "agent:round",
@@ -1174,13 +1196,31 @@ class Agent:
             if verbose:
                 print("\n", tool_results, "\n")
 
-            self.context_handler.add_assistant_message(
-                message=result,
-                tool_results=tool_results,
-                usage=round_usage,
+            turn_calls: List[ToolCallInput] = []
+            for tool_call in result.tool_calls:
+                if not tool_call.call_id:
+                    raise ValueError(
+                        f"tool call {tool_call.name!r} has no call_id; the durable "
+                        "turn cannot correlate its result"
+                    )
+                turn_calls.append(ToolCallInput(
+                    call_id=tool_call.call_id,
+                    name=tool_call.name,
+                    arguments=tool_call.arguments,
+                ))
+            turn = AssistantTurnInput(
+                content=result.content,
+                reasoning=result.reasoning_content,
+                tool_calls=tuple(turn_calls),
+                usage=result.usage,
                 model_duration_ms=model_duration_ms,
                 round_duration_ms=round_duration_ms,
                 created_at=response_completed_at,
+            )
+
+            self.context_handler.add_assistant_message(
+                turn,
+                tool_results,
                 controller=(control if _supports_force_control(control) else None),
             )
             self.context_handler.apply_pending_branch_commands()

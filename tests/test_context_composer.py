@@ -4,7 +4,14 @@ import unittest
 
 from llmfetcher.context_handlers import ContextBlock, ContextComposer, ContextPosition, ContextSnapshot
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
-from llmfetcher.llm_types import LLMBackendConfig, LLMOutput, LLMToolCall
+from llmfetcher.llm_types import (
+    AssistantContextItem,
+    AssistantTurnInput,
+    LLMBackendConfig,
+    TokenUsage,
+    ToolCallInput,
+    ToolResultInput,
+)
 
 
 class _Compactor:
@@ -98,14 +105,28 @@ class ContextComposerTests(unittest.TestCase):
         handler.add_user_message("run tools")
         for index in range(3):
             handler.add_assistant_message(
-                LLMOutput(
+                AssistantTurnInput(
                     content="",
-                    provider="test",
-                    backend_name="test",
-                    model="test",
-                    tool_calls=[LLMToolCall(name=f"tool_{index}", call_id=f"call_{index}")],
+                    reasoning="",
+                    tool_calls=(ToolCallInput(
+                        call_id=f"call_{index}",
+                        name=f"tool_{index}",
+                        arguments={},
+                    ),),
+                    usage=TokenUsage(),
+                    model_duration_ms=None,
+                    round_duration_ms=None,
+                    created_at=None,
                 ),
-                {f"call_{index}": f"complete-{index}"},
+                (ToolResultInput(
+                    call_id=f"call_{index}",
+                    tool_name=f"tool_{index}",
+                    output=f"complete-{index}",
+                    images=(),
+                    ok=True,
+                    duration_ms=1,
+                    created_at=None,
+                ),),
             )
         handler.tool_result_context_limit = 1
         messages = ContextComposer((handler,)).compose(
@@ -116,8 +137,13 @@ class ContextComposerTests(unittest.TestCase):
         self.assertIn("omitted", results[0].content or "")
         self.assertIn("omitted", results[1].content or "")
         self.assertEqual(results[2].content, "complete-2")
-        first_tool_turn = next(item for item in handler.messages if item.tool_calls)
-        self.assertEqual(first_tool_turn.tool_calls[0].result, "complete-0")
+        first_tool_turn = next(
+            item for item in handler.messages
+            if isinstance(item, AssistantContextItem) and item.tool_calls
+        )
+        result_id = first_tool_turn.tool_calls[0].result_id
+        assert result_id is not None
+        self.assertEqual(handler.resolve_tool_result(result_id).output, "complete-0")
 
     def test_priority_precedes_position(self) -> None:
         handler = ContextHandlerLinear(_Compactor())

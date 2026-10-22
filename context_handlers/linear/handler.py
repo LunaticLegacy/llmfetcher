@@ -18,28 +18,43 @@ import os
 import tempfile
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, override
+from typing import Any, Callable, Dict, List, Optional, Sequence, cast, override
 
 from ..base import ContextHandler, checkpoint_lock, replace_checkpoint
 from ..composer import ContextBlock, ContextPosition, ContextSnapshot
-from ..storage import ContextStorage, SQLiteContextStorage
+from ..storage import (
+    ContextStorage,
+    SQLiteContextStorage,
+    is_sqlite_context_pointer,
+)
 from ...llm_types import (
-    LLMContext,
-    LLMContextCompacted,
+    AssistantContextItem,
+    AssistantTurnInput,
+    ContextItem,
+    ContextItemId,
+    ContextSummaryItem,
+    JsonObject,
+    JsonValue,
     LLMOutput,
     RequestMessage,
     TokenUsage,
-    ToolInfo,
+    ToolCallRecord,
+    ToolResultId,
+    ToolResultInput,
+    ToolResultRecord,
+    UserContextItem,
 )
-from ...multimodal import UserMessage, ImageToolResult, validate_images
+from ...multimodal import UserMessage, validate_images
 from ...usage_ledger import UsageRecord, copy_usage, drain_records
 from ...execution.control import ExecutionController
+from .assembly import ContextAssembler
 from .codec import (
-    compacted_from_dict,
-    compacted_to_dict,
-    context_from_dict,
-    context_to_dict,
+    context_item_from_dict,
+    context_item_to_dict,
+    tool_result_from_dict,
+    tool_result_to_dict,
 )
 from .compaction import (
     _COMPACTION_INPUT_CHAR_LIMIT,
@@ -116,12 +131,19 @@ class ContextHandlerLinear(ContextHandler):
         self.compaction_output_max_tokens = compaction_output_max_tokens
         self.keep_recent = max(0, int(keep_recent))
 
-        self.abstract: Optional[LLMContextCompacted] = None
-        self.messages: List[LLMContext] = []
+        self.abstract: Optional[ContextSummaryItem] = None
+        self.messages: List[ContextItem] = []
         # Raw messages which have left the active model context through a
         # successful compaction.  This is a durable source record for future
         # retrieval / re-compaction, not another prompt buffer.
-        self.archive: List[LLMContext] = []
+        self.archive: List[ContextItem] = []
+        # Complete tool results addressed by the active assistant items.  The
+        # transcript holds only a ``ToolResultId`` reference; resolution goes
+        # through :meth:`resolve_tool_result`, which fails on a dangling id.
+        self.tool_results: dict[str, ToolResultRecord] = {}
+        # Results already committed to the durable row store, so an ordinary
+        # save never rewrites them.
+        self._persisted_result_ids: set[str] = set()
         # Forward-compatible checkpoint metadata survives ordinary Agent
         # load/save cycles so context editing and graph commit state are not
         # silently discarded by the linear serializer.
@@ -161,6 +183,8 @@ class ContextHandlerLinear(ContextHandler):
         self.abstract = None
         self.messages = []
         self.archive = []
+        self.tool_results = {}
+        self._persisted_result_ids = set()
         self._round = 0
         self._pending_resume = False
         self._usage_records.clear()
@@ -228,11 +252,11 @@ class ContextHandlerLinear(ContextHandler):
                 durable image references that are preserved verbatim.
         """
         self._round += 1
-        self.messages.append(LLMContext(
-            role="user",
+        self.messages.append(UserContextItem(
+            item_id=ContextItemId.new(),
             timeline=self._round,
             content=str(message),
-            images=validate_images(message.images) if isinstance(message, UserMessage) else [],
+            images=tuple(validate_images(message.images)) if isinstance(message, UserMessage) else (),
         ))
         # A real user turn supersedes any derived resume prompt left by a
         # previous compaction.
@@ -241,54 +265,102 @@ class ContextHandlerLinear(ContextHandler):
     @override
     def add_assistant_message(
         self,
-        message: LLMOutput,
-        tool_results: Optional[Dict[str, str]] = None,
+        turn: AssistantTurnInput,
+        tool_results: Sequence[ToolResultInput] = (),
         *,
-        usage: Optional[Dict[str, int]] = None,
-        model_duration_ms: Optional[int] = None,
-        round_duration_ms: Optional[int] = None,
-        created_at: Optional[float] = None,
         controller: ExecutionController | None = None,
     ) -> None:
-        """Append an LLM output to the conversation history.
+        """Append one durable assistant turn to the conversation history.
 
-        Each tool call in *message* is paired with its result from
-        *tool_results* (keyed by ``call_id``).
-
-        After appending, triggers compaction if the estimated context
-        size exceeds ``compress_threshold``.
+        The turn stores a ``result_id`` reference per executed call; the
+        complete output goes into ``tool_results`` so the transcript never
+        embeds tool text. After appending, triggers compaction when the
+        estimated context size exceeds ``compress_threshold``.
 
         Args:
-            mesages: The original LLMOutput provided by LLMFetcher.
-            tool_results: Tool execution result of this round's llm call.
+            turn: The original assistant output plus its calls, usage and
+                timing.
+            tool_results: Completed results for the calls in *turn*, matched
+                by ``call_id``.
+            controller: Optional cancellation source for automatic compaction.
+
+        Raises:
+            ValueError: If two results share a ``call_id``, or a result
+                answers no call in *turn*.
         """
         self._round += 1
-        bounded_tool_results = self._bounded_tool_results(tool_results)
-        tool_calls: List[ToolInfo] = []
-        for index, tc in enumerate(message.tool_calls):
-            call_id = tc.call_id or f"call_{index}"
-            result = bounded_tool_results.get(call_id) if bounded_tool_results else None
-            tool_calls.append(ToolInfo(
-                call=tc, result=str(result) if result is not None else None,
-                images=validate_images(result.images) if isinstance(result, ImageToolResult) else [],
+        results_by_call: dict[str, ToolResultInput] = {}
+        for result in tool_results:
+            if result.call_id in results_by_call:
+                raise ValueError(
+                    f"duplicate tool result for call_id {result.call_id!r}"
+                )
+            results_by_call[result.call_id] = result
+        unmatched = set(results_by_call) - {call.call_id for call in turn.tool_calls}
+        if unmatched:
+            raise ValueError(
+                "tool results answer no call in this turn: "
+                f"{sorted(unmatched)!r}"
+            )
+
+        records: list[ToolCallRecord] = []
+        for call in turn.tool_calls:
+            result = results_by_call.get(call.call_id)
+            result_id: ToolResultId | None = None
+            if result is not None:
+                result_id = ToolResultId.new()
+                self.tool_results[result_id.value] = ToolResultRecord(
+                    result_id=result_id,
+                    call_id=result.call_id,
+                    tool_name=result.tool_name,
+                    output=result.output,
+                    images=tuple(result.images),
+                    ok=result.ok,
+                    duration_ms=result.duration_ms,
+                    created_at=result.created_at,
+                )
+            records.append(ToolCallRecord(
+                call_id=call.call_id,
+                name=call.name,
+                arguments=call.arguments,
+                result_id=result_id,
             ))
 
-        self.messages.append(LLMContext(
-            role=message.role,
+        self.messages.append(AssistantContextItem(
+            item_id=ContextItemId.new(),
             timeline=self._round,
-            content=message.content,
-            content_reasoning=message.reasoning_content,
-            tool_calls=tool_calls,
-            usage=dict(usage or {}),
-            model_duration_ms=model_duration_ms,
-            round_duration_ms=round_duration_ms,
-            created_at=created_at,
+            content=turn.content,
+            reasoning=turn.reasoning,
+            tool_calls=tuple(records),
+            usage=turn.usage,
+            model_duration_ms=turn.model_duration_ms,
+            round_duration_ms=turn.round_duration_ms,
+            created_at=turn.created_at,
         ))
 
         # Auto-trigger compaction when context exceeds threshold.
         context_size: int = self._estimate_context_size()
         if context_size > self.compress_threshold:
             self.compact(controller=controller)
+
+    def resolve_tool_result(self, result_id: ToolResultId) -> ToolResultRecord:
+        """Return the stored result a durable tool call references.
+
+        Args:
+            result_id: Reference carried by an assistant tool call.
+
+        Returns:
+            The complete stored result record.
+
+        Raises:
+            KeyError: When no result was stored for this reference.
+        """
+        try:
+            return self.tool_results[result_id.value]
+        except KeyError:
+            raise KeyError(
+                f"no stored tool result for {result_id.value!r}"
+            ) from None
 
     def compact(
         self,
@@ -350,12 +422,25 @@ class ContextHandlerLinear(ContextHandler):
 
         # Provenance is owned by the context handler, never by the model.
         # The next abstract includes the preceding abstract in its prompt, so
-        # retain its full source range plus the timelines this abstract
-        # actually replaces; a retained tail is not part of that range.
+        # retain its full source range plus the items this abstract actually
+        # replaces; a retained tail is not part of that range.
+        source_item_ids: List[ContextItemId] = []
         source_timelines: List[int] = []
+        source_result_ids: List[ToolResultId] = []
         if self.abstract is not None:
+            source_item_ids.extend(self.abstract.source_item_ids)
             source_timelines.extend(self.abstract.source_timeline)
-        source_timelines.extend(m.timeline for m in archived_messages)
+            source_result_ids.extend(self.abstract.source_result_ids)
+        for item in archived_messages:
+            source_item_ids.append(item.item_id)
+            source_timelines.append(item.timeline)
+            if item.kind == "assistant":
+                assistant = cast(AssistantContextItem, item)
+                source_result_ids.extend(
+                    call.result_id
+                    for call in assistant.tool_calls
+                    if call.result_id is not None
+                )
 
         request_preview = self.compaction_request_preview()
         compaction_input = request_preview.text
@@ -450,9 +535,13 @@ class ContextHandlerLinear(ContextHandler):
         # Count archived messages from the boundary computed before the
         # compactor ran.
         archived_count = len(archived_messages)
-        self.abstract = LLMContextCompacted(
-            abstract_msg=abstract_msg,
-            source_timeline=source_timelines,
+        self.abstract = ContextSummaryItem(
+            item_id=ContextItemId.new(),
+            timeline=self._round,
+            abstract=abstract_msg,
+            source_item_ids=tuple(source_item_ids),
+            source_timeline=tuple(source_timelines),
+            source_result_ids=tuple(source_result_ids),
         )
         # Only archive after the compactor response has been parsed.  A
         # failed compaction must leave the active context wholly intact.
@@ -485,10 +574,9 @@ class ContextHandlerLinear(ContextHandler):
         )
         return True
 
-    @override
-    def get_prev_messages(self) -> List[LLMContext | LLMContextCompacted]:
+    def get_prev_messages(self) -> List[ContextItem]:
         """Return the stored conversation history."""
-        result: List[LLMContext | LLMContextCompacted] = list(self.messages)
+        result: List[ContextItem] = list(self.messages)
         if self.abstract is not None:
             result.insert(0, self.abstract)
         return result
@@ -505,10 +593,12 @@ class ContextHandlerLinear(ContextHandler):
             and the derived post-compaction resume turn included where
             applicable.
         """
-        messages = render_messages(
+        assembled = ContextAssembler(self).assemble(
             self.get_prev_messages(),
+            placement=self.tool_result_placement,
             pending_resume=self._pending_resume,
         )
+        messages = list(assembled.messages)
         if system_prompt:
             messages.insert(0, RequestMessage(role="system", content=system_prompt))
         return messages
@@ -516,22 +606,23 @@ class ContextHandlerLinear(ContextHandler):
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
         """Project the linear transcript into Composer ordering slots.
 
-        The newest user entry is the current input and the newest assistant
-        entry before it is the last completed round. Older entries stay in
-        the previous-context slot. Tool calls and tool results are preserved
-        because blocks retain their complete :class:`RequestMessage`.
+        The newest user item is the current input and the newest assistant
+        item before it is the last completed round. Older items stay in the
+        previous-context slot. A summary item has no role, so grouping keys on
+        ``kind``; each group is rendered by the shared assembler, which keeps
+        tool calls and their results paired.
         """
         entries = list(self.get_prev_messages())
         current_index: int | None = None
         for index in range(len(entries) - 1, -1, -1):
-            if getattr(entries[index], "role", None) == "user":
+            if entries[index].kind == "user":
                 current_index = index
                 break
 
         last_assistant_index: int | None = None
         search_end = current_index if current_index is not None else len(entries)
         for index in range(search_end - 1, -1, -1):
-            if getattr(entries[index], "role", None) == "assistant":
+            if entries[index].kind == "assistant":
                 last_assistant_index = index
                 break
 
@@ -543,8 +634,19 @@ class ContextHandlerLinear(ContextHandler):
         current = [entries[current_index]] if current_index is not None else []
         blocks: list[ContextBlock] = []
 
-        def add(items: list[Any], position: ContextPosition, source: str, *, resume: bool = False) -> None:
-            for message in render_messages(items, pending_resume=resume):
+        def add(
+            items: List[ContextItem],
+            position: ContextPosition,
+            source: str,
+            *,
+            resume: bool = False,
+        ) -> None:
+            assembled = ContextAssembler(self).assemble(
+                items,
+                placement=self.tool_result_placement,
+                pending_resume=resume,
+            )
+            for message in assembled.messages:
                 blocks.append(ContextBlock(
                     role=message.role,
                     content=message.content or "",
@@ -571,27 +673,6 @@ class ContextHandlerLinear(ContextHandler):
             Total serialized character length of the next request messages.
         """
         return estimate_context_size(self.build_messages())
-
-    def _bounded_tool_results(
-        self,
-        tool_results: Optional[Dict[str, str]],
-    ) -> Dict[str, str]:
-        """Copy complete tool output into the in-memory conversation history.
-
-        Tool calls may return complete HTML pages, archives, or command output.
-        The host can persist a large output and pass a stable reference here;
-        this handler does not apply a second limit or mutate that reference.
-
-        Args:
-            tool_results: Raw tool output keyed by provider tool-call ID.
-
-        Returns:
-            A copied mapping containing every complete tool result.
-        """
-        if not tool_results:
-            return {}
-        return {call_id: raw_value if isinstance(raw_value, ImageToolResult) else str(raw_value)
-                for call_id, raw_value in tool_results.items()}
 
     def compaction_request_preview(self) -> CompactionRequestPreview:
         """Build the exact compaction request parameters without sending them.
@@ -652,19 +733,23 @@ class ContextHandlerLinear(ContextHandler):
             generation = checkpoint_generation or uuid.uuid4().hex
             database = target.with_suffix(target.suffix + ".sqlite3")
             self._save_sqlite_rows(database)
-            data: Dict[str, Any] = {
-                "schema_version": 3,
+            data: JsonObject = {
                 "storage": "sqlite",
                 "database": database.name,
                 "checkpoint_generation": generation,
                 "compress_threshold": self.compress_threshold,
                 "round": self._round,
-                "abstract": compacted_to_dict(self.abstract),
+                "abstract": (
+                    context_item_to_dict(self.abstract)
+                    if self.abstract is not None
+                    else None
+                ),
                 "message_count": self.storage.count(database, "messages"),
                 "archive_count": self.storage.count(database, "archive"),
+                "tool_result_count": self.storage.count_tool_results(database),
             }
             if self.context_editing:
-                data["context_editing"] = dict(self.context_editing)
+                data["context_editing"] = cast(JsonValue, dict(self.context_editing))
             committed_graph = graph_checkpoint if graph_checkpoint is not None else self.graph_checkpoint
             if committed_graph:
                 data["graph_checkpoint"] = committed_graph
@@ -724,48 +809,68 @@ class ContextHandlerLinear(ContextHandler):
         try:
             if not isinstance(raw, dict):
                 raise ValueError("checkpoint must be an object")
-            compress_threshold = raw.get("compress_threshold", 262144)
+            pointer = cast(JsonObject, raw)
+            if not is_sqlite_context_pointer(pointer):
+                raise ValueError("checkpoint is not a linear context pointer")
+            compress_threshold = pointer.get("compress_threshold")
             if not isinstance(compress_threshold, int) or isinstance(compress_threshold, bool):
                 raise ValueError("compress_threshold must be an integer")
-            abstract = compacted_from_dict(raw.get("abstract"))
-            sqlite_checkpoint = raw.get("schema_version") == 3 and raw.get("storage") == "sqlite"
-            if sqlite_checkpoint:
-                page = self.storage.read_page(target)
-                messages = [context_from_dict(item) for item in page.rows]
-                archive: list[LLMContext] = []
-                database_name = raw.get("database")
-                if not isinstance(database_name, str):
-                    raise ValueError("checkpoint database must be a string")
-                database = target.with_name(database_name)
-                message_high_water = self.storage.max_timeline(database, "messages")
-                archive_high_water = self.storage.max_timeline(database, "archive")
-            else:
-                messages = [context_from_dict(m) for m in raw.get("messages", [])]
-                archive_raw = raw.get("archive", [])
-                if not isinstance(archive_raw, list):
-                    raise ValueError("archive must be a list")
-                archive = [context_from_dict(m) for m in archive_raw]
-                message_high_water = 0
-                archive_high_water = 0
-            # ``archive`` was introduced after the original linear format.
-            # Missing it is a valid legacy file, whose already-discarded raw
-            # history unfortunately cannot be reconstructed.
-            # Old context files do not contain ``round``. Recover their next
-            # timeline boundary from both retained and compacted history.
-            restored_timelines = [message.timeline for message in messages]
-            if abstract is not None:
-                restored_timelines.extend(abstract.source_timeline)
-            saved_round = raw.get("round", 0)
+            saved_round = pointer.get("round")
             if not isinstance(saved_round, int) or isinstance(saved_round, bool):
                 raise ValueError("round must be an integer")
+            database_name = pointer.get("database")
+            if not isinstance(database_name, str):
+                raise ValueError("checkpoint database must be a string")
+            database = target.with_name(database_name)
+            abstract_raw = pointer.get("abstract")
+            abstract: ContextSummaryItem | None
+            if abstract_raw is None:
+                abstract = None
+            else:
+                if not isinstance(abstract_raw, dict):
+                    raise ValueError("abstract must be an object or null")
+                decoded = context_item_from_dict(cast(JsonObject, abstract_raw))
+                if decoded.kind != "summary":
+                    raise ValueError("abstract must be a summary item")
+                abstract = cast(ContextSummaryItem, decoded)
+
+            page = self.storage.read_page(target)
+            messages = [context_item_from_dict(row) for row in page.rows]
+            result_ids = [
+                call.result_id.value
+                for item in messages
+                if item.kind == "assistant"
+                for call in cast(AssistantContextItem, item).tool_calls
+                if call.result_id is not None
+            ]
+            stored = self.storage.read_tool_results(database, result_ids)
+            tool_results: dict[str, ToolResultRecord] = {}
+            for result_id, payload in stored:
+                decoded_payload = json.loads(payload)
+                if not isinstance(decoded_payload, dict):
+                    raise ValueError("tool result payload must be an object")
+                record = tool_result_from_dict(cast(JsonObject, decoded_payload))
+                tool_results[result_id] = record
+            if set(result_ids) != set(tool_results):
+                # A dangling reference is a corrupt checkpoint, never an
+                # empty result the model could mistake for real output.
+                return False
+
+            restored_timelines = [item.timeline for item in messages]
+            if abstract is not None:
+                restored_timelines.append(abstract.timeline)
             restored_round = max([saved_round, *restored_timelines], default=0)
-            generation = raw.get("checkpoint_generation")
+            message_high_water = self.storage.max_timeline(database, "messages")
+            archive_high_water = self.storage.max_timeline(database, "archive")
+            generation = pointer.get("checkpoint_generation")
             if generation is not None and not isinstance(generation, str):
                 raise ValueError("checkpoint_generation must be a string")
-            graph_checkpoint = raw.get("graph_checkpoint")
+            graph_checkpoint = pointer.get("graph_checkpoint")
             if graph_checkpoint is not None and not isinstance(graph_checkpoint, str):
                 raise ValueError("graph_checkpoint must be a string")
-            editing = raw.get("context_editing", {})
+            editing = pointer.get("context_editing")
+            if editing is None:
+                editing = {}
             if not isinstance(editing, dict):
                 raise ValueError("context_editing must be an object")
 
@@ -774,7 +879,9 @@ class ContextHandlerLinear(ContextHandler):
             self.compress_threshold = compress_threshold
             self.abstract = abstract
             self.messages = messages
-            self.archive = archive
+            self.archive = []
+            self.tool_results = tool_results
+            self._persisted_result_ids = set(tool_results)
             self._round = restored_round
             self.checkpoint_generation = generation
             self.graph_checkpoint = graph_checkpoint
@@ -790,6 +897,10 @@ class ContextHandlerLinear(ContextHandler):
     def _save_sqlite_rows(self, database: Path) -> None:
         """Append changed context rows in one SQLite transaction.
 
+        New items, newly archived items and their referenced tool results
+        commit together, so a stored ``result_id`` can never be observed
+        without the result it points at.
+
         Args:
             database: Durable sidecar database for this context pointer.
 
@@ -798,19 +909,26 @@ class ContextHandlerLinear(ContextHandler):
         """
         new_messages = [item for item in self.messages if item.timeline > self._storage_message_high_water]
         new_archive = [item for item in self.archive if item.timeline > self._storage_archive_high_water]
+        new_results = [
+            record
+            for result_id, record in self.tool_results.items()
+            if result_id not in self._persisted_result_ids
+        ]
         self.storage.append_rows(
             database,
-            [(item.timeline, json.dumps(context_to_dict(item), ensure_ascii=False)) for item in new_messages],
-            [(item.timeline, json.dumps(context_to_dict(item), ensure_ascii=False)) for item in new_archive],
+            [(item.timeline, json.dumps(context_item_to_dict(item), ensure_ascii=False)) for item in new_messages],
+            [(item.timeline, json.dumps(context_item_to_dict(item), ensure_ascii=False)) for item in new_archive],
+            [(record.result_id.value, json.dumps(tool_result_to_dict(record), ensure_ascii=False)) for record in new_results],
         )
         if new_messages:
             self._storage_message_high_water = max(self._storage_message_high_water, max(item.timeline for item in new_messages))
         if new_archive:
             self._storage_archive_high_water = max(self._storage_archive_high_water, max(item.timeline for item in new_archive))
+        self._persisted_result_ids.update(record.result_id.value for record in new_results)
 
     def replace_active_context(
         self,
-        messages: list[Dict[str, Any]],
+        messages: list[JsonObject],
         *,
         database: Path,
         context_editing: Dict[str, object] | None = None,
@@ -821,7 +939,8 @@ class ContextHandlerLinear(ContextHandler):
         Renumbered timelines start above the archived and persisted high-water
         marks so an edited transcript can never collide with compaction
         history, and the in-memory handler is left consistent with the rows
-        that were just written.
+        that were just written. Item identities are preserved across the
+        renumbering; tool results are not touched.
 
         Args:
             messages: Serialized active entries in the new display order.
@@ -835,33 +954,20 @@ class ContextHandlerLinear(ContextHandler):
         archive_max = self.storage.max_timeline(database, "archive")
         message_max = self.storage.max_timeline(database, "messages")
         start = max(archive_max, message_max, self._round) + 1
-        normalized: list[Dict[str, Any]] = []
-        for offset, item in enumerate(messages):
-            value = dict(item)
-            value["timeline"] = start + offset
-            normalized.append(value)
+        normalized: list[ContextItem] = []
+        for offset, payload in enumerate(messages):
+            item = context_item_from_dict(payload)
+            normalized.append(replace(item, timeline=start + offset))
         self.storage.replace_active(
             database,
             [
-                (item["timeline"], json.dumps(item, ensure_ascii=False))
+                (item.timeline, json.dumps(context_item_to_dict(item), ensure_ascii=False))
                 for item in normalized
             ],
         )
-        self.messages = [context_from_dict(item) for item in normalized]
-        self._round = normalized[-1]["timeline"] if normalized else start
+        self.messages = normalized
+        self._round = normalized[-1].timeline if normalized else start
         self._storage_message_high_water = self._round
         if context_editing is not None:
             self.context_editing = dict(context_editing)
         return self._round
-
-    # -- serialization helpers ---------------------------------------------
-
-    @staticmethod
-    def _context_to_dict(ctx: LLMContext) -> Dict[str, Any]:
-        """Serialize one context entry for hosts and persistence."""
-        return context_to_dict(ctx)
-
-    @staticmethod
-    def _context_from_dict(data: Dict[str, Any]) -> LLMContext:
-        """Rebuild one context entry from its serialized payload."""
-        return context_from_dict(data)

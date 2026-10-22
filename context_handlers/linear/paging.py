@@ -7,8 +7,8 @@ from pathlib import Path
 
 from ..storage import ContextStorage, SQLiteContextStorage, is_sqlite_context_pointer
 from ..base import checkpoint_lock
-from ...llm_types import LLMContext
-from .codec import context_from_dict
+from ...llm_types import ContextItem
+from .codec import context_item_from_dict
 
 _CONTEXT_PAGE_SIZE = 200
 
@@ -20,26 +20,25 @@ def read_persisted_context_page(
     limit: int = _CONTEXT_PAGE_SIZE,
     include_archive: bool = False,
     storage: ContextStorage | None = None,
-) -> tuple[list[LLMContext], int | None, int]:
+) -> tuple[list[ContextItem], int | None, int]:
     """Read one reverse-timeline page without loading the full checkpoint.
 
     Args:
-        path: Context pointer JSON or legacy full-JSON checkpoint path.
+        path: Context pointer JSON naming the durable row store.
         before_timeline: Exclusive older-than timeline cursor, if supplied.
         limit: Maximum returned entries. Values are bounded to 200.
         include_archive: Include compacted transcript rows for a read-only
             history projection.  Keep this ``False`` when hydrating an Agent:
             archived rows must not be restored into its active model context.
         storage: Optional durable reader; defaults to the SQLite
-            implementation. Injecting it keeps the SQL boundary owned by one
-            component instead of being re-created at every call site.
+            implementation.
 
     Returns:
-        Chronological page entries, the next older cursor or ``None``, and
-        the persisted total message count.
+        Chronological page items, the next older cursor or ``None``, and the
+        persisted total message count.
 
     Raises:
-        ValueError: If the pointer is malformed or an entry is invalid.
+        ValueError: If the pointer is malformed or not a row-store pointer.
         OSError: If the checkpoint cannot be read.
     """
     target = Path(path)
@@ -49,25 +48,16 @@ def read_persisted_context_page(
         pointer = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(pointer, dict):
             raise ValueError("checkpoint must be an object")
+        if not is_sqlite_context_pointer(pointer):
+            raise ValueError("context paging requires a row-store checkpoint")
         bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
-        if is_sqlite_context_pointer(pointer):
-            page = (storage or SQLiteContextStorage()).read_page(
-                target,
-                before_timeline=before_timeline,
-                limit=bounded,
-                include_archive=include_archive,
-            )
-            return [context_from_dict(row) for row in page.rows], page.next_before, page.total
-        # Legacy compatibility is deliberately bounded for callers. Migration is
-        # the required route for large checkpoints because a JSON array is not
-        # randomly addressable.
-        entries_raw = pointer.get("messages", [])
-        if not isinstance(entries_raw, list):
-            raise ValueError("legacy checkpoint messages must be a list")
-        filtered = [item for item in entries_raw if isinstance(item, dict) and (before_timeline is None or item.get("timeline", 0) < before_timeline)]
-        selected = filtered[-bounded:]
-        next_cursor = selected[0].get("timeline") if len(filtered) > len(selected) and selected else None
-        return [context_from_dict(item) for item in selected], next_cursor, len(entries_raw)
+        page = (storage or SQLiteContextStorage()).read_page(
+            target,
+            before_timeline=before_timeline,
+            limit=bounded,
+            include_archive=include_archive,
+        )
+        return [context_item_from_dict(row) for row in page.rows], page.next_before, page.total
 
 
 def read_persisted_archive_page(
@@ -76,25 +66,21 @@ def read_persisted_archive_page(
     before_timeline: int | None = None,
     limit: int = 50,
     storage: ContextStorage | None = None,
-) -> tuple[list[LLMContext], int | None, bool]:
+) -> tuple[list[ContextItem], int | None, bool]:
     """Read one archive-only page without loading the active transcript.
 
-    Legacy full-JSON checkpoints are rejected: their archive is a plain array
-    with no random access, so serving it would require the read-all-then-slice
-    behavior this pager exists to avoid.
-
     Args:
-        path: Schema-3 SQLite context pointer.
+        path: Row-store context pointer.
         before_timeline: Exclusive older-than timeline cursor.
         limit: Maximum returned entries, bounded to 200.
         storage: Optional durable reader; defaults to the SQLite implementation.
 
     Returns:
-        Chronological archived entries, the next older cursor, and whether
+        Chronological archived items, the next older cursor, and whether
         another older page exists.
 
     Raises:
-        ValueError: If the checkpoint is legacy or malformed.
+        ValueError: If the checkpoint is malformed or not a row-store pointer.
         OSError: If the checkpoint or database cannot be read.
     """
     target = Path(path)
@@ -103,14 +89,14 @@ def read_persisted_archive_page(
         if not isinstance(pointer, dict):
             raise ValueError("checkpoint must be an object")
         if not is_sqlite_context_pointer(pointer):
-            raise ValueError("archive paging requires a schema-3 SQLite checkpoint")
+            raise ValueError("archive paging requires a row-store checkpoint")
         bounded = max(1, min(limit, _CONTEXT_PAGE_SIZE))
         page = (storage or SQLiteContextStorage()).read_archive_page(
             target,
             before_timeline=before_timeline,
             limit=bounded,
         )
-        return [context_from_dict(row) for row in page.rows], page.next_before, page.has_more
+        return [context_item_from_dict(row) for row in page.rows], page.next_before, page.has_more
 
 
 __all__ = ["read_persisted_context_page", "read_persisted_archive_page"]

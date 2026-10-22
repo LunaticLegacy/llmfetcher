@@ -50,7 +50,9 @@ class ContextCheckpointReplaceTests(unittest.TestCase):
             finally:
                 reader.join(5)
 
-            self.assertEqual(3, json.loads(path.read_text(encoding="utf-8"))["schema_version"])
+            pointer = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("sqlite", pointer["storage"])
+            self.assertNotIn("schema_version", pointer)
             self.assertIsNone(handler.last_save_error)
 
     def test_persistent_denial_is_reported_not_hidden(self) -> None:

@@ -17,13 +17,20 @@ layered on top of this structure, not a change to persistence.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, override
+from typing import Any, Dict, List, Optional, Sequence, Callable, Union, override
 
 from .base import ContextHandler
 from .linear import CompactionFetcher
 from .storage import ContextStorage
 from ..execution.control import ExecutionController
-from ..llm_types import LLMContext, LLMContextCompacted, LLMOutput, RequestMessage, TokenUsage
+from ..llm_types import (
+    AssistantTurnInput,
+    LLMContext,
+    LLMContextCompacted,
+    RequestMessage,
+    TokenUsage,
+    ToolResultInput,
+)
 from ..multimodal import UserMessage
 from ..usage_ledger import UsageRecord
 
@@ -66,26 +73,18 @@ class NullContext(ContextHandler):
     @override
     def add_assistant_message(
         self,
-        message: LLMOutput,
-        tool_results: Optional[Dict[str, str]] = None,
+        turn: AssistantTurnInput,
+        tool_results: Sequence[ToolResultInput] = (),
         *,
-        usage: Optional[Dict[str, int]] = None,
-        model_duration_ms: Optional[int] = None,
-        round_duration_ms: Optional[int] = None,
-        created_at: Optional[float] = None,
         controller: ExecutionController | None = None,
     ) -> None:
-        """Append an assistant turn and index it in the tree.
+        """Discard an assistant turn.
 
         Args:
-            message: The output produced by the LLM.
-            tool_results: Tool output keyed by provider tool-call ID.
-            usage: Primary model-call token usage for this durable turn.
-            model_duration_ms: Wall time spent generating this model output.
-            round_duration_ms: Whole round wall time, including tools.
-            created_at: Unix timestamp when this response completed.
-            controller: Optional cancellation source for the compaction this
-                call may trigger.
+            turn: The output produced by the LLM, with its calls, usage and
+                timing.
+            tool_results: Completed results for the calls in *turn*.
+            controller: Optional cancellation source.
         """
         return None
 

@@ -51,22 +51,23 @@ class PersistedArchivePage:
 
 
 def is_sqlite_context_pointer(pointer: Any) -> bool:
-    """Return whether a parsed checkpoint is a schema-3 SQLite pointer.
+    """Return whether a parsed checkpoint is a v2 SQLite pointer.
 
     This is the single place that recognizes the durable row-store format so
-    readers do not each re-implement the version/storage test.
+    readers do not each re-implement the storage test.
 
     Args:
         pointer: A parsed checkpoint object, or any value read from disk.
 
     Returns:
-        ``True`` only for a mapping declaring schema version 3 and the
-        ``sqlite`` storage marker.
+        ``True`` only for a mapping declaring the ``sqlite`` storage marker
+        without a ``schema_version`` key. A versioned pre-2.0 pointer is
+        deliberately rejected instead of migrated.
     """
     return (
         isinstance(pointer, dict)
-        and pointer.get("schema_version") == 3
         and pointer.get("storage") == "sqlite"
+        and "schema_version" not in pointer
     )
 
 

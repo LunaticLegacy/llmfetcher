@@ -18,6 +18,9 @@ class FakeContext:
             for index in range(count)
         ]
         self.carried = None
+        # The real handler exposes itself as its own linear surface; the
+        # image-budget retry path reads ``context_handler.linear``.
+        self.linear = self
 
     def build_messages(self):
         return self.messages

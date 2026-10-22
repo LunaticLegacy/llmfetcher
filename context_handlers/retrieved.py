@@ -18,9 +18,21 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from ..llm_types import LLMContext, LLMOutput, RequestMessage, Tool, ToolParameter, ToolSchema
+from ..llm_types import (
+    AssistantContextItem,
+    AssistantTurnInput,
+    ContextItem,
+    ContextSummaryItem,
+    LLMContext,
+    RequestMessage,
+    Tool,
+    ToolParameter,
+    ToolSchema,
+    ToolResultInput,
+    UserContextItem,
+)
 from ..multimodal import ImageReference, UserMessage, image_reference_markers
 from .base import ContextHandler
 from .linear import CompactionFetcher, ContextHandlerLinear
@@ -240,21 +252,14 @@ class RetrievedContextHandler(ContextHandler):
 
     def add_assistant_message(
         self,
-        message: LLMOutput,
-        tool_results: dict[str, str] | None = None,
+        turn: AssistantTurnInput,
+        tool_results: Sequence[ToolResultInput] = (),
         *,
-        usage: dict[str, int] | None = None,
-        model_duration_ms: int | None = None,
-        round_duration_ms: int | None = None,
-        created_at: float | None = None,
         controller: ExecutionController | None = None,
     ) -> None:
         self.linear.add_assistant_message(
-            message, tool_results,
-            usage=usage,
-            model_duration_ms=model_duration_ms,
-            round_duration_ms=round_duration_ms,
-            created_at=created_at,
+            turn,
+            tool_results,
             controller=controller,
         )
 
@@ -522,10 +527,7 @@ class RetrievedContextHandler(ContextHandler):
 
         abstract = self.linear.abstract
         if abstract is not None:
-            try:
-                parts.append(f"## Earlier Context (Compacted)\n\n{abstract.abstract_msg}")
-            except AttributeError:
-                pass
+            parts.append(f"## Earlier Context (Compacted)\n\n{abstract.abstract}")
 
         msgs = self.linear.messages
         if msgs:
@@ -703,17 +705,45 @@ class RetrievedContextHandler(ContextHandler):
             "tags": list(metadata["tags"]) if isinstance(metadata.get("tags"), list) else [],
         }
 
-    @staticmethod
-    def _render_context(message: LLMContext) -> "_RenderedMessage":
-        """Project one durable context entry onto the archival render shape."""
-        return _RenderedMessage(
-            role=message.role,
-            content=message.content,
-            images=tuple(message.images),
-            tool_calls=tuple(
-                (info.call.name, tuple(info.images)) for info in message.tool_calls
-            ),
-        )
+    def _render_context(self, item: ContextItem) -> "_RenderedMessage":
+        """Project one durable context item onto the archival render shape."""
+        match item.kind:
+            case "user":
+                user = cast(UserContextItem, item)
+                return _RenderedMessage(
+                    role="user",
+                    content=user.content,
+                    images=tuple(user.images),
+                    tool_calls=(),
+                )
+            case "assistant":
+                assistant = cast(AssistantContextItem, item)
+                tool_calls: list[tuple[str, tuple[ImageReference, ...]]] = []
+                for call in assistant.tool_calls:
+                    result = (
+                        self.linear.resolve_tool_result(call.result_id)
+                        if call.result_id is not None
+                        else None
+                    )
+                    tool_calls.append((
+                        call.name,
+                        tuple(result.images) if result is not None else (),
+                    ))
+                return _RenderedMessage(
+                    role="assistant",
+                    content=assistant.content,
+                    images=(),
+                    tool_calls=tuple(tool_calls),
+                )
+            case "summary":
+                summary = cast(ContextSummaryItem, item)
+                return _RenderedMessage(
+                    role="system",
+                    content=summary.abstract,
+                    images=(),
+                    tool_calls=(),
+                )
+        raise ValueError(f"unsupported context item kind: {item.kind!r}")
 
     @staticmethod
     def _render_request(message: RequestMessage) -> "_RenderedMessage":
