@@ -25,8 +25,6 @@ from .storage import ContextStorage
 from ..execution.control import ExecutionController
 from ..llm_types import (
     AssistantTurnInput,
-    LLMContext,
-    LLMContextCompacted,
     RequestMessage,
     TokenUsage,
     ToolResultInput,

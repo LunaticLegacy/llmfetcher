@@ -39,12 +39,12 @@ from ..llm_types import (
     AssistantContextItem,
     AssistantTurnInput,
     ContextItem,
-    ContextSummaryItem,
-    LLMContext,
-    LLMToolCall,
+    ContextItemId,
     RequestMessage,
-    ToolInfo,
+    ToolCallRecord,
+    ToolResultId,
     ToolResultInput,
+    ToolResultRecord,
     UserContextItem,
 )
 from ..execution.control import ExecutionController
@@ -135,7 +135,12 @@ class GraphContextHandler(ContextHandler):
         self._message_count = 0
         self._compaction_generation = 0              # incremented on compact()
         self._last_retrieved_gen = 0
-        self._pending: list[LLMContext] = []         # messages awaiting ingest
+        self._pending: list[ContextItem] = []        # items awaiting ingest
+        # Complete results the pending assistant items reference.  Graph
+        # extraction renders a bounded summary of these records, so useful
+        # file/command evidence reaches the prompt without the pending item
+        # embedding it.
+        self._pending_results: dict[str, ToolResultRecord] = {}
 
     @property
     def has_retrieved(self) -> bool:
@@ -261,11 +266,15 @@ class GraphContextHandler(ContextHandler):
         if not retrieval_query:
             retrieval_query = self._latest_user_query()
         timeline = self.linear._round + 1
-        self._pending.append(LLMContext(
-            role="user",
+        self._pending.append(UserContextItem(
+            item_id=ContextItemId.new(),
             timeline=timeline,
             content=str(message),
-            images=validate_images(message.images) if isinstance(message, UserMessage) else [],
+            images=(
+                tuple(validate_images(message.images))
+                if isinstance(message, UserMessage)
+                else ()
+            ),
         ))
         self.linear.add_user_message(message)
         self._message_count += 1
@@ -283,36 +292,41 @@ class GraphContextHandler(ContextHandler):
         # Snapshot before the linear handler may compact the history.
         prev = (len(self.linear.messages), self.linear.abstract is not None)
         timeline = self.linear._round + 1
-        # Keep tool results on the graph-ingest record as well as on the
-        # linear transcript.  GraphBuilder renders a bounded summary of these
-        # records, so useful file/command evidence is available to extraction
-        # without copying unbounded tool output into the graph prompt.
+        # Keep tool results referenced by the graph-ingest record as well as
+        # on the linear transcript.  GraphBuilder renders a bounded summary
+        # of these records, so useful file/command evidence is available to
+        # extraction without copying unbounded tool output into the graph
+        # prompt.
         results_by_call = {result.call_id: result for result in tool_results}
-        pending_tool_calls: list[ToolInfo] = []
+        pending_calls: list[ToolCallRecord] = []
         for call in turn.tool_calls:
             result = results_by_call.get(call.call_id)
-            pending_tool_calls.append(ToolInfo(
-                call=LLMToolCall(
-                    name=call.name,
-                    arguments=call.arguments,
-                    call_id=call.call_id,
-                ),
-                result=result.output if result is not None else None,
-                images=list(result.images) if result is not None else [],
+            result_id: ToolResultId | None = None
+            if result is not None:
+                result_id = ToolResultId.new()
+                self._pending_results[result_id.value] = ToolResultRecord(
+                    result_id=result_id,
+                    call_id=result.call_id,
+                    tool_name=result.tool_name,
+                    output=result.output,
+                    images=tuple(result.images),
+                    ok=result.ok,
+                    duration_ms=result.duration_ms,
+                    created_at=result.created_at,
+                )
+            pending_calls.append(ToolCallRecord(
+                call_id=call.call_id,
+                name=call.name,
+                arguments=call.arguments,
+                result_id=result_id,
             ))
-        self._pending.append(LLMContext(
-            role="assistant",
+        self._pending.append(AssistantContextItem(
+            item_id=ContextItemId.new(),
             timeline=timeline,
             content=turn.content or "",
-            content_reasoning=turn.reasoning or "",
-            tool_calls=pending_tool_calls,
-            usage={
-                "input": turn.usage.input_tokens,
-                "cached": turn.usage.cached_tokens,
-                "output": turn.usage.output_tokens,
-                "reasoning": turn.usage.reasoning_tokens,
-                "total": turn.usage.total_tokens,
-            },
+            reasoning=turn.reasoning or "",
+            tool_calls=tuple(pending_calls),
+            usage=turn.usage,
             model_duration_ms=turn.model_duration_ms,
             round_duration_ms=turn.round_duration_ms,
             created_at=turn.created_at,
@@ -433,7 +447,7 @@ class GraphContextHandler(ContextHandler):
         ordering without duplicating any linear entry.
         """
         current_timeline = next(
-            (item.timeline for item in reversed(self._pending) if item.role == "user"),
+            (item.timeline for item in reversed(self._pending) if item.kind == "user"),
             None,
         )
         entries = list(self.linear.get_prev_messages())
@@ -524,6 +538,8 @@ class GraphContextHandler(ContextHandler):
             "abstract": copy.deepcopy(self.linear.abstract),
             "messages": copy.deepcopy(self.linear.messages),
             "archive": copy.deepcopy(self.linear.archive),
+            "tool_results": dict(self.linear.tool_results),
+            "persisted_result_ids": set(self.linear._persisted_result_ids),
             "round": self.linear._round,
             "pending_resume": self.linear._pending_resume,
             "checkpoint_generation": self.linear.checkpoint_generation,
@@ -584,58 +600,15 @@ class GraphContextHandler(ContextHandler):
 
     # -- internal helpers --------------------------------------------------
 
-    def _archive_records(self) -> list[LLMContext]:
-        """Project archived context items onto the archive retriever's shape.
+    def _archive_records(self) -> list[ContextItem]:
+        """Return the archived context items the linear handler owns.
 
         The durable archive holds typed items whose tool calls carry result
-        references; the lexical retriever reads complete records, so results
-        are resolved here. A dangling reference raises instead of shrinking
-        the evidence silently.
+        references only. Archive retrieval resolves those references through
+        the linear handler's store, so a dangling reference raises instead of
+        shrinking the evidence silently.
         """
-        records: list[LLMContext] = []
-        for item in self.linear.archive:
-            match item.kind:
-                case "user":
-                    user = cast(UserContextItem, item)
-                    records.append(LLMContext(
-                        role="user",
-                        timeline=user.timeline,
-                        content=user.content,
-                        images=list(user.images),
-                    ))
-                case "assistant":
-                    assistant = cast(AssistantContextItem, item)
-                    tool_calls: list[ToolInfo] = []
-                    for call in assistant.tool_calls:
-                        result = (
-                            self.linear.resolve_tool_result(call.result_id)
-                            if call.result_id is not None
-                            else None
-                        )
-                        tool_calls.append(ToolInfo(
-                            call=LLMToolCall(
-                                name=call.name,
-                                arguments=call.arguments,
-                                call_id=call.call_id,
-                            ),
-                            result=result.output if result is not None else None,
-                            images=list(result.images) if result is not None else [],
-                        ))
-                    records.append(LLMContext(
-                        role="assistant",
-                        timeline=assistant.timeline,
-                        content=assistant.content,
-                        content_reasoning=assistant.reasoning,
-                        tool_calls=tool_calls,
-                    ))
-                case "summary":
-                    summary = cast(ContextSummaryItem, item)
-                    records.append(LLMContext(
-                        role="system",
-                        timeline=summary.timeline,
-                        content=summary.abstract,
-                    ))
-        return records
+        return list(self.linear.archive)
 
     def _retrieve_archive_evidence(self, query: str) -> str:
         """Render small, provenance-labelled raw evidence for a new query.
@@ -648,6 +621,7 @@ class GraphContextHandler(ContextHandler):
         result = retrieve_archive(
             query,
             self._archive_records(),
+            store=self.linear,
             config=ArchiveRetrievalConfig(max_results=3, max_chars_per_record=1_000),
         )
         if not result.evidence:
@@ -699,8 +673,9 @@ class GraphContextHandler(ContextHandler):
         return ""
 
     def _flush_pending(self) -> None:
-        """Ingest buffered messages into the graph and clear the buffer."""
+        """Ingest buffered items into the graph and clear the buffer."""
         if not self._pending:
             return
-        self.builder.ingest(self._pending)
+        self.builder.ingest(self._pending, self._pending_results)
         self._pending = []
+        self._pending_results = {}

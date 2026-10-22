@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol
+from typing import Any, Mapping, Optional, Protocol
 
 from .extraction_prompts import (
     EXTRACTION_SYSTEM_PROMPT_COMPACT,
@@ -24,6 +24,7 @@ from .extraction_prompts import (
 )
 from .graph_store import GraphStore
 from ..usage_ledger import UsageRecord, copy_usage, drain_records
+from ..llm_types import ContextItem, ToolResultRecord
 from ..multimodal import image_reference_markers
 
 
@@ -160,13 +161,20 @@ class GraphBuilder:
 
     # -- public API --------------------------------------------------------
 
-    def ingest(self, messages: list[Any]) -> IngestStats:
-        """Extract and upsert entities/relations from an LLMContext list.
+    def ingest(
+        self,
+        messages: list[ContextItem],
+        results: Mapping[str, ToolResultRecord],
+    ) -> IngestStats:
+        """Extract and upsert entities/relations from a context-item list.
 
         Args:
-            messages: List of LLMContext-like objects (``role``, ``content``,
-                ``timeline``). Eligible tool results are included as bounded
-                evidence; navigation and graph-maintenance tools are skipped.
+            messages: Ordered context items awaiting ingest. Eligible tool
+                results are included as bounded evidence; navigation and
+                graph-maintenance tools are skipped.
+            results: Resolver for every ``result_id`` the assistant items
+                carry, keyed by ``ToolResultId.value``. A missing entry
+                raises instead of rendering an empty result.
 
         Returns:
             IngestStats describing what happened.
@@ -178,14 +186,12 @@ class GraphBuilder:
         # fallback has no notion of evidence quality and would turn every
         # path/import in a shell transcript into a graph node.
         transcript = self._render_transcript(
-            messages, include_tool_evidence=self.fetcher is not None,
+            messages, results, include_tool_evidence=self.fetcher is not None,
         )
         if not transcript.strip():
             return IngestStats()
 
-        timeline = max(
-            (getattr(m, "timeline", 0) or 0) for m in messages
-        )
+        timeline = max(item.timeline for item in messages)
 
         extraction: Optional[dict[str, Any]] = None
         stats = IngestStats()
@@ -219,7 +225,9 @@ class GraphBuilder:
 
         if extraction is None:
             extraction = extract_regex(
-                self._render_transcript(messages, include_tool_evidence=False)
+                self._render_transcript(
+                    messages, results, include_tool_evidence=False,
+                )
             )
             stats.fallback_regex = True
 
@@ -230,7 +238,8 @@ class GraphBuilder:
 
     def _render_transcript(
         self,
-        messages: list[Any],
+        messages: list[ContextItem],
+        results: Mapping[str, ToolResultRecord],
         *,
         include_tool_evidence: bool = True,
     ) -> str:
@@ -241,42 +250,55 @@ class GraphBuilder:
         a compact representation here while retaining a hard transcript size
         bound.  The full tool result remains in the linear context; this is
         only an extraction view.
+
+        Args:
+            messages: Context items awaiting extraction, oldest first.
+            results: Resolver for every ``result_id`` an assistant item
+                carries, keyed by ``ToolResultId.value``.
+            include_tool_evidence: Whether tool calls and their results are
+                rendered at all.
+
+        Returns:
+            The bounded transcript text, newest blocks last.
+
+        Raises:
+            KeyError: If an assistant item references a result that is not
+                in *results*.
         """
         parts: list[str] = []
         used = 0
         for m in reversed(messages):
-            role = getattr(m, "role", "")
-            content = getattr(m, "content", "") or ""
-            markers = "\n".join(image_reference_markers(getattr(m, "images", None)))
+            if m.kind not in ("user", "assistant"):
+                continue
+            role = "user" if m.kind == "user" else "assistant"
+            content = m.content
+            markers = "\n".join(
+                image_reference_markers(m.images) if m.kind == "user" else ()
+            )
             if markers:
                 # An image-only turn still carries durable provenance; keep it
                 # in the transcript instead of dropping the whole message.
                 content = f"{content.strip()}\n{markers}".strip()
-            if role not in ("user", "assistant"):
-                continue
             label = "User" if role == "user" else "Assistant"
             sections = []
             if content.strip():
                 sections.append(content.strip())
-            if not include_tool_evidence:
-                tool_infos = []
-            else:
-                tool_infos = getattr(m, "tool_calls", []) or []
-            for tool_info in tool_infos:
-                call = getattr(tool_info, "call", None)
-                name = str(getattr(call, "name", "tool"))
-                if not _tool_evidence_allowed(name):
-                    continue
-                arguments = getattr(call, "arguments", {}) or {}
-                result = str(getattr(tool_info, "result", "") or "")
-                # Keep tool evidence bounded per call.  The outer transcript
-                # bound still applies after this compact rendering.
-                if len(result) > 4_000:
-                    result = result[:4_000] + "\n...[tool output truncated]"
-                sections.append(
-                    f"[Tool: {name}]\nArguments: {json.dumps(arguments, ensure_ascii=False)}\n"
-                    f"Result:\n{result}"
-                )
+            if include_tool_evidence and m.kind == "assistant":
+                for call in m.tool_calls:
+                    if not _tool_evidence_allowed(call.name):
+                        continue
+                    result = ""
+                    if call.result_id is not None:
+                        result = results[call.result_id.value].output
+                    # Keep tool evidence bounded per call.  The outer transcript
+                    # bound still applies after this compact rendering.
+                    if len(result) > 4_000:
+                        result = result[:4_000] + "\n...[tool output truncated]"
+                    sections.append(
+                        f"[Tool: {call.name}]\n"
+                        f"Arguments: {json.dumps(call.arguments, ensure_ascii=False)}\n"
+                        f"Result:\n{result}"
+                    )
             if not sections:
                 continue
             block = f"## {label}\n\n" + "\n\n".join(sections)

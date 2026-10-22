@@ -2,12 +2,12 @@
 
 History is kept verbatim until compaction is triggered (by exceeding
 ``max_context_threshold``), at which point active messages are replaced with a
-single compacted abstract (``LLMContextCompacted``). The raw messages are
-retained in ``archive`` as an append-only persistence record.
+single ``ContextSummaryItem``. The raw messages are retained in ``archive`` as
+an append-only persistence record.
 
 This module owns only the stateful orchestration. Serialization lives in
-``codec.py``, compaction planning in ``compaction.py``, message rendering in
-``rendering.py``, durable row access in ``storage.py`` and bounded paging in
+``codec.py``, compaction planning in ``compaction.py``, message assembly in
+``assembly.py``, durable row access in ``storage.py`` and bounded paging in
 ``paging.py``.
 """
 
@@ -65,7 +65,6 @@ from .compaction import (
     estimate_context_size,
     parse_compacted_abstract,
 )
-from .rendering import render_messages
 
 
 class ContextHandlerLinear(ContextHandler):
@@ -73,7 +72,7 @@ class ContextHandlerLinear(ContextHandler):
 
     History is kept verbatim until compaction is triggered (by exceeding
     *max_context_threshold*), at which point active messages are replaced
-    with a single compacted abstract (``LLMContextCompacted``).  The raw
+    with a single ``ContextSummaryItem``.  The raw
     messages are retained in ``archive`` as an append-only persistence
     record; they are deliberately not sent on normal model requests.
 
@@ -372,7 +371,7 @@ class ContextHandlerLinear(ContextHandler):
 
         Sends the current messages to the LLM with the compaction
         schema prompt, parses the response, and replaces the summarised
-        messages with the compacted ``LLMContextCompacted`` (stored in
+        messages with the compacted ``ContextSummaryItem`` (stored in
         ``self.abstract``).
 
         Args:

@@ -178,25 +178,35 @@ class NativeVisionTests(unittest.TestCase):
             retrieval_trigger='manual',
         )
         handler.add_user_message(UserMessage('Inspect', [REF]))
-        self.assertEqual(handler._pending[0].images, [REF])
+        self.assertEqual(handler._pending[0].images, (REF,))
         self.assertEqual(handler.linear.messages[0].images, (REF,))
 
     def test_graph_builder_keeps_image_only_turn_reachable(self):
         from llmfetcher.graph_memory.builder import GraphBuilder
         from llmfetcher.graph_memory.graph_store import GraphStore
-        from llmfetcher.llm_types import LLMContext
+        from llmfetcher.llm_types import ContextItemId, UserContextItem
         builder = GraphBuilder(GraphStore(), fetcher=None)
         transcript = builder._render_transcript([
-            LLMContext(role='user', timeline=1, content='', images=[REF])
-        ])
+            UserContextItem(
+                item_id=ContextItemId('item-1'),
+                timeline=1,
+                content='',
+                images=(REF,),
+            )
+        ], {})
         self.assertIn('img_test', transcript)
         self.assertNotIn(DATA, transcript)
 
     def test_archive_retrieval_surfaces_reference_markers(self):
         from llmfetcher.context_handlers.archive_retrieval import retrieve_archive
-        from llmfetcher.llm_types import LLMContext
-        record = LLMContext(role='user', timeline=2, content='', images=[REF])
-        result = retrieve_archive('img_test', [record])
+        from llmfetcher.llm_types import ContextItemId, UserContextItem
+        record = UserContextItem(
+            item_id=ContextItemId('item-2'),
+            timeline=2,
+            content='',
+            images=(REF,),
+        )
+        result = retrieve_archive('img_test', [record], store=ContextHandlerLinear(MagicMock()))
         self.assertTrue(result.evidence)
         self.assertIn('img_test', result.evidence[0].text)
         self.assertNotIn(DATA, result.evidence[0].text)

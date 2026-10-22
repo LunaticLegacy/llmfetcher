@@ -5,7 +5,7 @@ the transcript state and delegates each concern to a sibling module:
 
 - ``codec.py`` — serialization between row payloads and context models
 - ``compaction.py`` — compaction prompt, request planning and abstract parsing
-- ``rendering.py`` — provider-neutral rendering of entries into request messages
+- ``assembly.py`` — provider-neutral rendering of items and resolved results
 - ``paging.py`` — bounded reverse-timeline reads over a persisted checkpoint
 
 Importing ``llmfetcher.context_handlers.linear`` keeps the historical module
@@ -36,7 +36,6 @@ from .compaction import (
 )
 from .handler import ContextHandlerLinear
 from .paging import read_persisted_archive_page, read_persisted_context_page
-from .rendering import render_messages
 
 __all__ = [
     "AssembledContext",
@@ -55,5 +54,4 @@ __all__ = [
     "context_item_from_dict",
     "tool_result_to_dict",
     "tool_result_from_dict",
-    "render_messages",
 ]

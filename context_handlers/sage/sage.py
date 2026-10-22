@@ -13,25 +13,33 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Callable, Union, override
+from typing import Any, Dict, List, Optional, Sequence, override
 from uuid import uuid4, UUID
 
 from ..base import ContextHandler
 from ..composer import ContextBlock, ContextPosition, ContextSnapshot
-from ..linear import render_messages
+from ..linear.assembly import ContextAssembler
+from ..linear.codec import (
+    context_item_from_dict,
+    context_item_to_dict,
+    tool_result_from_dict,
+    tool_result_to_dict,
+)
 from .compaction import SageCompactionFetcher, build_sage_compaction_request, parse_sage_summary
 from ..storage import ContextStorage, SQLiteContextStorage
-from ..linear.codec import context_from_dict, context_to_dict
 from ...execution.control import ExecutionController
 from ...llm_types import (
+    AssistantContextItem,
     AssistantTurnInput,
-    LLMContext,
-    LLMContextCompacted,
-    LLMToolCall,
+    ContextItem,
+    ContextItemId,
+    ContextSummaryItem,
     RequestMessage,
-    TokenUsage,
-    ToolInfo,
+    ToolCallRecord,
+    ToolResultId,
     ToolResultInput,
+    ToolResultRecord,
+    UserContextItem,
 )
 from ...multimodal import UserMessage, validate_images
 
@@ -76,7 +84,11 @@ class SageContext(ContextHandler):
         self.keep_recent_tokens = keep_recent_tokens
 
         # storage the raw info.
-        self.raw_contexts_info: List[Union[LLMContext, LLMContextCompacted]] = []
+        self.raw_contexts_info: list[ContextItem] = []
+        # Complete tool results addressed by the raw assistant items.  The
+        # transcript holds only a ``ToolResultId`` reference; resolution goes
+        # through :meth:`resolve_tool_result`, which fails on a dangling id.
+        self.tool_results: dict[str, ToolResultRecord] = {}
         self.timeline: int = 0
 
         # Worktree related, and history related thing.
@@ -121,11 +133,15 @@ class SageContext(ContextHandler):
         """
         # A plain string carries no image references; a UserMessage does, and
         # they are preserved verbatim.
-        self.raw_contexts_info.append(LLMContext(
-            role="user",
+        self.raw_contexts_info.append(UserContextItem(
+            item_id=ContextItemId.new(),
             timeline=self.timeline,
             content=str(message),
-            images=validate_images(message.images) if isinstance(message, UserMessage) else [],
+            images=(
+                tuple(validate_images(message.images))
+                if isinstance(message, UserMessage)
+                else ()
+            ),
         ))
         self._pending_context_id_list.append(self.timeline)
         target_worktree: SageWorkTreeBranch = self.current_worktree_stack[-1]
@@ -152,37 +168,54 @@ class SageContext(ContextHandler):
         """
         # Pair every requested tool call with the result it produced, so the
         # entry can still render a tool feedback turn later.
-        results_by_call = {result.call_id: result for result in tool_results}
+        results_by_call: dict[str, ToolResultInput] = {}
+        for result in tool_results:
+            if result.call_id in results_by_call:
+                raise ValueError(
+                    f"duplicate tool result for call_id {result.call_id!r}"
+                )
+            results_by_call[result.call_id] = result
+        unmatched = set(results_by_call) - {call.call_id for call in turn.tool_calls}
+        if unmatched:
+            raise ValueError(
+                "tool results answer no call in this turn: "
+                f"{sorted(unmatched)!r}"
+            )
 
-        # Extract tool calls.
-        tool_calls: List[ToolInfo] = []
+        # Store every complete result outside the transcript and keep only its
+        # reference on the call, so a missing result can never read as empty.
+        tool_calls: list[ToolCallRecord] = []
         for call in turn.tool_calls:
             result = results_by_call.get(call.call_id)
-            tool_calls.append(ToolInfo(
-                call=LLMToolCall(
-                    name=call.name,
-                    arguments=call.arguments,
-                    call_id=call.call_id,
-                ),
-                result=result.output if result is not None else None,
-                images=list(result.images) if result is not None else [],
+            result_id: ToolResultId | None = None
+            if result is not None:
+                result_id = ToolResultId.new()
+                self.tool_results[result_id.value] = ToolResultRecord(
+                    result_id=result_id,
+                    call_id=result.call_id,
+                    tool_name=result.tool_name,
+                    output=result.output,
+                    images=tuple(result.images),
+                    ok=result.ok,
+                    duration_ms=result.duration_ms,
+                    created_at=result.created_at,
+                )
+            tool_calls.append(ToolCallRecord(
+                call_id=call.call_id,
+                name=call.name,
+                arguments=call.arguments,
+                result_id=result_id,
             ))
         # Maybe I should make the long tool calls became a series of abstracted information,
         # instead of one of ...?
 
-        self.raw_contexts_info.append(LLMContext(
-            role="assistant",
+        self.raw_contexts_info.append(AssistantContextItem(
+            item_id=ContextItemId.new(),
             timeline=self.timeline,
             content=turn.content,
-            content_reasoning=turn.reasoning,
-            tool_calls=tool_calls,
-            usage={
-                "input": turn.usage.input_tokens,
-                "cached": turn.usage.cached_tokens,
-                "output": turn.usage.output_tokens,
-                "reasoning": turn.usage.reasoning_tokens,
-                "total": turn.usage.total_tokens,
-            },
+            reasoning=turn.reasoning,
+            tool_calls=tuple(tool_calls),
+            usage=turn.usage,
             model_duration_ms=turn.model_duration_ms,
             round_duration_ms=turn.round_duration_ms,
             created_at=turn.created_at,
@@ -205,6 +238,24 @@ class SageContext(ContextHandler):
         if self._estimate_context_size() > self.max_context_threshold:
             self.compact(controller=controller)
 
+    def resolve_tool_result(self, result_id: ToolResultId) -> ToolResultRecord:
+        """Return the stored result a durable tool call references.
+
+        Args:
+            result_id: Reference carried by an assistant tool call.
+
+        Returns:
+            The complete stored result record.
+
+        Raises:
+            KeyError: When no result was stored for this reference.
+        """
+        try:
+            return self.tool_results[result_id.value]
+        except KeyError:
+            raise KeyError(
+                f"no stored tool result for {result_id.value!r}"
+            ) from None
 
     @override
     def build_messages(self, *, system_prompt: str | None = None) -> List[RequestMessage]:
@@ -303,7 +354,11 @@ class SageContext(ContextHandler):
             if summary_id is not None and summary_id not in seen and summary_id in self.summaries:
                 rendered.append(RequestMessage(
                     role="system",
-                    content=f"<context_abstract>\n{self.summaries[summary_id]}\n</context_abstract>",
+                    content=(
+                        f"<context_abstract>\n"
+                        f"{self.summaries[summary_id].abstract}\n"
+                        f"</context_abstract>"
+                    ),
                 ))
                 seen.add(summary_id)
         return rendered
@@ -321,22 +376,27 @@ class SageContext(ContextHandler):
         """Return the latest committed assistant turn, if one exists."""
         active = set(self.activate_context_id_list)
         for item in reversed(self.raw_contexts_info):
-            if item.role == "assistant" and item.timeline in active:
+            if item.kind == "assistant" and item.timeline in active:
                 return [item.timeline]
         return []
 
-    @staticmethod
     def _render_context_ids(
+        self,
         context_ids: list[int],
-        by_timeline: dict[int, LLMContext | LLMContextCompacted],
+        by_timeline: dict[int, ContextItem],
     ) -> list[RequestMessage]:
-        """Render selected context records in stable timeline order."""
+        """Render selected context items in stable timeline order."""
         selected = [
             by_timeline[context_id]
             for context_id in context_ids
             if context_id in by_timeline
         ]
-        return render_messages(selected, pending_resume=False)
+        assembled = ContextAssembler(self).assemble(
+            selected,
+            placement=self.tool_result_placement,
+            pending_resume=False,
+        )
+        return list(assembled.messages)
 
     def _render_worktree_information(self) -> RequestMessage | None:
         """Render branch descriptions and status for the active stack."""
@@ -384,7 +444,7 @@ class SageContext(ContextHandler):
         active = [i for i in self.activate_context_id_list if i not in self._pending_context_id_list]
         if not active:
             return False
-        by_timeline = {item.timeline: item for item in self.raw_contexts_info if isinstance(item, LLMContext)}
+        by_timeline = {item.timeline: item for item in self.raw_contexts_info}
         entries = self._render_branch_summaries()
         entries.extend(self._render_context_ids(active, by_timeline))
         if not entries:
@@ -416,9 +476,25 @@ class SageContext(ContextHandler):
         abstract = parse_sage_summary(result.content)
         if not abstract:
             return False
+        # The summary references exactly the entries it replaces, so a reader
+        # can still audit which transcript range it stands in for.
+        archived_items = [by_timeline[context_id] for context_id in archived_ids]
         summary_id = self._next_summary_id
         self._next_summary_id -= 1
-        self.summaries[summary_id] = abstract
+        self.summaries[summary_id] = ContextSummaryItem(
+            item_id=ContextItemId.new(),
+            timeline=summary_id,
+            abstract=abstract,
+            source_item_ids=tuple(item.item_id for item in archived_items),
+            source_timeline=tuple(item.timeline for item in archived_items),
+            source_result_ids=tuple(
+                call.result_id
+                for item in archived_items
+                if item.kind == "assistant"
+                for call in item.tool_calls
+                if call.result_id is not None
+            ),
+        )
         current = self.current_worktree_stack[-1]
         current.summary_context_id = summary_id
         current.holding_context_ids = [i for i in current.holding_context_ids if i not in archived_ids]
@@ -455,9 +531,23 @@ class SageContext(ContextHandler):
             generation = checkpoint_generation or uuid4().hex
             database = target.with_suffix(target.suffix + ".sqlite3")
             state_name = f"{target.name}.sage-state.{generation}.json"
+            # Results commit before the transcript that references them: an
+            # orphan result is harmless, a dangling reference is not.
+            self.storage.append_rows(
+                database,
+                (),
+                (),
+                [
+                    (
+                        result_id,
+                        json.dumps(tool_result_to_dict(record), ensure_ascii=False),
+                    )
+                    for result_id, record in self.tool_results.items()
+                ],
+            )
             self.storage.replace_active(database, [
-                (item.timeline, json.dumps(context_to_dict(item), ensure_ascii=False))
-                for item in self.raw_contexts_info if isinstance(item, LLMContext)
+                (item.timeline, json.dumps(context_item_to_dict(item), ensure_ascii=False))
+                for item in self.raw_contexts_info
             ])
             state = self._state_to_dict()
             state.update({"schema_version": 1, "checkpoint_generation": generation,
@@ -483,13 +573,12 @@ class SageContext(ContextHandler):
             self.last_save_error = exc
             return False
     def _estimate_context_size(self) -> int:
-        by_timeline = {item.timeline: item for item in self.raw_contexts_info if isinstance(item, LLMContext)}
         return sum(len(message.content or "") for message in self.build_messages())
 
     def compaction_request_preview(self):
         """Build Sage's local compaction request without provider I/O."""
         active = [i for i in self.activate_context_id_list if i not in self._pending_context_id_list]
-        by_timeline = {item.timeline: item for item in self.raw_contexts_info if isinstance(item, LLMContext)}
+        by_timeline = {item.timeline: item for item in self.raw_contexts_info}
         entries = self._render_branch_summaries()
         entries.extend(self._render_context_ids(active, by_timeline))
         branch_path = "\n".join(
@@ -587,8 +676,27 @@ class SageContext(ContextHandler):
             if not isinstance(state_name, str) or Path(state_name).name != state_name:
                 raise ValueError("invalid Sage state reference")
             state = json.loads(target.with_name(state_name).read_text(encoding="utf-8"))
-            rows = self.storage.read_rows(target.with_name(database_name))
-            contexts = [context_from_dict(json.loads(payload)) for _, payload in rows]
+            database = target.with_name(database_name)
+            rows = self.storage.read_rows(database)
+            contexts = [context_item_from_dict(json.loads(payload)) for _, payload in rows]
+            result_ids = [
+                call.result_id.value
+                for item in contexts
+                if item.kind == "assistant"
+                for call in item.tool_calls
+                if call.result_id is not None
+            ]
+            stored = self.storage.read_tool_results(database, result_ids)
+            tool_results: dict[str, ToolResultRecord] = {}
+            for result_id, payload in stored:
+                decoded = json.loads(payload)
+                if not isinstance(decoded, dict):
+                    raise ValueError("Sage tool result payload must be an object")
+                tool_results[result_id] = tool_result_from_dict(decoded)
+            if set(result_ids) != set(tool_results):
+                # A dangling reference is a corrupt checkpoint, never an
+                # empty result the model could mistake for real output.
+                raise ValueError("Sage checkpoint references a missing tool result")
             restored = self._state_from_dict(state, contexts)
             graph_name = manifest.get("graph_checkpoint")
             if graph_name:
@@ -602,6 +710,7 @@ class SageContext(ContextHandler):
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             return False
         self.raw_contexts_info = restored["contexts"]
+        self.tool_results = tool_results
         self.timeline = restored["timeline"]
         self.worktree_dict = restored["worktree_dict"]
         self.worktree_root_branch = restored["root_branch"]
@@ -622,6 +731,7 @@ class SageContext(ContextHandler):
             ``True`` once the composed handler has reset.
         """
         self.raw_contexts_info.clear()
+        self.tool_results.clear()
         self.timeline = 0
         self.activate_context_id_list.clear()
         self._pending_context_id_list.clear()
@@ -681,14 +791,17 @@ class SageContext(ContextHandler):
             "active_context_id_list": list(self.activate_context_id_list),
             "pending_context_id_list": list(self._pending_context_id_list),
             "timeline": self.timeline,
-            "summaries": {str(key): value for key, value in self.summaries.items()},
+            "summaries": {
+                str(key): context_item_to_dict(value)
+                for key, value in self.summaries.items()
+            },
             "next_summary_id": self._next_summary_id,
         }
 
     @staticmethod
     def _state_from_dict(
         state: dict[str, Any],
-        contexts: list[LLMContext],
+        contexts: list[ContextItem],
     ) -> dict[str, Any]:
         """Validate and rebuild state before mutating the live handler."""
         raw_branches = state.get("branches")
@@ -721,6 +834,14 @@ class SageContext(ContextHandler):
         for branch in branches.values():
             if not set(branch.holding_context_ids).issubset(context_ids):
                 raise ValueError("invalid branch context references")
+        summaries: dict[int, ContextSummaryItem] = {}
+        for key, value in (state.get("summaries") or {}).items():
+            if not isinstance(value, dict):
+                raise ValueError("Sage summary payload must be an object")
+            summary = context_item_from_dict(value)
+            if summary.kind != "summary":
+                raise ValueError("Sage summary payload must be a summary item")
+            summaries[int(key)] = summary
         return {
             "contexts": contexts,
             "timeline": max([int(state.get("timeline", 0)), *(value + 1 for value in context_ids)], default=0),
@@ -729,7 +850,7 @@ class SageContext(ContextHandler):
             "stack": [branches[value] for value in stack_ids],
             "active_ids": active_ids,
             "pending_ids": pending_ids,
-            "summaries": {int(key): str(value) for key, value in (state.get("summaries") or {}).items()},
+            "summaries": summaries,
             "next_summary_id": int(state.get("next_summary_id", -1)),
         }
 

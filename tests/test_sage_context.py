@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from llmfetcher.context_handlers.sage import SageContext, create_sage_tools
-from llmfetcher.llm_types import AssistantTurnInput, LLMOutput, TokenUsage
+from llmfetcher.llm_types import (
+    AssistantContextItem,
+    AssistantTurnInput,
+    LLMOutput,
+    TokenUsage,
+    ToolCallInput,
+    ToolResultInput,
+)
 
 
 class _Compactor:
@@ -69,7 +78,13 @@ class SageContextTests(unittest.TestCase):
         sage.add_assistant_message(_assistant("hi"))
         self.assertTrue(sage.compact())
         self.assertEqual(sage.activate_context_id_list, [])
-        self.assertEqual(sage.summaries, {-1: "goal: resume work"})
+        self.assertEqual(
+            {key: summary.abstract for key, summary in sage.summaries.items()},
+            {-1: "goal: resume work"},
+        )
+        summary = sage.summaries[-1]
+        self.assertEqual(summary.kind, "summary")
+        self.assertEqual(summary.source_timeline, (0, 1))
         self.assertEqual(len(sage.raw_contexts_info), 2)
         self.assertIn("goal: resume work", sage.build_messages()[0].content)
 
@@ -110,6 +125,62 @@ class SageContextTests(unittest.TestCase):
             self.assertEqual(set(restored.worktree_dict), set(sage.worktree_dict))
             self.assertEqual([b.id for b in restored.current_worktree_stack], [b.id for b in sage.current_worktree_stack])
             self.assertIn("goal: resume work", restored.build_messages()[0].content)
+
+    def test_tool_results_are_stored_by_reference_and_restored(self) -> None:
+        sage = SageContext(_Compactor())
+        sage.add_user_message("hello")
+        sage.add_assistant_message(
+            AssistantTurnInput(
+                content="used a tool",
+                reasoning="",
+                tool_calls=(
+                    ToolCallInput(call_id="c1", name="shell", arguments={"cmd": "ls"}),
+                ),
+                usage=TokenUsage(),
+                model_duration_ms=None,
+                round_duration_ms=None,
+                created_at=None,
+            ),
+            (
+                ToolResultInput(
+                    call_id="c1",
+                    tool_name="shell",
+                    output="a.txt",
+                    images=(),
+                    ok=True,
+                    duration_ms=3,
+                    created_at=None,
+                ),
+            ),
+        )
+
+        assistant = sage.raw_contexts_info[-1]
+        self.assertIsInstance(assistant, AssistantContextItem)
+        assert isinstance(assistant, AssistantContextItem)
+        result_id = assistant.tool_calls[0].result_id
+        assert result_id is not None
+        self.assertEqual(sage.resolve_tool_result(result_id).output, "a.txt")
+        self.assertEqual(sage.build_messages()[-1].content, "a.txt")
+        with self.assertRaises(KeyError):
+            sage.resolve_tool_result(type(result_id)("missing"))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sage.json"
+            self.assertTrue(sage.save(path))
+            restored = SageContext(_Compactor())
+            self.assertTrue(restored.load(path))
+            restored_assistant = restored.raw_contexts_info[-1]
+            assert isinstance(restored_assistant, AssistantContextItem)
+            restored_id = restored_assistant.tool_calls[0].result_id
+            assert restored_id is not None
+            self.assertEqual(restored.resolve_tool_result(restored_id).output, "a.txt")
+            self.assertEqual(restored.build_messages(), sage.build_messages())
+
+            database = path.with_suffix(path.suffix + ".sqlite3")
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("DELETE FROM tool_results")
+                connection.commit()
+            self.assertFalse(SageContext(_Compactor()).load(path))
 
 
 if __name__ == "__main__":

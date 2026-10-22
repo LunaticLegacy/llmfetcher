@@ -25,7 +25,6 @@ from ..llm_types import (
     AssistantTurnInput,
     ContextItem,
     ContextSummaryItem,
-    LLMContext,
     RequestMessage,
     Tool,
     ToolParameter,
@@ -45,7 +44,7 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 class _RenderedMessage:
     """One message projected onto the archival render shape.
 
-    ``linear`` stores durable :class:`LLMContext` entries while
+    ``linear`` stores durable :class:`ContextItem` entries while
     ``build_messages`` returns rendered :class:`RequestMessage` values.  Both
     are converted to this record first, so the renderer handles exactly one
     type instead of branching on its inputs.
