@@ -17,12 +17,15 @@ from __future__ import annotations
 
 from .context_records import (
     AssistantContextItem,
+    AssistantTurnInput,
     ContextItem,
     ContextItemId,
     ContextStore,
     ContextSummaryItem,
+    ToolCallInput,
     ToolCallRecord,
     ToolResultId,
+    ToolResultInput,
     ToolResultRecord,
     UserContextItem,
 )

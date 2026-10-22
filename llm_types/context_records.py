@@ -13,7 +13,7 @@ may be renumbered by context editing; item and result identities may not.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import ClassVar, Protocol, TypeAlias
 from uuid import uuid4
 
 from ..multimodal import ImageReference
@@ -116,6 +116,102 @@ class ToolResultRecord:
 
 
 @dataclass(frozen=True)
+class ToolCallInput:
+    """One tool call as the model produced it, before a result is stored.
+
+    Attributes:
+        call_id: Provider correlation identifier; required so the durable
+            turn can pair its result without inventing an index-based ID.
+        name: Tool name the model asked for.
+        arguments: Parsed arguments exactly as the model supplied them.
+    """
+
+    call_id: str
+    name: str
+    arguments: JsonObject
+
+    def __post_init__(self) -> None:
+        """Reject a call that cannot be correlated with its result.
+
+        Raises:
+            ValueError: If ``call_id`` is empty or whitespace.
+        """
+        if not self.call_id or not self.call_id.strip():
+            raise ValueError("tool call requires a non-empty call_id")
+
+
+@dataclass(frozen=True)
+class ToolResultInput:
+    """One completed tool execution offered to a context handler.
+
+    Attributes:
+        call_id: Correlation identifier of the originating tool call.
+        tool_name: Tool name that produced this result.
+        output: Complete result text.
+        images: Durable image references the tool returned.
+        ok: Whether execution succeeded, or ``None`` when unreported.
+        duration_ms: Execution wall time in milliseconds, or ``None``.
+        created_at: Unix timestamp when the result completed, or ``None``.
+    """
+
+    call_id: str
+    tool_name: str
+    output: str
+    images: tuple[ImageReference, ...]
+    ok: bool | None
+    duration_ms: int | None
+    created_at: float | None
+
+    def __post_init__(self) -> None:
+        """Reject a result that cannot be paired with a tool call.
+
+        Raises:
+            ValueError: If ``call_id`` or ``tool_name`` is empty.
+        """
+        if not self.call_id or not self.call_id.strip():
+            raise ValueError("tool result requires a non-empty call_id")
+        if not self.tool_name or not self.tool_name.strip():
+            raise ValueError("tool result requires a non-empty tool_name")
+
+
+@dataclass(frozen=True)
+class AssistantTurnInput:
+    """Complete input for one durable assistant turn.
+
+    The agent boundary builds this from the model output plus the tool batch,
+    so a handler never has to infer duration, status or usage from side
+    channels.
+
+    Attributes:
+        content: Assistant text content.
+        reasoning: Native reasoning text, kept separate from content.
+        tool_calls: Tool calls this turn requested.
+        usage: Token usage of the model call that produced this turn.
+        model_duration_ms: Wall time spent generating this output.
+        round_duration_ms: Whole round wall time, including tool execution.
+        created_at: Unix timestamp when this turn completed.
+    """
+
+    content: str
+    reasoning: str
+    tool_calls: tuple[ToolCallInput, ...]
+    usage: TokenUsage
+    model_duration_ms: int | None
+    round_duration_ms: int | None
+    created_at: float | None
+
+    def __post_init__(self) -> None:
+        """Reject duplicate call identities in one turn.
+
+        Raises:
+            ValueError: If two tool calls share a ``call_id``.
+        """
+        call_ids = [call.call_id for call in self.tool_calls]
+        if len(call_ids) != len(set(call_ids)):
+            raise ValueError("assistant turn contains duplicate tool call ids")
+
+
+@dataclass(frozen=True)
 class UserContextItem:
     """One durable user input entry.
 
@@ -125,6 +221,8 @@ class UserContextItem:
         content: User input text.
         images: Durable image references the input carried.
     """
+
+    kind: ClassVar[str] = "user"
 
     item_id: ContextItemId
     timeline: int
@@ -152,6 +250,8 @@ class AssistantContextItem:
         created_at: Unix timestamp when this turn completed.
     """
 
+    kind: ClassVar[str] = "assistant"
+
     item_id: ContextItemId
     timeline: int
     content: str
@@ -175,6 +275,8 @@ class ContextSummaryItem:
         source_timeline: Timeline values of the collapsed entries.
         source_result_ids: Tool results referenced by the collapsed entries.
     """
+
+    kind: ClassVar[str] = "summary"
 
     item_id: ContextItemId
     timeline: int

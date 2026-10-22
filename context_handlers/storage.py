@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
+from .base import checkpoint_lock
+
 
 @dataclass(frozen=True)
 class PersistedContextPage:
@@ -80,18 +82,23 @@ class ContextStorage(Protocol):
         database: Path,
         messages: Sequence[tuple[int, str]],
         archive: Sequence[tuple[int, str]],
+        tool_results: Sequence[tuple[str, str]] = (),
     ) -> None:
-        """Append or replace serialized active and archived rows atomically.
+        """Append or replace serialized rows atomically.
 
         Archiving a timeline removes that timeline from active ``messages``
         within the same transaction; this is the storage invariant that keeps
-        compacted rows out of the active transcript.
+        compacted rows out of the active transcript. Tool results share the
+        transaction so a reference written in ``messages`` can never commit
+        without the result it points at.
 
         Args:
             database: Durable sidecar database path.
             messages: ``(timeline, payload)`` pairs to upsert as active rows.
             archive: ``(timeline, payload)`` pairs to upsert as archived rows
                 and drop from the active table.
+            tool_results: ``(result_id, payload)`` pairs to upsert in the
+                independent result collection.
         """
 
     def replace_active(
@@ -125,6 +132,7 @@ class ContextStorage(Protocol):
         Returns:
             One chronological page plus its older cursor and total.
         """
+        ...
 
     def read_archive_page(
         self,
@@ -144,6 +152,7 @@ class ContextStorage(Protocol):
             One chronological archive page plus its older cursor and whether
             another older page exists.
         """
+        ...
 
     def read_rows(
         self,
@@ -160,6 +169,7 @@ class ContextStorage(Protocol):
         Returns:
             Every stored row, oldest first, with payloads left unparsed.
         """
+        ...
 
     def count(self, database: Path, table: str) -> int:
         """Count rows in one storage-owned table.
@@ -171,6 +181,7 @@ class ContextStorage(Protocol):
         Returns:
             Current row count.
         """
+        ...
 
     def max_timeline(self, database: Path, table: str) -> int:
         """Return the greatest timeline in one storage-owned table.
@@ -182,6 +193,36 @@ class ContextStorage(Protocol):
         Returns:
             Largest timeline, or zero for an empty table.
         """
+        ...
+
+    def read_tool_results(
+        self,
+        database: Path,
+        result_ids: Sequence[str],
+    ) -> list[tuple[str, str]]:
+        """Read raw ``(result_id, payload)`` pairs for the requested results.
+
+        Args:
+            database: Durable sidecar database path.
+            result_ids: Result identities a restored transcript references.
+
+        Returns:
+            Every stored pair, leaving payload parsing to the caller. A
+            requested identity with no row is simply absent from the result,
+            so the caller can fail on a dangling reference.
+        """
+        ...
+
+    def count_tool_results(self, database: Path) -> int:
+        """Count the independently stored tool results.
+
+        Args:
+            database: Durable sidecar database path.
+
+        Returns:
+            Current row count.
+        """
+        ...
 
 
 class SQLiteContextStorage:
@@ -227,10 +268,10 @@ class SQLiteContextStorage:
         """
         # Read-only callers must never create a database as a side effect.
         if readonly:
-            return sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+            return sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=30)
         # Writable callers may need the parent directory to exist first.
         database.parent.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(database)
+        return sqlite3.connect(database, timeout=30)
 
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection) -> None:
@@ -247,6 +288,12 @@ class SQLiteContextStorage:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS archive "
             "(timeline INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        # Tool results live in their own collection so an assistant item can
+        # hold a reference instead of a copy of the output.
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS tool_results "
+            "(result_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"
         )
         # Descending timeline indexes serve the newest-first page queries.
         connection.execute(
@@ -287,38 +334,106 @@ class SQLiteContextStorage:
         database: Path,
         messages: Sequence[tuple[int, str]],
         archive: Sequence[tuple[int, str]],
+        tool_results: Sequence[tuple[str, str]] = (),
     ) -> None:
-        """Append or replace serialized rows, archiving in one transaction.
+        """Append or replace serialized rows in one transaction.
 
         Args:
             database: Durable sidecar database path.
             messages: ``(timeline, payload)`` pairs to upsert as active rows.
             archive: ``(timeline, payload)`` pairs to upsert as archived rows
                 and remove from the active table.
+            tool_results: ``(result_id, payload)`` pairs to upsert as
+                independently addressable results.
         """
-        connection = self._connect(database)
+        # Writers of one database serialize in-process; SQLite's own write
+        # lock plus the busy timeout cover any connection this process does
+        # not coordinate directly.
+        with checkpoint_lock(database):
+            connection = self._connect(database)
+            try:
+                # WAL keeps concurrent readers (projections) from blocking a save.
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA busy_timeout=5000")
+                self._ensure_schema(connection)
+                # Autocommit mode lets the explicit BEGIN below own the whole
+                # batch, including the tool results, as one unit.
+                connection.isolation_level = None
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    # Upsert each newly created active row.
+                    for timeline, payload in messages:
+                        connection.execute(
+                            "INSERT OR REPLACE INTO messages(timeline, payload) VALUES (?, ?)",
+                            (timeline, payload),
+                        )
+                    # Upsert archived rows, then enforce the archive invariant: an
+                    # archived timeline must no longer be visible as active context.
+                    for timeline, payload in archive:
+                        connection.execute(
+                            "INSERT OR REPLACE INTO archive(timeline, payload) VALUES (?, ?)",
+                            (timeline, payload),
+                        )
+                        connection.execute("DELETE FROM messages WHERE timeline = ?", (timeline,))
+                    # Resolve-by-reference is only safe when the result commits
+                    # in the same transaction as the item pointing at it.
+                    for result_id, payload in tool_results:
+                        connection.execute(
+                            "INSERT OR REPLACE INTO tool_results(result_id, payload) VALUES (?, ?)",
+                            (result_id, payload),
+                        )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+            finally:
+                connection.close()
+
+    def read_tool_results(
+        self,
+        database: Path,
+        result_ids: Sequence[str],
+    ) -> list[tuple[str, str]]:
+        """Read the stored payloads for the requested result identities.
+
+        Args:
+            database: Durable sidecar database path.
+            result_ids: Result identities a restored transcript references.
+
+        Returns:
+            Every stored ``(result_id, payload)`` pair. A requested identity
+            with no row is absent, so the caller can reject the dangling
+            reference instead of substituting an empty result.
+        """
+        if not result_ids:
+            return []
+        connection = self._connect(database, readonly=True)
         try:
-            # WAL keeps concurrent readers (projections) from blocking a save.
-            connection.execute("PRAGMA journal_mode=WAL")
-            self._ensure_schema(connection)
-            # Upsert each newly created active row.
-            for timeline, payload in messages:
-                connection.execute(
-                    "INSERT OR REPLACE INTO messages(timeline, payload) VALUES (?, ?)",
-                    (timeline, payload),
-                )
-            # Upsert archived rows, then enforce the archive invariant: an
-            # archived timeline must no longer be visible as active context.
-            for timeline, payload in archive:
-                connection.execute(
-                    "INSERT OR REPLACE INTO archive(timeline, payload) VALUES (?, ?)",
-                    (timeline, payload),
-                )
-                connection.execute("DELETE FROM messages WHERE timeline = ?", (timeline,))
-            # Commit the whole set together so a reader never sees a half-state.
-            connection.commit()
+            placeholders = ",".join("?" for _ in result_ids)
+            rows = connection.execute(
+                f"SELECT result_id, payload FROM tool_results "
+                f"WHERE result_id IN ({placeholders})",
+                tuple(result_ids),
+            ).fetchall()
         finally:
             connection.close()
+        return [(str(result_id), str(payload)) for result_id, payload in rows]
+
+    def count_tool_results(self, database: Path) -> int:
+        """Count the independently stored tool results.
+
+        Args:
+            database: Durable sidecar database path.
+
+        Returns:
+            Current row count.
+        """
+        connection = self._connect(database, readonly=True)
+        try:
+            row = connection.execute("SELECT COUNT(*) FROM tool_results").fetchone()
+        finally:
+            connection.close()
+        return int(row[0] if row else 0)
 
     def replace_active(
         self,
@@ -335,20 +450,28 @@ class SQLiteContextStorage:
             database: Durable sidecar database path.
             rows: Complete ``(timeline, payload)`` set for the active table.
         """
-        connection = self._connect(database)
-        try:
-            connection.execute("PRAGMA journal_mode=WAL")
-            self._ensure_schema(connection)
-            # Clear the active window; the archive table is not touched.
-            connection.execute("DELETE FROM messages")
-            # Write the replacement rows in a single batched statement.
-            connection.executemany(
-                "INSERT OR REPLACE INTO messages(timeline, payload) VALUES (?, ?)",
-                list(rows),
-            )
-            connection.commit()
-        finally:
-            connection.close()
+        with checkpoint_lock(database):
+            connection = self._connect(database)
+            try:
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA busy_timeout=5000")
+                self._ensure_schema(connection)
+                connection.isolation_level = None
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    # Clear the active window; the archive table is not touched.
+                    connection.execute("DELETE FROM messages")
+                    # Write the replacement rows in a single batched statement.
+                    connection.executemany(
+                        "INSERT OR REPLACE INTO messages(timeline, payload) VALUES (?, ?)",
+                        list(rows),
+                    )
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+            finally:
+                connection.close()
 
     def read_rows(
         self,
