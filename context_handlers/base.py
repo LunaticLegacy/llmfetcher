@@ -9,6 +9,7 @@ from ..llm_types import AssistantTurnInput, RequestMessage, TokenUsage, ToolResu
 from ..multimodal import UserMessage
 from .composer import (
     ContextBlock,
+    ContextBlockSource,
     ContextPosition,
     ContextSnapshot,
 )
@@ -150,6 +151,18 @@ class ContextHandler(ABC):
             )
             for index, message in enumerate(messages)
         ]
+
+    def block_source_catalog(self) -> tuple[ContextBlockSource, ...]:
+        """Declare the block sources this handler can emit.
+
+        The base implementation emits one block per message under
+        ``source_id``, so that identity is the whole catalog. Handlers that
+        split their state into several sources override this.
+
+        Returns:
+            Declared sources in emission order.
+        """
+        return (ContextBlockSource(self.source_id, ContextPosition.PREVIOUS),)
 
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
         """Expose durable handler state as a Composer-owned context source.

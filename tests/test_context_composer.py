@@ -178,6 +178,70 @@ class ContextComposerTests(unittest.TestCase):
             ["system", "notes", "workspace"],
         )
 
+    def test_unlisted_source_takes_the_slot_after_the_saved_order(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        composer = ContextComposer(
+            (
+                handler,
+                _Provider("angelus.notes", ContextPosition.CUSTOM, content="notes"),
+                _Provider("linear.current_input", ContextPosition.CURRENT_INPUT, content="input"),
+            ),
+            priority_overrides={"angelus.notes": 10, "angelus.workspace": 20},
+        )
+        snapshot = ContextSnapshot(handler=handler)
+        self.assertEqual(
+            [message.content for message in composer.compose(snapshot=snapshot, system_prompt="system")],
+            ["system", "notes", "input"],
+        )
+        row = next(
+            row for row in composer.describe(snapshot=snapshot, system_prompt="system")
+            if row["source"] == "linear.current_input"
+        )
+        self.assertEqual(row["priority"], 30)
+        self.assertTrue(row["unlisted"])
+
+    def test_empty_table_keeps_slot_order(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        composer = ContextComposer((
+            handler,
+            _Provider("custom", ContextPosition.CUSTOM, content="custom"),
+            _Provider("persistent", ContextPosition.PERSISTENT, content="persistent"),
+        ))
+        self.assertEqual(
+            [message.content for message in composer.compose(snapshot=ContextSnapshot(handler=handler))],
+            ["persistent", "custom"],
+        )
+
+    def test_compacted_window_still_declares_current_input(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        handler.add_assistant_message(AssistantTurnInput(
+            content="finished",
+            reasoning="",
+            tool_calls=(),
+            usage=TokenUsage(),
+            model_duration_ms=None,
+            round_duration_ms=None,
+            created_at=None,
+        ))
+        composer = ContextComposer(
+            (handler, _Provider("angelus.workspace", ContextPosition.PERSISTENT, content="workspace")),
+            priority_overrides={
+                "angelus.workspace": 10,
+                "linear.previous": 50,
+                "linear.last_round": 60,
+                "linear.current_input": 70,
+            },
+        )
+        snapshot = ContextSnapshot(handler=handler)
+        self.assertEqual(
+            [spec.source for spec in composer.catalog(snapshot)],
+            ["linear.previous", "linear.last_round", "linear.current_input"],
+        )
+
+        handler.add_user_message("newest turn")
+        rows = composer.describe(snapshot=snapshot, system_prompt="system")
+        self.assertEqual([row["source"] for row in rows][-1], "linear.current_input")
+
 
 if __name__ == "__main__":
     unittest.main()

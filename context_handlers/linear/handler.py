@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, cast, override
 
 from ..base import ContextHandler, checkpoint_lock, replace_checkpoint
-from ..composer import ContextBlock, ContextPosition, ContextSnapshot
+from ..composer import ContextBlock, ContextBlockSource, ContextPosition, ContextSnapshot
 from ..storage import (
     ContextStorage,
     SQLiteContextStorage,
@@ -601,6 +601,23 @@ class ContextHandlerLinear(ContextHandler):
         if system_prompt:
             messages.insert(0, RequestMessage(role="system", content=system_prompt))
         return messages
+
+    def block_source_catalog(self) -> tuple[ContextBlockSource, ...]:
+        """Declare the transcript slots even when a slot has no item.
+
+        ``linear.current_input`` is emitted only while the active window holds
+        a user item, and compaction archives that item. A saved order must
+        still know the source exists, otherwise the slot cannot be positioned
+        and cannot be restored.
+
+        Returns:
+            The three transcript slots in emission order.
+        """
+        return (
+            ContextBlockSource("linear.previous", ContextPosition.PREVIOUS),
+            ContextBlockSource("linear.last_round", ContextPosition.LAST_ROUND),
+            ContextBlockSource("linear.current_input", ContextPosition.CURRENT_INPUT),
+        )
 
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
         """Project the linear transcript into Composer ordering slots.

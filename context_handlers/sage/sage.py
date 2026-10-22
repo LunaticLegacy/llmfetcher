@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, override
 from uuid import uuid4, UUID
 
 from ..base import ContextHandler
-from ..composer import ContextBlock, ContextPosition, ContextSnapshot
+from ..composer import ContextBlock, ContextBlockSource, ContextPosition, ContextSnapshot
 from ..linear.assembly import ContextAssembler
 from ..linear.codec import (
     context_item_from_dict,
@@ -294,6 +294,20 @@ class SageContext(ContextHandler):
             by_timeline,
         ))
         return messages
+
+    def block_source_catalog(self) -> tuple[ContextBlockSource, ...]:
+        """Declare Sage's fixed sections, including the empty current input.
+
+        Returns:
+            The five sections :meth:`build_blocks` projects, in emission order.
+        """
+        return (
+            ContextBlockSource("sage.previous", ContextPosition.PREVIOUS),
+            ContextBlockSource("sage.summary", ContextPosition.MEMORY),
+            ContextBlockSource("sage.worktree", ContextPosition.WORKTREE),
+            ContextBlockSource("sage.last_round", ContextPosition.LAST_ROUND),
+            ContextBlockSource("sage.current_input", ContextPosition.CURRENT_INPUT),
+        )
 
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
         """Expose Sage's history, summaries, worktree, and current input.

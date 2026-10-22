@@ -52,6 +52,24 @@ class ContextBlock:
     message: RequestMessage | None = None
 
 
+@dataclass(frozen=True)
+class ContextBlockSource:
+    """One block source a handler can emit, whether or not it emits one now.
+
+    A transient source such as ``linear.current_input`` disappears whenever
+    the active transcript holds no user item, so an order editor that only
+    lists rendered blocks would silently lose its slot. Handlers declare the
+    complete set here instead of leaving it to be discovered per request.
+
+    Attributes:
+        source: Stable ``ContextBlock.source`` identity.
+        position: Slot the block occupies when the handler does emit it.
+    """
+
+    source: str
+    position: "ContextPosition" = ContextPosition.PREVIOUS
+
+
 class ContextSource(Protocol):
     """Source contract consumed by :class:`ContextComposer`."""
 
@@ -77,6 +95,10 @@ class ContextHandlerPort(Protocol):
         messages: list[RequestMessage],
     ) -> list[RequestMessage]:
         """Bound tool-result text for the outgoing model request."""
+        ...
+
+    def block_source_catalog(self) -> tuple[ContextBlockSource, ...]:
+        """Declare every block source this handler can emit."""
         ...
 
 
@@ -162,6 +184,37 @@ class ContextComposer:
             if isinstance(priority, bool) or not isinstance(priority, int):
                 raise ValueError("context priority overrides must be integers")
             self._priority_overrides[source] = priority
+        # A source the saved table does not mention is placed after every
+        # ordered source instead of inheriting its per-block priority.  Block
+        # priority is 0 for every built-in, so inheriting it would put a
+        # transient block — ``linear.current_input`` vanishes when compaction
+        # archives the newest user turn — ahead of the whole saved order.
+        self._unlisted_priority: int | None = (
+            max(self._priority_overrides.values()) + 10
+            if self._priority_overrides else None
+        )
+
+    def effective_priority(self, source: str, default_priority: int = 0) -> int:
+        """Return the priority one block source is ordered by.
+
+        Args:
+            source: ``ContextBlock.source`` identity to resolve.
+            default_priority: Priority the block itself declares, used only
+                when no order table is configured at all.
+
+        Returns:
+            The saved override, else the shared slot reserved for sources the
+            table does not mention, else the block's own priority.
+        """
+        if source in self._priority_overrides:
+            return self._priority_overrides[source]
+        if self._unlisted_priority is not None:
+            return self._unlisted_priority
+        return default_priority
+
+    def is_ordered(self, source: str) -> bool:
+        """Return whether the saved table gives this source an explicit slot."""
+        return source in self._priority_overrides
 
     @property
     def providers(self) -> tuple[ContextSource, ...]:
@@ -207,7 +260,7 @@ class ContextComposer:
                     and not (block.message is not None and block.message.tool_calls)
                 ):
                     continue
-                priority = self._priority_overrides.get(block.source, block.priority)
+                priority = self.effective_priority(block.source, block.priority)
                 result.append((priority, int(block.position), sequence, block))
                 sequence += 1
         result.sort(key=lambda item: (item[0], item[1], item[2]))
@@ -295,12 +348,32 @@ class ContextComposer:
                 "length": len(content or ""),
                 "position": block.position.name.lower(),
                 "position_value": int(block.position),
-                "priority": self._priority_overrides.get(block.source, block.priority),
+                "priority": self.effective_priority(block.source, block.priority),
                 "default_priority": block.priority,
+                "unlisted": not self.is_ordered(block.source),
                 "persisted": block.persistent,
             })
             index += 1
         return rows
+
+    def catalog(self, snapshot: ContextSnapshot) -> list[ContextBlockSource]:
+        """List block sources the active handler declares, present or not.
+
+        Compaction archives the newest user turn, so ``linear.current_input``
+        emits nothing until the next user message arrives. A saved order built
+        only from rendered blocks would never learn about that source, so the
+        preview unions this declaration with the rows it just composed.
+
+        Args:
+            snapshot: Request snapshot whose handler owns the declaration.
+
+        Returns:
+            Declared sources in handler order, present ones included.
+        """
+        handler = snapshot.handler
+        if handler is None:
+            return []
+        return list(handler.block_source_catalog())
 
 
 class HandlerContextSource:
