@@ -4,9 +4,9 @@ The durable store exchanges plain JSON dictionaries. This module is the one
 place that knows how context records map onto them, so persistence, paging
 and host readers share a single representation.
 
-The ``LLMContext`` helpers are retained only until the linear handler finishes
-moving to the explicit record model; the v2 helpers below are the contract the
-new store uses.
+The ``LLMContext`` helpers are retained for the Sage handler, which still
+keeps that internal view; the v2 helpers below are the contract the linear
+store and its revisions use.
 """
 
 from __future__ import annotations

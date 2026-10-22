@@ -22,10 +22,10 @@ from .assembly import (
     ContextObservation,
 )
 from .codec import (
-    compacted_from_dict,
-    compacted_to_dict,
-    context_from_dict,
-    context_to_dict,
+    context_item_from_dict,
+    context_item_to_dict,
+    tool_result_from_dict,
+    tool_result_to_dict,
 )
 from .compaction import (
     CompactionFetcher,
@@ -36,7 +36,7 @@ from .compaction import (
 )
 from .handler import ContextHandlerLinear
 from .paging import read_persisted_archive_page, read_persisted_context_page
-from .rendering import append_context_entry, render_messages
+from .rendering import render_messages
 
 __all__ = [
     "AssembledContext",
@@ -51,10 +51,9 @@ __all__ = [
     "build_request_preview",
     "estimate_context_size",
     "parse_compacted_abstract",
-    "context_to_dict",
-    "context_from_dict",
-    "compacted_to_dict",
-    "compacted_from_dict",
-    "append_context_entry",
+    "context_item_to_dict",
+    "context_item_from_dict",
+    "tool_result_to_dict",
+    "tool_result_from_dict",
     "render_messages",
 ]
