@@ -51,7 +51,14 @@ class ContextBlock:
 class ContextSource(Protocol):
     """Source contract consumed by :class:`ContextComposer`."""
 
-    source_id: str
+    @property
+    def source_id(self) -> str:
+        """Return the stable source identity with no setter.
+
+        Providers expose this as a read-only property, so a mutable attribute
+        would make the protocol member invariant and reject every one of them.
+        """
+        ...
 
     def build_blocks(self, snapshot: ContextSnapshot) -> Sequence[ContextBlock]:
         """Project source state into request blocks."""
