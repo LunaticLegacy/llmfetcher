@@ -622,18 +622,21 @@ class ContextHandlerLinear(ContextHandler):
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
         """Project the linear transcript into Composer ordering slots.
 
-        The newest user item is the current input and the newest assistant
-        item before it is the last completed round. Older items stay in the
+        A trailing user item is the current input and the newest assistant
+        item before it is the last completed round. Once an assistant turn
+        follows a user item, that user item is history: it keeps its place
+        ahead of the reply instead of being promoted back to ``current_input``
+        on every later round of the same run. Older items stay in the
         previous-context slot. A summary item has no role, so grouping keys on
         ``kind``; each group is rendered by the shared assembler, which keeps
         tool calls and their results paired.
         """
         entries = list(self.get_prev_messages())
-        current_index: int | None = None
-        for index in range(len(entries) - 1, -1, -1):
-            if entries[index].kind == "user":
-                current_index = index
-                break
+        current_index: int | None = (
+            len(entries) - 1
+            if entries and entries[-1].kind == "user"
+            else None
+        )
 
         last_assistant_index: int | None = None
         search_end = current_index if current_index is not None else len(entries)

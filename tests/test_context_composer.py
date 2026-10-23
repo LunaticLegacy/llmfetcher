@@ -212,6 +212,134 @@ class ContextComposerTests(unittest.TestCase):
             ["persistent", "custom"],
         )
 
+    def test_answered_user_turn_stays_ahead_of_its_assistant_reply(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        handler.add_user_message("start")
+        handler.add_assistant_message(
+            AssistantTurnInput(
+                content="first step",
+                reasoning="",
+                tool_calls=(ToolCallInput(
+                    call_id="call_1",
+                    name="file_list",
+                    arguments={},
+                ),),
+                usage=TokenUsage(),
+                model_duration_ms=None,
+                round_duration_ms=None,
+                created_at=None,
+            ),
+            (ToolResultInput(
+                call_id="call_1",
+                tool_name="file_list",
+                output="done",
+                images=(),
+                ok=True,
+                duration_ms=1,
+                created_at=None,
+            ),),
+        )
+        composer = ContextComposer(
+            (handler,),
+            priority_overrides={
+                "linear.previous": 50,
+                "linear.last_round": 60,
+                "linear.current_input": 70,
+            },
+        )
+
+        messages = composer.compose(
+            snapshot=ContextSnapshot(handler=handler),
+            system_prompt="system",
+        )
+
+        self.assertEqual(
+            [(message.role, message.content) for message in messages],
+            [
+                ("system", "system"),
+                ("user", "start"),
+                ("assistant", "first step"),
+                ("tool", "done"),
+            ],
+        )
+        rows = composer.describe(
+            snapshot=ContextSnapshot(handler=handler),
+            system_prompt="system",
+        )
+        self.assertEqual(
+            [row["source"] for row in rows],
+            [
+                "system_prompt",
+                "linear.previous",
+                "linear.last_round",
+                "linear.last_round",
+            ],
+        )
+
+    def test_answered_turns_stay_chronological_across_rounds(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        for index in range(2):
+            handler.add_user_message(f"user {index}")
+            handler.add_assistant_message(AssistantTurnInput(
+                content=f"answer {index}",
+                reasoning="",
+                tool_calls=(),
+                usage=TokenUsage(),
+                model_duration_ms=None,
+                round_duration_ms=None,
+                created_at=None,
+            ))
+        composer = ContextComposer(
+            (handler,),
+            priority_overrides={
+                "linear.previous": 50,
+                "linear.last_round": 60,
+                "linear.current_input": 70,
+            },
+        )
+
+        messages = composer.compose(
+            snapshot=ContextSnapshot(handler=handler),
+            system_prompt="system",
+        )
+
+        self.assertEqual(
+            [message.content for message in messages],
+            ["system", "user 0", "answer 0", "user 1", "answer 1"],
+        )
+
+    def test_new_trailing_user_turn_is_the_current_input(self) -> None:
+        handler = ContextHandlerLinear(_Compactor())
+        handler.add_user_message("answered")
+        handler.add_assistant_message(AssistantTurnInput(
+            content="reply",
+            reasoning="",
+            tool_calls=(),
+            usage=TokenUsage(),
+            model_duration_ms=None,
+            round_duration_ms=None,
+            created_at=None,
+        ))
+        handler.add_user_message("newest turn")
+        composer = ContextComposer(
+            (handler,),
+            priority_overrides={
+                "linear.previous": 50,
+                "linear.last_round": 60,
+                "linear.current_input": 70,
+            },
+        )
+
+        messages = composer.compose(
+            snapshot=ContextSnapshot(handler=handler),
+            system_prompt="system",
+        )
+
+        self.assertEqual(
+            [message.content for message in messages],
+            ["system", "answered", "reply", "newest turn"],
+        )
+
     def test_compacted_window_still_declares_current_input(self) -> None:
         handler = ContextHandlerLinear(_Compactor())
         handler.add_assistant_message(AssistantTurnInput(
