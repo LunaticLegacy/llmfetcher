@@ -66,8 +66,8 @@ query → normalize key → validate persistent cache
 | [core.py](core.py#L369) | `TLBRAGHandler._load_cache` | `None` | `None` | Load a previously persisted TLB cache from disk (if present). |
 | [core.py](core.py#L400) | `TLBRAGHandler.retrieve` | `query: str` | `TLBResult` | Execute a TLB-like hierarchical retrieval for *query*. |
 | [core.py](core.py#L488) | `TLBRAGHandler._run_worker` | `query: str, query_key: str, known_start_node: str \| None` | `TLBResult` | Create a fresh worker, run it, validate results against trace. |
-| [core.py](core.py#L559) | `TLBRAGHandler._apply_trace_corrections` | `result: TLBResult, trace: list[ReadTraceEntry]` | `TLBResult` | Override model-reported fields with runtime read-trace evidence. |
-| [core.py](core.py#L618) | `TLBRAGHandler._validate_cache_entry` | `entry: TLBEntry` | `TLBEntry \| None` | Check whether a cached TLB entry is still valid. |
+| [core.py](core.py#L560) | `TLBRAGHandler._apply_trace_corrections` | `result: TLBResult, trace: list[ReadTraceEntry]` | `TLBResult` | Override model-reported fields with runtime read-trace evidence. |
+| [core.py](core.py#L619) | `TLBRAGHandler._validate_cache_entry` | `entry: TLBEntry` | `TLBEntry \| None` | Check whether a cached TLB entry is still valid. |
 | [prompt.py](prompt.py#L132) | `build_base_prompt` | `base_dir: str \| Path, index_file_name: str` | `str` | Build the TLB RAG system prompt for a specific file tree root. |
 | [test_helpers.py](test_helpers.py#L6) | `_extract_json` | `text: Any` | `Any` | Implement `_extract_json`. |
 | [test_helpers.py](test_helpers.py#L27) | `_dict_to_tlb_result` | `data: Any` | `Any` | Implement `_dict_to_tlb_result`. |

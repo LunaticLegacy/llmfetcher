@@ -103,73 +103,86 @@ primary model response.
 
 | Source | Function / method | Input types | Output type | Semantics |
 |---|---|---|---|---|
-| [agent.py](agent.py#L33) | `_supports_force_control` | `control: object` | `bool` | Return whether one cooperative control can cancel provider resources. |
-| [agent.py](agent.py#L61) | `AgentRunControl.should_stop` | `None` | `bool` | Return whether the Agent should stop at the current safe boundary. |
-| [agent.py](agent.py#L65) | `AgentRunControl.drain_steers` | `None` | `list[str]` | Return and consume queued user steering messages in FIFO order. |
-| [agent.py](agent.py#L134) | `AgentRunOutcome.to_dict` | `None` | `dict[str, Any]` | Return the credential-free terminal fields for lifecycle events. |
-| [agent.py](agent.py#L215) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
-| [agent.py](agent.py#L352) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
-| [agent.py](agent.py#L363) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
-| [agent.py](agent.py#L378) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
-| [agent.py](agent.py#L391) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
-| [agent.py](agent.py#L406) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L415) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
-| [agent.py](agent.py#L443) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
-| [agent.py](agent.py#L470) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
-| [agent.py](agent.py#L510) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
-| [agent.py](agent.py#L544) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
-| [agent.py](agent.py#L568) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
-| [agent.py](agent.py#L579) | `Agent._request_index` | `request: Any, round_idx: int` | `RequestIndex` | Build a durable, content-free index for one remote LLM request. |
-| [agent.py](agent.py#L631) | `Agent._request_content` | `request: Any, round_idx: int` | `RequestContent` | Build a capped, readable preview of one dispatch-ready request. |
-| [agent.py](agent.py#L669) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
-| [agent.py](agent.py#L687) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
-| [agent.py](agent.py#L698) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
-| [agent.py](agent.py#L718) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
-| [agent.py](agent.py#L732) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
-| [agent.py](agent.py#L763) | `Agent.compact_context` | `control: AgentRunControl \| None` | `bool` | Run the same cancellable compactor used by automatic compaction. |
-| [agent.py](agent.py#L779) | `Agent._compact_for_image_budget` | `control: AgentRunControl \| None` | `bool` | Compact before the next request reaches the image-count guard. |
-| [agent.py](agent.py#L805) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
-| [agent.py](agent.py#L837) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
-| [agent.py](agent.py#L949) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
-| [agent.py](agent.py#L1456) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
-| [agent.py](agent.py#L1460) | `Agent.clear_context` | `None` | `None` | Clear context. |
+| [agent/control.py](agent/control.py#L8) | `_supports_force_control` | `control: object` | `bool` | Return whether one cooperative control can cancel provider resources. |
+| [agent/control.py](agent/control.py#L36) | `AgentRunControl.should_stop` | `None` | `bool` | Return whether the Agent should stop at the current safe boundary. |
+| [agent/control.py](agent/control.py#L40) | `AgentRunControl.drain_steers` | `None` | `list[str]` | Return and consume queued user steering messages in FIFO order. |
+| [agent/core.py](agent/core.py#L202) | `Agent.add_hook` | `hook: ExecutionHook` | `None` | Register an execution-event receiver. |
+| [agent/core.py](agent/core.py#L213) | `Agent.remove_hook` | `hook: ExecutionHook` | `bool` | Unregister one execution-event receiver. |
+| [agent/core.py](agent/core.py#L228) | `Agent.request_completion` | `None` | `None` | Request completion after the active model-and-tool step finishes. |
+| [agent/core.py](agent/core.py#L241) | `Agent.request_turn_stop` | `reason: str` | `None` | Request a normal boundary from the reserved ``stop_turn`` tool. |
+| [agent/core.py](agent/core.py#L256) | `Agent.add_stop_turn_tool` | `None` | `bool` | Register the reserved model-visible control tool for ending a turn. |
+| [agent/core.py](agent/core.py#L265) | `Agent._create_stop_turn_tool` | `None` | `Tool` | Create the reserved model-visible control tool for ending a turn. |
+| [agent/core.py](agent/core.py#L293) | `Agent._set_outcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `AgentRunOutcome` | Record and publish the single explicit terminal result of this run. |
+| [agent/core.py](agent/core.py#L320) | `Agent.set_context_threshold` | `max_context_threshold: int, persist: bool` | `bool` | Update the compaction threshold used by this Agent's context. |
+| [agent/core.py](agent/core.py#L358) | `Agent._emit` | `source: str, agent_name: str, event_type: str, message: str, data: Any` | `None` | Send one event to each registered hook, isolating hook failures. |
+| [agent/core.py](agent/core.py#L392) | `Agent._compaction_event_hook` | `event_type: str, message: str, data: dict` | `None` | Publish a context-handler compaction lifecycle event. |
+| [agent/core.py](agent/core.py#L416) | `Agent._usage_data` | `usage: TokenUsage` | `dict[str, int]` | Serialize every normalized usage dimension for durable events. |
+| [agent/core.py](agent/core.py#L427) | `Agent._request_index` | `request: RemoteRequestSnapshot, round_idx: int` | `RequestIndex` | Build a durable, content-free index for one remote LLM request. |
+| [agent/core.py](agent/core.py#L481) | `Agent._request_content` | `request: RemoteRequestSnapshot, round_idx: int` | `RequestContent` | Build a capped, readable preview of one dispatch-ready request. |
+| [agent/core.py](agent/core.py#L517) | `Agent._drain_internal_usage` | `name: str` | `None` | Publish and aggregate each hidden LLM call once, if supported. |
+| [agent/core.py](agent/core.py#L532) | `Agent.add_tool` | `tool: Tool` | `bool` | Register one callable tool on this Agent. |
+| [agent/core.py](agent/core.py#L543) | `Agent.add_tools` | `tools: List[Tool]` | `bool` | Register a batch of tools in the supplied order. |
+| [agent/core.py](agent/core.py#L563) | `Agent._build_prompt` | `None` | `str` | Return the system prompt without serializing registered tools into it. |
+| [agent/core.py](agent/core.py#L577) | `Agent._save_context` | `None` | `bool` | Persist the current context when this Agent has a storage path. |
+| [agent/core.py](agent/core.py#L608) | `Agent.compact_context` | `control: AgentRunControl \| None` | `bool` | Run the same cancellable compactor used by automatic compaction. |
+| [agent/core.py](agent/core.py#L621) | `Agent._compact_for_image_budget` | `control: AgentRunControl \| None` | `bool` | Compact before the next request reaches the image-count guard. |
+| [agent/core.py](agent/core.py#L647) | `Agent._fetch_model_with_force_stop` | `control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Fetch one model response, allowing a terminal browser force-stop. |
+| [agent/core.py](agent/core.py#L679) | `Agent._stream_model_response` | `name: str, round_idx: int, control: AgentRunControl \| None, **fetch_kwargs: Any` | `LLMOutput` | Stream one provider response, emit deltas, and rebuild its final form. |
+| [agent/core.py](agent/core.py#L791) | `Agent.run` | `message: str, max_rounds: int \| None, temperature: float \| None, max_tokens: int \| None, verbose: bool, control: AgentRunControl \| None, stream: bool \| None, thinking_mode: str \| None, reasoning_effort: str \| None` | `LLMOutput` | Run the Agent until one explicit terminal outcome is reached. |
+| [agent/core.py](agent/core.py#L1353) | `Agent.close` | `None` | `None` | Release sub-interpreter resources held by the tool executor. |
+| [agent/core.py](agent/core.py#L1357) | `Agent.clear_context` | `None` | `None` | Clear context. |
+| [agent/models.py](agent/models.py#L40) | `AgentRunOutcome.to_dict` | `None` | `dict[str, Any]` | Return the credential-free terminal fields for lifecycle events. |
+| [agent/request_preview.py](agent/request_preview.py#L6) | `_tool_result_text` | `value: Any` | `str` | Return the complete tool-result string supplied back to the model. |
 | [cli.py](cli.py#L58) | `_load_tools` | `names: list[str]` | `list[Tool]` | Import and call tool factories by short name. |
 | [cli.py](cli.py#L94) | `_build_parser` | `None` | `argparse.ArgumentParser` | Implement `_build_parser`. |
 | [cli.py](cli.py#L178) | `_cmd_list_backends` | `None` | `None` | Print every registered backend provider. |
 | [cli.py](cli.py#L189) | `_cmd_list_tools` | `None` | `None` | Print every known tool-set name + description. |
 | [cli.py](cli.py#L202) | `_build_backend_config` | `args: argparse.Namespace` | `LLMBackendConfig` | Construct a single ``LLMBackendConfig`` from parsed args. |
 | [cli.py](cli.py#L229) | `_bootstrap_agent` | `args: argparse.Namespace` | `Agent` | Create an ``Agent`` wired with the CLI config and requested tools. |
-| [cli.py](cli.py#L260) | `_cmd_run` | `args: argparse.Namespace` | `None` | Execute a single prompt and print the final response. |
-| [cli.py](cli.py#L287) | `_cmd_chat` | `args: argparse.Namespace` | `None` | Interactive read-eval-print loop. |
-| [cli.py](cli.py#L318) | `main` | `argv: list[str] \| None` | `None` | Parse CLI arguments and dispatch the selected command. |
-| [llm_fetcher.py](llm_fetcher.py#L73) | `StreamUsageCapture.merge` | `raw_usage: Any` | `None` | Merge one raw usage payload (dict or provider object). |
-| [llm_fetcher.py](llm_fetcher.py#L98) | `StreamUsageCapture.raw` | `None` | `dict[str, Any] \| None` | Return the merged raw usage mapping, or ``None`` when absent. |
-| [llm_fetcher.py](llm_fetcher.py#L123) | `LLMFetcher.list_available_backend_providers` | `None` | `tuple[str, ...]` | Return all provider names supported by registered handlers, sorted. |
-| [llm_fetcher.py](llm_fetcher.py#L185) | `LLMFetcher.backend_configs` | `None` | `Dict[str, LLMBackendConfig]` | Return a copy of all registered backend configurations. |
-| [llm_fetcher.py](llm_fetcher.py#L195) | `LLMFetcher.fallback_order` | `None` | `List[str]` | Return the current fallback order (shallow copy). |
-| [llm_fetcher.py](llm_fetcher.py#L205) | `LLMFetcher.default_backend_config` | `None` | `LLMBackendConfig` | Return the configuration of the default backend. |
-| [llm_fetcher.py](llm_fetcher.py#L215) | `LLMFetcher._register_backend` | `backend: LLMBackendConfig` | `None` | Register a single backend and pre-create its handler. |
-| [llm_fetcher.py](llm_fetcher.py#L235) | `LLMFetcher._resolve_backends` | `backend_name: Optional[str], fallback_order: Optional[Sequence[str]]` | `List[LLMBackendConfig]` | Resolve the ordered backend list for a single request. |
-| [llm_fetcher.py](llm_fetcher.py#L281) | `LLMFetcher._handler_for_backend` | `backend: LLMBackendConfig` | `LLMBackendHandler` | Return the handler instance for a given backend configuration. |
-| [llm_fetcher.py](llm_fetcher.py#L297) | `LLMFetcher._is_timeout_exception` | `exc: Exception` | `bool` | Recognise transport/provider timeouts without importing optional SDKs. |
-| [llm_fetcher.py](llm_fetcher.py#L330) | `LLMFetcher._normalize_exception` | `backend: LLMBackendConfig, exc: Exception` | `LLMError` | Normalise any exception into an ``LLMError`` subclass. |
-| [llm_fetcher.py](llm_fetcher.py#L355) | `LLMFetcher._sleep_before_retry` | `retry_index: int, controller: ExecutionController \| None` | `None` | Wait with cancellation-aware exponential backoff before retrying. |
-| [llm_fetcher.py](llm_fetcher.py#L380) | `LLMFetcher._raise_if_force_stopped` | `controller: ExecutionController \| None` | `None` | Raise the terminal cancellation error without retrying providers. |
-| [llm_fetcher.py](llm_fetcher.py#L394) | `LLMFetcher.abort_active_requests` | `None` | `int` | Close provider transports for this terminal force-stop. |
-| [llm_fetcher.py](llm_fetcher.py#L418) | `LLMFetcher.prepare_request` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, context_handler: Optional[ContextHandler], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], stream: bool` | `RemoteRequestSnapshot` | Build the first dispatch-ready request without provider I/O. |
-| [llm_fetcher.py](llm_fetcher.py#L458) | `LLMFetcher.fetch` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, context_handler: Optional[ContextHandler], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], on_request: Optional[Callable[[RemoteRequestSnapshot], None]], on_retry: Optional[Callable[[int], None]], controller: ExecutionController \| None` | `LLMOutput` | Execute a non-streaming completion with backend fallback and retry. |
-| [llm_fetcher.py](llm_fetcher.py#L589) | `LLMFetcher.fetch_stream` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, output_reasoning: bool, context_handler: Optional[ContextHandler], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], on_request: Optional[Callable[[RemoteRequestSnapshot], None]], on_retry: Optional[Callable[[int], None]], usage_sink: Optional[TokenUsage], controller: ExecutionController \| None` | `Generator[str, None]` | Execute a streaming completion with backend fallback and retry. |
-| [llm_fetcher.py](llm_fetcher.py#L739) | `LLMFetcher._prepare_backend_request` | `backend: LLMBackendConfig, messages: List[JsonObject], temperature: float, max_tokens: int, tools: Optional[Sequence[ToolDefinition]], stream: bool, include_tool_name_map: bool` | `tuple[LLMBackendHandler, RemoteRequestSnapshot] \| tuple[LLMBackendHandler, RemoteRequestSnapshot, tuple[dict[str, str], dict[str, str]]]` | Prepare one backend's tool schemas and safe request snapshot. |
-| [llm_fetcher.py](llm_fetcher.py#L797) | `LLMFetcher._max_attempts` | `backend: LLMBackendConfig` | `int` | Return the number of times to attempt a request for a backend. |
-| [llm_fetcher.py](llm_fetcher.py#L812) | `LLMFetcher._build_messages` | `msg: str, system_prompt: Optional[str], context: Optional[ContextHandler]` | `List[Dict[str, Any]]` | Build the message list, delegating to a context handler when available. |
-| [llm_types.py](llm_types.py#L43) | `RemoteRequestSnapshot.to_dict` | `None` | `JsonObject` | Return the JSON-safe event payload used by application hosts. |
-| [llm_types.py](llm_types.py#L106) | `LLMBackendConfig.__str__` | `None` | `str` | Render the backend config in a compact human-readable form. |
-| [llm_types.py](llm_types.py#L162) | `TokenUsage.cache_hit_rate` | `None` | `float` | Fraction of input tokens served from the provider's prompt cache. |
-| [llm_types.py](llm_types.py#L186) | `LLMOutput.text` | `None` | `str` | Alias for assistant text content. |
-| [llm_types.py](llm_types.py#L190) | `LLMOutput.__str__` | `None` | `str` | Return the assistant content for debug printing and logging. |
-| [llm_types.py](llm_types.py#L225) | `LLMContextCompacted.__str__` | `None` | `str` | Implement `LLMContextCompacted.__str__`. |
-| [llm_types.py](llm_types.py#L261) | `ToolSchema.to_dict` | `None` | `Dict[str, Any]` | Convert this schema to an isolated JSON-ready mapping. |
-| [llm_types.py](llm_types.py#L301) | `Tool.__str__` | `None` | `Any` | Implement `Tool.__str__`. |
+| [cli.py](cli.py#L261) | `_cmd_run` | `args: argparse.Namespace` | `None` | Execute a single prompt and print the final response. |
+| [cli.py](cli.py#L288) | `_cmd_chat` | `args: argparse.Namespace` | `None` | Interactive read-eval-print loop. |
+| [cli.py](cli.py#L319) | `main` | `argv: list[str] \| None` | `None` | Parse CLI arguments and dispatch the selected command. |
+| [llm_fetcher.py](llm_fetcher.py#L69) | `_ModelDumpable.model_dump` | `None` | `object` | Implement `_ModelDumpable.model_dump`. |
+| [llm_fetcher.py](llm_fetcher.py#L72) | `_json_value` | `value: object` | `JsonValue \| None` | Return a JSON value, or ``None`` when the provider value is not JSON. |
+| [llm_fetcher.py](llm_fetcher.py#L90) | `_json_fields` | `value: object` | `dict[str, JsonValue]` | Project an untrusted provider mapping onto JSON-safe fields. |
+| [llm_fetcher.py](llm_fetcher.py#L122) | `StreamUsageCapture.merge` | `raw_usage: object` | `None` | Merge one raw usage payload (dict or provider object). |
+| [llm_fetcher.py](llm_fetcher.py#L145) | `StreamUsageCapture.raw` | `None` | `dict[str, JsonValue] \| None` | Return the merged raw usage mapping, or ``None`` when absent. |
+| [llm_fetcher.py](llm_fetcher.py#L170) | `LLMFetcher.list_available_backend_providers` | `None` | `tuple[str, ...]` | Return all provider names supported by registered handlers, sorted. |
+| [llm_fetcher.py](llm_fetcher.py#L232) | `LLMFetcher.backend_configs` | `None` | `Dict[str, LLMBackendConfig]` | Return a copy of all registered backend configurations. |
+| [llm_fetcher.py](llm_fetcher.py#L242) | `LLMFetcher.fallback_order` | `None` | `List[str]` | Return the current fallback order (shallow copy). |
+| [llm_fetcher.py](llm_fetcher.py#L252) | `LLMFetcher.default_backend_config` | `None` | `LLMBackendConfig` | Return the configuration of the default backend. |
+| [llm_fetcher.py](llm_fetcher.py#L262) | `LLMFetcher._register_backend` | `backend: LLMBackendConfig` | `None` | Register a single backend and pre-create its handler. |
+| [llm_fetcher.py](llm_fetcher.py#L282) | `LLMFetcher._resolve_backends` | `backend_name: Optional[str], fallback_order: Optional[Sequence[str]]` | `List[LLMBackendConfig]` | Resolve the ordered backend list for a single request. |
+| [llm_fetcher.py](llm_fetcher.py#L328) | `LLMFetcher._handler_for_backend` | `backend: LLMBackendConfig` | `LLMBackendHandler` | Return the handler instance for a given backend configuration. |
+| [llm_fetcher.py](llm_fetcher.py#L344) | `LLMFetcher._is_timeout_exception` | `exc: Exception` | `bool` | Recognise transport/provider timeouts without importing optional SDKs. |
+| [llm_fetcher.py](llm_fetcher.py#L377) | `LLMFetcher._normalize_exception` | `backend: LLMBackendConfig, exc: Exception` | `LLMError` | Normalise any exception into an ``LLMError`` subclass. |
+| [llm_fetcher.py](llm_fetcher.py#L402) | `LLMFetcher._sleep_before_retry` | `retry_index: int, controller: ExecutionController \| None` | `None` | Wait with cancellation-aware exponential backoff before retrying. |
+| [llm_fetcher.py](llm_fetcher.py#L427) | `LLMFetcher._raise_if_force_stopped` | `controller: ExecutionController \| None` | `None` | Raise the terminal cancellation error without retrying providers. |
+| [llm_fetcher.py](llm_fetcher.py#L441) | `LLMFetcher.abort_active_requests` | `None` | `int` | Close provider transports for this terminal force-stop. |
+| [llm_fetcher.py](llm_fetcher.py#L465) | `LLMFetcher.prepare_request` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, thinking_mode: str, reasoning_effort: str, context_handler: Optional[ContextHandler], context_composer: Optional[ContextComposer], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], stream: bool` | `RemoteRequestSnapshot` | Build the first dispatch-ready request without provider I/O. |
+| [llm_fetcher.py](llm_fetcher.py#L509) | `LLMFetcher.fetch` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, thinking_mode: str, reasoning_effort: str, context_handler: Optional[ContextHandler], context_composer: Optional[ContextComposer], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], on_request: Optional[Callable[[RemoteRequestSnapshot], None]], on_retry: Optional[Callable[[int], None]], controller: ExecutionController \| None` | `LLMOutput` | Execute a non-streaming completion with backend fallback and retry. |
+| [llm_fetcher.py](llm_fetcher.py#L647) | `LLMFetcher.fetch_stream` | `msg: str, system_prompt: Optional[str], temperature: float, max_tokens: int, thinking_mode: str, reasoning_effort: str, output_reasoning: bool, context_handler: Optional[ContextHandler], context_composer: Optional[ContextComposer], backend_name: Optional[str], tools: Optional[Sequence[ToolDefinition]], on_request: Optional[Callable[[RemoteRequestSnapshot], None]], on_retry: Optional[Callable[[int], None]], usage_sink: Optional[TokenUsage], controller: ExecutionController \| None` | `Generator[str, None]` | Execute a streaming completion with backend fallback and retry. |
+| [llm_fetcher.py](llm_fetcher.py#L803) | `LLMFetcher._prepare_backend_request` | `backend: LLMBackendConfig, messages: List[JsonObject], temperature: float, max_tokens: int, tools: Optional[Sequence[ToolDefinition]], stream: bool, thinking_mode: str, reasoning_effort: str, include_tool_name_map: bool` | `tuple[LLMBackendHandler, RemoteRequestSnapshot] \| tuple[LLMBackendHandler, RemoteRequestSnapshot, tuple[dict[str, str], dict[str, str]]]` | Prepare one backend's tool schemas and safe request snapshot. |
+| [llm_fetcher.py](llm_fetcher.py#L865) | `LLMFetcher._max_attempts` | `backend: LLMBackendConfig` | `int` | Return the number of times to attempt a request for a backend. |
+| [llm_fetcher.py](llm_fetcher.py#L880) | `LLMFetcher._build_messages` | `msg: str, system_prompt: Optional[str], context: Optional[ContextHandler], composer: Optional[ContextComposer]` | `List[JsonObject]` | Build the request messages, delegating history to a context handler. |
+| [llm_types/context_records.py](llm_types/context_records.py#L34) | `ContextItemId.__post_init__` | `None` | `None` | Reject an empty identity instead of accepting an unusable record. |
+| [llm_types/context_records.py](llm_types/context_records.py#L44) | `ContextItemId.new` | `None` | `'ContextItemId'` | Mint a fresh identity for a newly written context item. |
+| [llm_types/context_records.py](llm_types/context_records.py#L59) | `ToolResultId.__post_init__` | `None` | `None` | Reject an empty identity instead of accepting an unusable reference. |
+| [llm_types/context_records.py](llm_types/context_records.py#L69) | `ToolResultId.new` | `None` | `'ToolResultId'` | Mint a fresh identity for a newly written tool result. |
+| [llm_types/context_records.py](llm_types/context_records.py#L133) | `ToolCallInput.__post_init__` | `None` | `None` | Reject a call that cannot be correlated with its result. |
+| [llm_types/context_records.py](llm_types/context_records.py#L165) | `ToolResultInput.__post_init__` | `None` | `None` | Reject a result that cannot be paired with a tool call. |
+| [llm_types/context_records.py](llm_types/context_records.py#L203) | `AssistantTurnInput.__post_init__` | `None` | `None` | Reject duplicate call identities in one turn. |
+| [llm_types/context_records.py](llm_types/context_records.py#L301) | `ContextStore.resolve_tool_result` | `result_id: ToolResultId` | `ToolResultRecord` | Return the complete result a context item references. |
+| [llm_types/messages.py](llm_types/messages.py#L29) | `ToolCallPayload.to_dict` | `None` | `JsonObject` | Return this tool call as the provider-neutral wire mapping. |
+| [llm_types/messages.py](llm_types/messages.py#L64) | `RequestMessage.to_dict` | `None` | `JsonObject` | Return this message as the wire mapping a provider adapter reads. |
+| [llm_types/messages.py](llm_types/messages.py#L126) | `TokenUsage.cache_hit_rate` | `None` | `float` | Fraction of input tokens served from the provider's prompt cache. |
+| [llm_types/messages.py](llm_types/messages.py#L150) | `LLMOutput.text` | `None` | `str` | Alias for assistant text content. |
+| [llm_types/messages.py](llm_types/messages.py#L154) | `LLMOutput.__str__` | `None` | `str` | Return the assistant content for debug printing and logging. |
+| [llm_types/messages.py](llm_types/messages.py#L188) | `LLMContextCompacted.__str__` | `None` | `str` | Implement `LLMContextCompacted.__str__`. |
+| [llm_types/request.py](llm_types/request.py#L39) | `RemoteRequestSnapshot.to_dict` | `None` | `JsonObject` | Return the JSON-safe event payload used by application hosts. |
+| [llm_types/request.py](llm_types/request.py#L80) | `LLMBackendConfig.__str__` | `None` | `str` | Render the backend config in a compact human-readable form. |
+| [llm_types/tools.py](llm_types/tools.py#L42) | `ToolSchema.to_dict` | `None` | `JsonObject` | Convert this schema to an isolated JSON-ready mapping. |
+| [llm_types/tools.py](llm_types/tools.py#L82) | `Tool.__str__` | `None` | `Any` | Implement `Tool.__str__`. |
 | [multimodal.py](multimodal.py#L16) | `bounded_resolver` | `resolver: Any` | `Any` | Enforce a per-request decoded-size budget before any network call. |
 | [multimodal.py](multimodal.py#L33) | `validate_images` | `images: list[ImageReference]` | `list[ImageReference]` | Copy references and reject inline bytes and transport-specific fields. |
 | [multimodal.py](multimodal.py#L54) | `UserMessage.__post_init__` | `None` | `Any` | Implement `UserMessage.__post_init__`. |
@@ -177,21 +190,21 @@ primary model response.
 | [multimodal.py](multimodal.py#L66) | `image_reference_markers` | `images: Any` | `list[str]` | Render bounded, byte-free provenance markers for image references. |
 | [multimodal.py](multimodal.py#L86) | `image_blocks` | `images: Any, resolver: Any, provider: Any` | `Any` | Resolve local references at the wire boundary, never for previews. |
 | [multimodal.py](multimodal.py#L110) | `openai_image_messages` | `messages: Any, resolver: Any` | `Any` | Place tool images after all tool replies, preserving protocol ordering. |
-| [tool_executor.py](tool_executor.py#L59) | `ToolExecutor.execute` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `Any` | Run a single tool handler in the calling thread. |
-| [tool_executor.py](tool_executor.py#L67) | `ToolExecutor.execute_timed` | `handler: Callable[..., Any], arguments: Dict[str, Any]` | `ToolExecution` | Run a single tool handler in the calling thread with timing. |
-| [tool_executor.py](tool_executor.py#L98) | `ToolExecutor.execute_batch` | `handlers: List[Callable[..., Any] \| None], arguments_list: List[Dict[str, Any]], controller: ExecutionController \| None` | `List[Any]` | Execute tool handlers in parallel using a thread pool. |
-| [tool_executor.py](tool_executor.py#L130) | `ToolExecutor.execute_batch_timed` | `handlers: List[Callable[..., Any] \| None], arguments_list: List[Dict[str, Any]], controller: ExecutionController \| None` | `List[ToolExecution]` | Execute tool handlers in parallel, measuring each one's duration. |
-| [tool_executor.py](tool_executor.py#L226) | `ToolExecutor.close` | `None` | `None` | Release resources. (No-op — threads clean up on exit.) |
+| [tool_executor.py](tool_executor.py#L62) | `ToolExecutor.execute` | `handler: Callable[..., _Result], arguments: Mapping[str, object]` | `_Result` | Run a single tool handler in the calling thread. |
+| [tool_executor.py](tool_executor.py#L70) | `ToolExecutor.execute_timed` | `handler: Callable[..., _Result], arguments: Mapping[str, object]` | `ToolExecution[_Result]` | Run a single tool handler in the calling thread with timing. |
+| [tool_executor.py](tool_executor.py#L102) | `ToolExecutor.execute_batch` | `handlers: Sequence[ToolHandler \| None], arguments_list: Sequence[Mapping[str, object]], controller: ExecutionController \| None` | `list[object]` | Execute tool handlers in parallel using a thread pool. |
+| [tool_executor.py](tool_executor.py#L134) | `ToolExecutor.execute_batch_timed` | `handlers: Sequence[ToolHandler \| None], arguments_list: Sequence[Mapping[str, object]], controller: ExecutionController \| None` | `list[ToolExecution[object]]` | Execute tool handlers in parallel, measuring each one's duration. |
+| [tool_executor.py](tool_executor.py#L230) | `ToolExecutor.close` | `None` | `None` | Release resources. (No-op — threads clean up on exit.) |
 | [tool_handler.py](tool_handler.py#L27) | `ToolHandler.add_tool` | `tool: Tool` | `bool` | Register a tool. No-op if a tool with the same name exists. |
 | [tool_handler.py](tool_handler.py#L39) | `ToolHandler.remove_tool` | `name: str` | `bool` | Unregister a tool by name. |
 | [tool_handler.py](tool_handler.py#L54) | `ToolHandler.get` | `name: str` | `Tool \| None` | Look up a tool by name. |
-| [tool_handler.py](tool_handler.py#L62) | `ToolHandler.get_handler` | `name: str` | `Any \| None` | Return the callable handler for a named tool. |
-| [tool_handler.py](tool_handler.py#L71) | `ToolHandler.get_handlers_and_arguments` | `calls: List[LLMToolCall]` | `tuple[List[Any \| None], List[Dict[str, Any]]]` | Resolve a list of tool calls into (handlers, arguments). |
-| [tool_handler.py](tool_handler.py#L99) | `ToolHandler.get_all_tool_description` | `None` | `str` | Concatenated ``__str__`` of all registered tools, newline-separated. |
-| [tool_handler.py](tool_handler.py#L103) | `ToolHandler.get_all_tools` | `None` | `List[Tool]` | Return all registered tools as a list. |
-| [tool_handler.py](tool_handler.py#L108) | `_reject_tool_call` | `message: str` | `Any` | Return a handler that reports one validation failure to the model. |
-| [tool_handler.py](tool_handler.py#L115) | `_validate_tool_call` | `tool: Tool \| None, call: LLMToolCall` | `str \| None` | Validate one model call before a local handler can observe it. |
-| [tool_handler.py](tool_handler.py#L159) | `_matches_json_type` | `value: Any, expected: str` | `bool` | Return whether a JSON-compatible value matches one primitive type. |
+| [tool_handler.py](tool_handler.py#L62) | `ToolHandler.get_handler` | `name: str` | `ToolCallable \| None` | Return the callable handler for a named tool. |
+| [tool_handler.py](tool_handler.py#L71) | `ToolHandler.get_handlers_and_arguments` | `calls: list[LLMToolCall]` | `tuple[list[ToolCallable \| None], list[JsonObject]]` | Resolve a list of tool calls into (handlers, arguments). |
+| [tool_handler.py](tool_handler.py#L104) | `ToolHandler.get_all_tool_description` | `None` | `str` | Concatenated ``__str__`` of all registered tools, newline-separated. |
+| [tool_handler.py](tool_handler.py#L108) | `ToolHandler.get_all_tools` | `None` | `list[Tool]` | Return all registered tools as a list. |
+| [tool_handler.py](tool_handler.py#L113) | `_reject_tool_call` | `message: str` | `ToolCallable` | Return a handler that reports one validation failure to the model. |
+| [tool_handler.py](tool_handler.py#L120) | `_validate_tool_call` | `tool: Tool \| None, call: LLMToolCall` | `str \| None` | Validate one model call before a local handler can observe it. |
+| [tool_handler.py](tool_handler.py#L171) | `_matches_json_type` | `value: JsonValue, expected: str` | `bool` | Return whether a JSON-compatible value matches one primitive type. |
 | [usage_ledger.py](usage_ledger.py#L24) | `copy_usage` | `usage: Optional[TokenUsage]` | `TokenUsage` | Copy provider usage, representing a missing provider report as zero. |
 | [usage_ledger.py](usage_ledger.py#L37) | `add_usage` | `total: TokenUsage, usage: TokenUsage` | `None` | Add all dimensions without deriving total from its subdimensions. |
 | [usage_ledger.py](usage_ledger.py#L46) | `drain_records` | `records: list[UsageRecord]` | `list[UsageRecord]` | Return and consume records in their completed-call order. |
@@ -200,42 +213,56 @@ primary model response.
 
 | Source | Class | Constructor / field input types | Base(s) | Semantics |
 |---|---|---|---|---|
-| [agent.py](agent.py#L53) | `AgentRunControl` | `None` | `Protocol` | Describe cooperative controls read between completed Agent steps. |
-| [agent.py](agent.py#L70) | `AgentRunStopped` | `message: str, last_output: LLMOutput \| None` | `RuntimeError` | Signal a cooperative stop after durable completion of one Agent step. |
-| [agent.py](agent.py#L88) | `AgentRunLimitReached` | `None` | `RuntimeError` | Signal that an Agent exhausted its round budget before a terminal result. |
-| [agent.py](agent.py#L96) | `ContextLoadError` | `None` | `RuntimeError` | Signal that an existing Agent checkpoint could not be restored. |
-| [agent.py](agent.py#L100) | `ContextSaveError` | `None` | `RuntimeError` | Signal that a configured Agent checkpoint could not be committed. |
-| [agent.py](agent.py#L104) | `AgentRunTermination` | `None` | `str, Enum` | Explicit terminal classifications for one completed Agent invocation. |
-| [agent.py](agent.py#L116) | `AgentRunOutcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `object` | Inspectable terminal state for an Agent run. |
-| [agent.py](agent.py#L145) | `RequestIndex` | `request_id: str, round: int, model: str, stream: bool, message_count: int, message_roles: dict[str, int], source_ids: list[str], input_characters: int, estimated_input_tokens: int, input_sha256: str, tool_count: int, tool_schema_hashes: list[str], temperature: Any, max_tokens: Any` | `object` | Content-free index for one remote LLM request. |
-| [agent.py](agent.py#L182) | `RequestContentMessage` | `role: str, content: str, characters: int, truncated: bool` | `object` | One capped context message retained only for the console ledger. |
-| [agent.py](agent.py#L199) | `RequestContent` | `round: int, model: str, messages: list[RequestContentMessage], omitted_messages: int` | `object` | Capped, readable preview of one dispatch-ready request. |
-| [agent.py](agent.py#L231) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, enable_stop_turn: bool, default_stream: bool, output_reasoning: bool, tool_result_transformer: Callable[[str, str, str], str] \| None` | `object` | Provide `Agent` behavior. |
+| [agent/control.py](agent/control.py#L28) | `AgentRunControl` | `None` | `Protocol` | Describe cooperative controls read between completed Agent steps. |
+| [agent/core.py](agent/core.py#L47) | `Agent` | `llm_fetcher: LLMFetcher, system_prompt: str, max_concurrency: int, max_context_threshold: int, context_path: Optional[str \| Path], context_handler: Optional[ContextHandler], default_max_rounds: int, default_max_tokens: int, default_temperature: float, enable_stop_turn: bool, default_stream: bool, output_reasoning: bool, thinking_mode: str, reasoning_effort: str, tool_result_context_limit: int, tool_result_transformer: Callable[[str, str, str], str] \| None, context_providers: tuple[ContextProvider, ...], context_block_order: Mapping[str, int] \| None` | `object` | Provide `Agent` behavior. |
+| [agent/errors.py](agent/errors.py#L6) | `AgentRunStopped` | `message: str, last_output: LLMOutput \| None` | `RuntimeError` | Signal a cooperative stop after durable completion of one Agent step. |
+| [agent/errors.py](agent/errors.py#L24) | `AgentRunLimitReached` | `None` | `RuntimeError` | Signal that an Agent exhausted its round budget before a terminal result. |
+| [agent/errors.py](agent/errors.py#L32) | `ContextLoadError` | `None` | `RuntimeError` | Signal that an existing Agent checkpoint could not be restored. |
+| [agent/errors.py](agent/errors.py#L36) | `ContextSaveError` | `None` | `RuntimeError` | Signal that a configured Agent checkpoint could not be committed. |
+| [agent/models.py](agent/models.py#L10) | `AgentRunTermination` | `None` | `str, Enum` | Explicit terminal classifications for one completed Agent invocation. |
+| [agent/models.py](agent/models.py#L22) | `AgentRunOutcome` | `termination: AgentRunTermination, rounds: int, detail: str, output: LLMOutput \| None` | `object` | Inspectable terminal state for an Agent run. |
+| [agent/models.py](agent/models.py#L51) | `RequestIndex` | `request_id: str, round: int, model: str, stream: bool, message_count: int, message_roles: dict[str, int], source_ids: list[str], input_characters: int, estimated_input_tokens: int, input_sha256: str, tool_count: int, tool_schema_hashes: list[str], temperature: Any, max_tokens: Any, thinking_mode: str, reasoning_effort: str` | `object` | Content-free index for one remote LLM request. |
+| [agent/models.py](agent/models.py#L90) | `RequestContentMessage` | `role: str, content: str, characters: int, truncated: bool` | `object` | One capped context message retained only for the console ledger. |
+| [agent/models.py](agent/models.py#L107) | `RequestContent` | `round: int, model: str, messages: list[RequestContentMessage], omitted_messages: int` | `object` | Capped, readable preview of one dispatch-ready request. |
 | [events.py](events.py#L16) | `ExecutionEvent` | `timestamp: float, source: str, agent_name: str, event_type: str, message: str, data: Any` | `object` | Immutable event emitted during swarm execution. |
-| [llm_fetcher.py](llm_fetcher.py#L53) | `StreamUsageCapture` | `None` | `object` | Per-call mutable capture of raw provider usage from one stream. |
-| [llm_fetcher.py](llm_fetcher.py#L103) | `LLMFetcher` | `backends: Optional[Sequence[LLMBackendConfig]], default_backend: Optional[str], image_resolver: Any` | `object` | Route chat requests across one or more configured LLM backends. |
-| [llm_types.py](llm_types.py#L18) | `RemoteRequestSnapshot` | `model: str, messages: list[JsonObject], temperature: float, max_tokens: int, stream: bool, tools: list[JsonObject]` | `object` | Credential-free schema for one dispatch-ready remote model request. |
-| [llm_types.py](llm_types.py#L65) | `LLMError` | `None` | `Exception` | Base exception for all LLM-related errors. |
-| [llm_types.py](llm_types.py#L69) | `LLMTimeoutError` | `None` | `LLMError` | Raised when an LLM request times out. |
-| [llm_types.py](llm_types.py#L73) | `LLMBackendError` | `None` | `LLMError` | Raised when all candidate backends fail. |
-| [llm_types.py](llm_types.py#L77) | `LLMRequestCancelled` | `None` | `LLMError` | Raised when a terminal force-stop cancels an in-flight LLM request. |
-| [llm_types.py](llm_types.py#L86) | `LLMBackendConfig` | `name: str, provider: str, model: str, api_key: str, api_url: Optional[str], timeout: float, max_retries: int, compatibility_profile: Optional[str], extra: Dict[str, Any]` | `object` | Configuration for one routable LLM backend. |
-| [llm_types.py](llm_types.py#L124) | `LLMToolCall` | `name: str, arguments: JsonObject, call_id: Optional[str], source: Optional[str]` | `object` | Backend-neutral tool call emitted by a model. |
-| [llm_types.py](llm_types.py#L134) | `ToolInfo` | `call: LLMToolCall, result: Optional[str], images: list[ImageReference]` | `object` | A tool call paired with its execution result. |
-| [llm_types.py](llm_types.py#L148) | `TokenUsage` | `input_tokens: int, output_tokens: int, total_tokens: int, cached_tokens: int, reasoning_tokens: int` | `object` | Platform-irrelevant token usage summary produced by every LLM handler. |
-| [llm_types.py](llm_types.py#L169) | `LLMOutput` | `content: str, provider: str, backend_name: str, model: str, role: str, reasoning_content: str, tool_calls: List[LLMToolCall], stop_reason: Optional[str], usage: TokenUsage` | `object` | Backend-neutral non-streaming model output. this class will be created by handlers that handle the LLM call. |
-| [llm_types.py](llm_types.py#L197) | `LLMContext` | `role: str, timeline: int, content: str, content_reasoning: str, tool_calls: List[ToolInfo], tags: List[str], usage: Dict[str, int], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float], images: list[ImageReference]` | `object` | A single message in the conversation timeline. |
-| [llm_types.py](llm_types.py#L217) | `LLMContextCompacted` | `abstract_msg: str, source_timeline: List[int], source_uuid: List[str], tags: List[str]` | `object` | Summarised representation of one or more LLMContext entries. |
-| [llm_types.py](llm_types.py#L234) | `ToolParameter` | `name: str, type: str, description: str, required: bool, enum: Optional[List[str]], default: Optional[Any]` | `object` | A single parameter in a tool's JSON Schema. |
-| [llm_types.py](llm_types.py#L246) | `ToolSchema` | `type: str, properties: List[ToolParameter], raw_schema: Optional[Dict[str, Any]]` | `object` | Structured JSON Schema for tool parameters and external tool protocols. |
-| [llm_types.py](llm_types.py#L293) | `Tool` | `name: str, description: str, schemas: ToolSchema, handler: Callable[..., Any]` | `object` | A single tool that an Agent can call. |
-| [llm_types.py](llm_types.py#L309) | `ToolBatch` | `None` | `object` | Provide `ToolBatch` behavior. |
+| [llm_fetcher.py](llm_fetcher.py#L66) | `_ModelDumpable` | `None` | `Protocol` | A provider payload that can render itself as a plain mapping. |
+| [llm_fetcher.py](llm_fetcher.py#L102) | `StreamUsageCapture` | `None` | `object` | Per-call mutable capture of raw provider usage from one stream. |
+| [llm_fetcher.py](llm_fetcher.py#L150) | `LLMFetcher` | `backends: Optional[Sequence[LLMBackendConfig]], default_backend: Optional[str], image_resolver: Any` | `object` | Route chat requests across one or more configured LLM backends. |
+| [llm_types/context_records.py](llm_types/context_records.py#L25) | `ContextItemId` | `value: str` | `object` | Stable identity of one durable context item. |
+| [llm_types/context_records.py](llm_types/context_records.py#L50) | `ToolResultId` | `value: str` | `object` | Stable identity of one durable tool result. |
+| [llm_types/context_records.py](llm_types/context_records.py#L75) | `ToolCallRecord` | `call_id: str, name: str, arguments: JsonObject, result_id: ToolResultId \| None` | `object` | One tool invocation requested by an assistant turn. |
+| [llm_types/context_records.py](llm_types/context_records.py#L93) | `ToolResultRecord` | `result_id: ToolResultId, call_id: str, tool_name: str, output: str, images: tuple[ImageReference, ...], ok: bool \| None, duration_ms: int \| None, created_at: float \| None` | `object` | One complete tool execution result, stored outside the transcript. |
+| [llm_types/context_records.py](llm_types/context_records.py#L119) | `ToolCallInput` | `call_id: str, name: str, arguments: JsonObject` | `object` | One tool call as the model produced it, before a result is stored. |
+| [llm_types/context_records.py](llm_types/context_records.py#L144) | `ToolResultInput` | `call_id: str, tool_name: str, output: str, images: tuple[ImageReference, ...], ok: bool \| None, duration_ms: int \| None, created_at: float \| None` | `object` | One completed tool execution offered to a context handler. |
+| [llm_types/context_records.py](llm_types/context_records.py#L178) | `AssistantTurnInput` | `content: str, reasoning: str, tool_calls: tuple[ToolCallInput, ...], usage: TokenUsage, model_duration_ms: int \| None, round_duration_ms: int \| None, created_at: float \| None` | `object` | Complete input for one durable assistant turn. |
+| [llm_types/context_records.py](llm_types/context_records.py#L215) | `UserContextItem` | `kind: ClassVar[str], item_id: ContextItemId, timeline: int, content: str, images: tuple[ImageReference, ...]` | `object` | One durable user input entry. |
+| [llm_types/context_records.py](llm_types/context_records.py#L234) | `AssistantContextItem` | `kind: ClassVar[str], item_id: ContextItemId, timeline: int, content: str, reasoning: str, tool_calls: tuple[ToolCallRecord, ...], usage: TokenUsage, model_duration_ms: int \| None, round_duration_ms: int \| None, created_at: float \| None` | `object` | One durable assistant turn. |
+| [llm_types/context_records.py](llm_types/context_records.py#L267) | `ContextSummaryItem` | `kind: ClassVar[str], item_id: ContextItemId, timeline: int, abstract: str, source_item_ids: tuple[ContextItemId, ...], source_timeline: tuple[int, ...], source_result_ids: tuple[ToolResultId, ...]` | `object` | One compacted summary that replaced a contiguous transcript range. |
+| [llm_types/context_records.py](llm_types/context_records.py#L293) | `ContextStore` | `None` | `Protocol` | Resolve durable references held by context items. |
+| [llm_types/errors.py](llm_types/errors.py#L6) | `LLMError` | `None` | `Exception` | Base exception for all LLM-related errors. |
+| [llm_types/errors.py](llm_types/errors.py#L10) | `LLMTimeoutError` | `None` | `LLMError` | Raised when an LLM request times out. |
+| [llm_types/errors.py](llm_types/errors.py#L14) | `LLMBackendError` | `None` | `LLMError` | Raised when all candidate backends fail. |
+| [llm_types/errors.py](llm_types/errors.py#L18) | `LLMRequestCancelled` | `None` | `LLMError` | Raised when a terminal force-stop cancels an in-flight LLM request. |
+| [llm_types/messages.py](llm_types/messages.py#L16) | `ToolCallPayload` | `id: str, name: str, arguments: JsonObject` | `object` | One tool call as a provider-neutral request message carries it. |
+| [llm_types/messages.py](llm_types/messages.py#L39) | `RequestMessage` | `role: MessageRole, content: Optional[str], tool_calls: List[ToolCallPayload], tool_call_id: Optional[str], images: List[ImageReference]` | `object` | One provider-neutral message of a dispatch-ready request. |
+| [llm_types/messages.py](llm_types/messages.py#L88) | `LLMToolCall` | `name: str, arguments: JsonObject, call_id: Optional[str], source: Optional[str]` | `object` | Backend-neutral tool call emitted by a model. |
+| [llm_types/messages.py](llm_types/messages.py#L98) | `ToolInfo` | `call: LLMToolCall, result: Optional[str], images: list[ImageReference]` | `object` | A tool call paired with its execution result. |
+| [llm_types/messages.py](llm_types/messages.py#L112) | `TokenUsage` | `input_tokens: int, output_tokens: int, total_tokens: int, cached_tokens: int, reasoning_tokens: int` | `object` | Platform-irrelevant token usage summary produced by every LLM handler. |
+| [llm_types/messages.py](llm_types/messages.py#L133) | `LLMOutput` | `content: str, provider: str, backend_name: str, model: str, role: str, reasoning_content: str, tool_calls: List[LLMToolCall], stop_reason: Optional[str], usage: TokenUsage` | `object` | Backend-neutral non-streaming model output. this class will be created by handlers that handle the LLM call. |
+| [llm_types/messages.py](llm_types/messages.py#L160) | `LLMContext` | `role: str, timeline: int, content: str, content_reasoning: str, tool_calls: List[ToolInfo], tags: List[str], usage: Dict[str, int], model_duration_ms: Optional[int], round_duration_ms: Optional[int], created_at: Optional[float], images: list[ImageReference]` | `object` | A single message in the conversation timeline. |
+| [llm_types/messages.py](llm_types/messages.py#L180) | `LLMContextCompacted` | `abstract_msg: str, source_timeline: List[int], source_uuid: List[str], tags: List[str]` | `object` | Summarised representation of one or more LLMContext entries. |
+| [llm_types/request.py](llm_types/request.py#L12) | `RemoteRequestSnapshot` | `model: str, messages: list[JsonObject], temperature: float, max_tokens: int, stream: bool, tools: list[JsonObject], thinking_mode: str, reasoning_effort: str` | `object` | Credential-free schema for one dispatch-ready remote model request. |
+| [llm_types/request.py](llm_types/request.py#L60) | `LLMBackendConfig` | `name: str, provider: str, model: str, api_key: str, api_url: Optional[str], timeout: float, max_retries: int, compatibility_profile: Optional[str], extra: JsonObject` | `object` | Configuration for one routable LLM backend. |
+| [llm_types/tools.py](llm_types/tools.py#L15) | `ToolParameter` | `name: str, type: str, description: str, required: bool, enum: Optional[List[str]], default: JsonValue` | `object` | A single parameter in a tool's JSON Schema. |
+| [llm_types/tools.py](llm_types/tools.py#L27) | `ToolSchema` | `type: str, properties: List[ToolParameter], raw_schema: Optional[JsonObject]` | `object` | Structured JSON Schema for tool parameters and external tool protocols. |
+| [llm_types/tools.py](llm_types/tools.py#L74) | `Tool` | `name: str, description: str, schemas: ToolSchema, handler: ToolCallable` | `object` | A single tool that an Agent can call. |
+| [llm_types/tools.py](llm_types/tools.py#L91) | `ToolBatch` | `None` | `object` | Provide `ToolBatch` behavior. |
 | [multimodal.py](multimodal.py#L6) | `ImageReference` | `attachment_id: str, media_type: str, detail: NotRequired[Literal['auto', 'low', 'high']]` | `TypedDict` | Provide `ImageReference` behavior. |
 | [multimodal.py](multimodal.py#L50) | `UserMessage` | `text: str, images: list[ImageReference]` | `object` | Provide `UserMessage` behavior. |
 | [multimodal.py](multimodal.py#L62) | `ImageToolResult` | `None` | `UserMessage` | Tool feedback containing native image inputs and explanatory text. |
-| [tool_executor.py](tool_executor.py#L13) | `ToolBatchCancelled` | `None` | `RuntimeError` | Signal that force-stop abandoned the active tool batch. |
-| [tool_executor.py](tool_executor.py#L18) | `ToolExecution` | `result: Any, duration_ms: int` | `object` | One tool handler execution: its result and wall-clock duration. |
-| [tool_executor.py](tool_executor.py#L31) | `ToolExecutor` | `max_concurrency: int` | `object` | Execute tool handlers in parallel using a thread pool. |
+| [tool_executor.py](tool_executor.py#L16) | `ToolBatchCancelled` | `None` | `RuntimeError` | Signal that force-stop abandoned the active tool batch. |
+| [tool_executor.py](tool_executor.py#L21) | `ToolExecution` | `result: _Result \| Exception, duration_ms: int` | `Generic[_Result]` | One tool handler execution: its result and wall-clock duration. |
+| [tool_executor.py](tool_executor.py#L34) | `ToolExecutor` | `max_concurrency: int` | `object` | Execute tool handlers in parallel using a thread pool. |
 | [tool_handler.py](tool_handler.py#L8) | `ToolCallValidationError` | `None` | `ValueError` | A model-requested tool call does not match a registered Tool contract. |
 | [tool_handler.py](tool_handler.py#L12) | `ToolHandler` | `None` | `object` | Register, look up, and describe ``Tool`` objects. |
 | [usage_ledger.py](usage_ledger.py#L17) | `UsageRecord` | `kind: str, usage: TokenUsage` | `object` | Usage reported by one completed LLM call. |
