@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..multimodal import image_blocks, bounded_resolver
 
 import json
+import inspect
 from typing import Iterable, Mapping, Optional, Sequence
 
 from ..llm_types import LLMOutput, LLMToolCall
@@ -157,12 +158,36 @@ class AnthropicHandler(LLMBackendHandler):
             "temperature": temperature,
             "stream": stream,
         }
+        # anthropic-python 1.x removed deprecated sampling parameters from
+        # ``Messages.create``.  Native Anthropic endpoints should therefore
+        # omit temperature when the installed SDK does not declare it, while
+        # custom Anthropic-compatible endpoints (for example DeepSeek) still
+        # need the field in the JSON body.  ``extra_body`` is the SDK's
+        # supported escape hatch for those provider-specific fields.
+        create = self.client.messages.create
+        try:
+            supports_temperature = "temperature" in inspect.signature(create).parameters
+        except (TypeError, ValueError):
+            # Test doubles and unusual SDK wrappers may not expose a
+            # signature; preserve the historical direct-argument behavior.
+            supports_temperature = True
+        extra = dict(self.backend.extra)
+        if not supports_temperature:
+            kwargs.pop("temperature", None)
+            if self.backend.api_url:
+                body = extra.get("extra_body")
+                if not isinstance(body, dict):
+                    body = {}
+                extra["extra_body"] = {**body, "temperature": temperature}
+            # Never pass a deprecated top-level field from backend.extra to a
+            # current SDK either; it would recreate the TypeError above.
+            extra.pop("temperature", None)
         if system_prompt:
             kwargs["system"] = system_prompt
         if tools:
             kwargs["tools"] = tools
-        kwargs.update(self.backend.extra)
-        return self.client.messages.create(**kwargs)
+        kwargs.update(extra)
+        return create(**kwargs)
 
     def normalize_completion_response(self, response) -> LLMOutput:
         blocks = self._read_field(response, "content", None) or []

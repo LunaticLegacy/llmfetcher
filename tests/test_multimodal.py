@@ -92,6 +92,55 @@ class NativeVisionTests(unittest.TestCase):
             self.assertEqual(wire[2]['content'][0]['tool_use_id'], 'a')
             self.assertEqual(wire[2]['content'][0]['content'][1]['type'], 'image')
 
+    def test_anthropic_sdk_without_temperature_uses_extra_body_for_custom_endpoint(self):
+        calls = []
+
+        def create(*, model, messages, max_tokens, stream=False, extra_body=None, **kwargs):
+            calls.append({
+                'model': model,
+                'messages': messages,
+                'max_tokens': max_tokens,
+                'stream': stream,
+                'extra_body': extra_body,
+                'kwargs': kwargs,
+            })
+            return object()
+
+        handler = self.handler(AnthropicHandler)
+        handler.backend = LLMBackendConfig(
+            'fake', 'anthropic', 'deepseek-flash', api_url='https://api.deepseek.com/anthropic'
+        )
+        handler.client.messages.create = create
+        handler.create_completion(
+            messages=[{'role': 'user', 'content': 'hello'}],
+            temperature=0.2,
+            max_tokens=16,
+            stream=False,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['extra_body'], {'temperature': 0.2})
+        self.assertNotIn('temperature', calls[0]['kwargs'])
+
+    def test_anthropic_sdk_without_temperature_omits_it_for_native_endpoint(self):
+        calls = []
+
+        def create(*, model, messages, max_tokens, stream=False, **kwargs):
+            calls.append(kwargs)
+            return object()
+
+        handler = self.handler(AnthropicHandler)
+        handler.client.messages.create = create
+        handler.create_completion(
+            messages=[{'role': 'user', 'content': 'hello'}],
+            temperature=0.2,
+            max_tokens=16,
+            stream=False,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn('temperature', calls[0])
+
     def test_anthropic_tool_names_are_openai_compatible(self):
         handler = self.handler(AnthropicHandler)
         tools = [Tool('plugin.gzctf.gzctf_login', 'login', ToolSchema(), lambda: None)]
