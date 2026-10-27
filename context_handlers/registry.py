@@ -172,7 +172,7 @@ CONTEXT_HANDLERS: dict[str, ContextHandlerSpec] = {
 }
 
 # The handler a host should build when a user has not chosen one.
-DEFAULT_CONTEXT_HANDLER = "graph"
+DEFAULT_CONTEXT_HANDLER = "linear"
 
 
 def available_context_handlers() -> tuple[str, ...]:

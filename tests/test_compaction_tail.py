@@ -102,6 +102,29 @@ class CompactionTailTests(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4], [message.timeline for message in linear.archive])
         self.assertEqual((1, 2, 3, 4), linear.abstract.source_timeline)
 
+    def test_success_frame_carries_the_full_abstract_body(self) -> None:
+        """The chat card needs the real summary, not the 400-char preview.
+
+        ``abstract_preview`` stays capped for the metric cards, so the
+        terminal frame also ships the full ``abstract`` body.
+        """
+        body = "A" * 600
+        frames: list[tuple[str, dict]] = []
+        linear = ContextHandlerLinear(
+            _ScriptedCompactor(raw=f"<context_abstract>{body}</context_abstract>"),
+            event_hook=lambda event_type, _message, data: frames.append((event_type, dict(data))),
+        )
+        for index in range(3):
+            linear.add_user_message(f"m{index}")
+
+        self.assertTrue(linear.compact())
+
+        terminal = [data for event_type, data in frames if event_type == "context:compact_success"]
+        self.assertEqual(1, len(terminal))
+        self.assertEqual(600, terminal[0]["abstract_characters"])
+        self.assertEqual(body[:400], terminal[0]["abstract_preview"])
+        self.assertEqual(body, terminal[0]["abstract"])
+
     def test_retained_tail_suppresses_the_derived_resume_turn(self) -> None:
         """A retained tail is already the user-visible turn."""
         linear = ContextHandlerLinear(_ScriptedCompactor())

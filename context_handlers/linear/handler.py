@@ -469,12 +469,11 @@ class ContextHandlerLinear(ContextHandler):
                 usage_sink=stream_usage,
                 controller=controller,
             ):
+                # Issue 7: never emit one lifecycle event per streamed
+                # chunk.  The compaction transcript keeps only the opening
+                # (compact_started) and terminal (success/failed) events so
+                # the durable trace stays readable and compact.
                 chunks.append(chunk)
-                self._emit_compaction_event(
-                    "context:compact_delta",
-                    "Context compaction model output",
-                    {"round": round_index, "channel": "content", "delta": chunk},
-                )
             result = LLMOutput(
                 content="".join(chunks),
                 provider=self.llm_handler.default_backend_config.provider,
@@ -567,6 +566,10 @@ class ContextHandlerLinear(ContextHandler):
                 "archived_messages": archived_count,
                 "retained_messages": len(retained_messages),
                 "abstract_characters": len(abstract_msg),
+                "abstract_preview": abstract_msg[:400],
+                # The chat page renders the real summary body; the 400-char
+                # preview stays for the compact metric cards.
+                "abstract": abstract_msg,
                 "source_timeline": source_timelines,
                 "duration_ms": round((time.time() - started_at) * 1000),
             },

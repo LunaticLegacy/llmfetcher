@@ -29,7 +29,12 @@ from typing import Any, Optional, Sequence, cast
 import uuid
 
 from ..context_handlers.base import ContextHandler, checkpoint_lock
-from ..context_handlers.composer import ContextBlock, ContextPosition, ContextSnapshot
+from ..context_handlers.composer import (
+    ContextBlock,
+    ContextBlockSource,
+    ContextPosition,
+    ContextSnapshot,
+)
 from ..context_handlers.archive_retrieval import ArchiveRetrievalConfig, retrieve_archive
 from ..context_handlers.linear import CompactionFetcher, ContextHandlerLinear
 from ..context_handlers.linear.assembly import ContextAssembler
@@ -367,6 +372,32 @@ class GraphContextHandler(ContextHandler):
         messages.extend(self._render_items(last_round, pending_resume=False))
         messages.extend(self._render_items(current_user, pending_resume=False))
         return messages
+
+    def block_source_catalog(self) -> tuple[ContextBlockSource, ...]:
+        """Declare every graph section even when a section is empty.
+
+        ``GraphContextHandler`` overrides :meth:`build_blocks` with its
+        own ``graph.*`` sources, so the inherited single-source catalog
+        (``context_handler``) no longer describes what is emitted: a
+        saved order was shown as one phantom ``context_handler`` row and
+        the real ``graph.*`` slots had no declared position.
+
+        ``graph.memory``/``graph.archive`` are emitted only while
+        retrieval produced content, and ``graph.current_input``
+        disappears once compaction archives the active item, so the
+        catalog must declare them instead of inferring them from one
+        round's blocks.
+
+        Returns:
+            The five graph sections in emission order.
+        """
+        return (
+            ContextBlockSource("graph.previous", ContextPosition.PREVIOUS),
+            ContextBlockSource("graph.memory", ContextPosition.MEMORY),
+            ContextBlockSource("graph.archive", ContextPosition.MEMORY),
+            ContextBlockSource("graph.last_round", ContextPosition.LAST_ROUND),
+            ContextBlockSource("graph.current_input", ContextPosition.CURRENT_INPUT),
+        )
 
     def build_blocks(self, snapshot: ContextSnapshot) -> list[ContextBlock]:
         """Expose Graph context sections to the shared Composer.
